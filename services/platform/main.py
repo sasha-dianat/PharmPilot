@@ -56,26 +56,20 @@ def create_app() -> FastAPI:
 
     # Register routers
     from services.platform.routers import (
-        auth,
-        patients,
-        prescriptions,
-        adjudication,
-        inventory,
-        biometric,
-        audio,
-        clinical_brain,
-        analytics,
+        auth, patients, prescriptions, adjudication,
+        inventory, biometric, audio, clinical_brain, analytics, knowledge,
     )
 
-    app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
-    app.include_router(patients.router, prefix="/api/v1/patients", tags=["patients"])
+    app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
+    app.include_router(patients.router,      prefix="/api/v1/patients",      tags=["patients"])
     app.include_router(prescriptions.router, prefix="/api/v1/prescriptions", tags=["prescriptions"])
-    app.include_router(adjudication.router, prefix="/api/v1/claims", tags=["claims"])
-    app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["inventory"])
-    app.include_router(biometric.router, prefix="/api/v1/biometric", tags=["biometric"])
-    app.include_router(audio.router, prefix="/api/v1/audio", tags=["audio"])
-    app.include_router(clinical_brain.router, prefix="/api/v1/clinical", tags=["clinical"])
-    app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+    app.include_router(adjudication.router,  prefix="/api/v1/claims",        tags=["claims"])
+    app.include_router(inventory.router,     prefix="/api/v1/inventory",     tags=["inventory"])
+    app.include_router(biometric.router,     prefix="/api/v1/biometric",     tags=["biometric"])
+    app.include_router(audio.router,         prefix="/api/v1/audio",         tags=["audio"])
+    app.include_router(clinical_brain.router,prefix="/api/v1/clinical",      tags=["clinical"])
+    app.include_router(knowledge.router,     prefix="/api/v1/knowledge",     tags=["knowledge"])
+    app.include_router(analytics.router,     prefix="/api/v1/analytics",     tags=["analytics"])
 
     @app.get("/health")
     async def health_check():

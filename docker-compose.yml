@@ -65,6 +65,17 @@ services:
         soft: 262144
         hard: 262144
 
+  # ── Vector Database (Clinical Knowledge Base) ──────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+
   # ── Core API ───────────────────────────────────────────────────
   api:
     build:
@@ -203,3 +214,4 @@ volumes:
   biometric_index:
   clinical_models:
   ml_models:
+  qdrant_data:
