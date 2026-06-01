@@ -249,10 +249,10 @@ cd "$ROOT_DIR/frontend/workstation"
 npm install --silent 2>/dev/null || npm install
 ok "Frontend dependencies installed"
 
-# Create frontend .env.local
-[ -f "$ROOT_DIR/frontend/workstation/.env.local" ] || cat > "$ROOT_DIR/frontend/workstation/.env.local" << 'EOF'
-VITE_API_URL=http://localhost:8000/api/v1
-VITE_WS_URL=ws://localhost:8000
+# Create frontend .env.local (always write to keep ports in sync)
+cat > "$ROOT_DIR/frontend/workstation/.env.local" << 'EOF'
+VITE_API_URL=http://localhost:8001/api/v1
+VITE_WS_URL=ws://localhost:8001
 EOF
 ok "Frontend .env.local ready"
 

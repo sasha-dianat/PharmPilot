@@ -49,7 +49,7 @@ export default function CouncilReport({ prescriptionId, patientId, pharmacyId }:
     setStatus('loading')
 
     const token = localStorage.getItem('access_token') || ''
-    const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'
+    const API = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1'
     const url = `${API}/pharmacy/council/stream?prescription_id=${prescriptionId}&patient_id=${patientId}`
 
     const es = new EventSource(url)

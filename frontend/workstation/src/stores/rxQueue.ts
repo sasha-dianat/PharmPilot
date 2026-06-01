@@ -136,7 +136,7 @@ export function useRxQueueWebSocket(pharmacyId: string) {
   const { setQueue, setWsConnected, setIncomingPatient, updateRxInQueue } = useRxQueueStore()
 
   const connect = () => {
-    const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+    const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8001'
     const ws = new WebSocket(`${WS_URL}/api/v1/prescriptions/queue/ws/${pharmacyId}`)
     const bioWs = new WebSocket(`${WS_URL}/api/v1/biometric/stream/${pharmacyId}/counter`)
 
