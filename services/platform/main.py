@@ -73,7 +73,7 @@ def create_app() -> FastAPI:
     from services.platform.routers import (
         auth, patients, prescriptions, adjudication,
         inventory, biometric, audio, clinical_brain, analytics, knowledge,
-        vault, phase32,
+        vault, phase32, clinical_services,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -86,7 +86,8 @@ def create_app() -> FastAPI:
     app.include_router(clinical_brain.router,prefix="/api/v1/clinical",      tags=["clinical"])
     app.include_router(knowledge.router,     prefix="/api/v1/knowledge",     tags=["knowledge"])
     app.include_router(analytics.router,     prefix="/api/v1/analytics",     tags=["analytics"])
-    app.include_router(vault.router,         prefix="/api/v1/vault",         tags=["evidence vault"])
+    app.include_router(vault.router,            prefix="/api/v1/vault",            tags=["evidence vault"])
+    app.include_router(clinical_services.router,prefix="/api/v1/clinical-services",tags=["clinical services"])
     app.include_router(phase32.router,       prefix="/api/v1/pharmacy",      tags=["pharmacy journey"])
 
     @app.get("/health")

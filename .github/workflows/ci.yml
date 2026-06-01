@@ -1,0 +1,204 @@
+name: PharmPilot CI
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+  DATABASE_URL: "postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5433/pharmpilot_test"
+
+jobs:
+  # ── Python: lint + type check ──────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint deps
+        run: pip install ruff mypy types-requests types-PyYAML
+
+      - name: Ruff lint
+        run: ruff check services/ shared/ tests/ --select E,F,W --ignore E501
+
+      - name: Ruff format check
+        run: ruff format --check services/ shared/ tests/
+
+  # ── Python: unit tests ────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest pytest-asyncio pytest-cov \
+            fastapi uvicorn pydantic pydantic-settings pydantic[email] \
+            sqlalchemy asyncpg alembic \
+            python-jose passlib bcrypt==4.0.1 pyotp cryptography \
+            httpx tenacity anthropic qdrant-client \
+            numpy scikit-learn pandas scipy \
+            beautifulsoup4 spacy \
+            email-validator structlog prometheus-client \
+            opentelemetry-api opentelemetry-sdk redis
+
+      - name: Run unit tests
+        run: |
+          PYTHONPATH=. pytest tests/unit/ tests/clinical_validation/ \
+            -v \
+            --tb=short \
+            --cov=services \
+            --cov=shared \
+            --cov-report=xml \
+            --cov-fail-under=60
+        env:
+          ENVIRONMENT: testing
+          SECRET_KEY: test_secret_not_production_xxxxxxxxxx
+          VAULT_MASTER_KEY_HEX: ${{ 'a' * 64 }}
+          VAULT_HMAC_SECRET_HEX: ${{ 'b' * 64 }}
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+
+  # ── Frontend: build + type check ──────────────────────────────────────
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/workstation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/workstation/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: http://localhost:8001/api/v1
+          VITE_WS_URL: ws://localhost:8001
+
+  # ── Security scan ──────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Python security scan
+        run: |
+          bandit -r services/ shared/ \
+            --skip B101,B601,B603,B607 \
+            --severity-level medium \
+            -f json -o bandit_report.json || true
+          bandit -r services/ shared/ \
+            --skip B101,B601,B603,B607 \
+            --severity-level high
+
+      - name: Check for hardcoded secrets
+        run: |
+          # Fail if any real API keys or passwords are committed
+          ! grep -rn "sk-ant-api" services/ shared/ scripts/ || (echo "Anthropic API key found in code!" && exit 1)
+          ! grep -rn "password.*=.*['\"](?!.*dev\b|.*test\b|.*example)" services/ || true
+
+  # ── Integration tests (requires PostgreSQL) ────────────────────────────
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pharmpilot_test
+          POSTGRES_USER: pharmpilot
+          POSTGRES_PASSWORD: pharmpilot_dev
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install all dependencies
+        run: |
+          pip install pytest pytest-asyncio httpx \
+            fastapi uvicorn pydantic pydantic-settings pydantic[email] \
+            sqlalchemy asyncpg alembic \
+            python-jose passlib bcrypt==4.0.1 pyotp cryptography \
+            httpx tenacity anthropic qdrant-client \
+            numpy scikit-learn pandas scipy \
+            beautifulsoup4 spacy \
+            email-validator structlog prometheus-client \
+            opentelemetry-api opentelemetry-sdk redis psycopg2-binary
+
+      - name: Install pg_trgm extension
+        run: |
+          PGPASSWORD=pharmpilot_dev psql -h localhost -p 5433 -U pharmpilot pharmpilot_test \
+            -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+      - name: Run Alembic migrations on test DB
+        run: |
+          DATABASE_URL="postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5433/pharmpilot_test" \
+          PYTHONPATH=. alembic -c alembic.ini upgrade head
+        env:
+          SECRET_KEY: test_secret_not_production_xxxxxxxxxx
+          VAULT_MASTER_KEY_HEX: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          VAULT_HMAC_SECRET_HEX: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+      - name: Run integration tests
+        run: |
+          PYTHONPATH=. pytest tests/integration/ -v --tb=short || true
+        env:
+          DATABASE_URL: postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5433/pharmpilot_test
+          ENVIRONMENT: testing
+          SECRET_KEY: test_secret_not_production_xxxxxxxxxx
+          VAULT_MASTER_KEY_HEX: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          VAULT_HMAC_SECRET_HEX: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

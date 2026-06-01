@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "PharmPilot",
+    "slug": "pharmpilot-patient",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "pharmpilot",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1e3a5f"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "ai.pharmpilot.patient",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Scan prescription barcodes",
+        "NSFaceIDUsageDescription": "Authenticate with Face ID for secure access",
+        "NSPhotoLibraryUsageDescription": "Upload prescription photos"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1e3a5f"
+      },
+      "package": "ai.pharmpilot.patient",
+      "permissions": [
+        "CAMERA",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      ["expo-local-authentication", { "faceIDPermission": "Authenticate with Face ID" }],
+      ["expo-notifications", {
+        "icon": "./assets/notification-icon.png",
+        "color": "#1e3a5f",
+        "sounds": ["./assets/notification.wav"]
+      }]
+    ],
+    "experiments": { "typedRoutes": true }
+  }
+}
