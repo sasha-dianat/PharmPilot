@@ -167,7 +167,7 @@ class RxStateEvent(AuditedBase):
     triggered_by_id: Mapped[UUID | None] = mapped_column(nullable=True)
     triggered_by_type: Mapped[str] = mapped_column(String(30), default="staff")  # staff, system, ai
     reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    event_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 for tamper evidence
 
     prescription: Mapped["Prescription"] = relationship(back_populates="state_events")

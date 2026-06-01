@@ -3,7 +3,13 @@
     "allow": [
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(pip install *)",
+      "Bash(alembic init *)",
+      "Bash(PYTHONPATH=. alembic -c alembic.ini revision --autogenerate -m \"initial_schema\")",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(PYTHONPATH=. alembic -c alembic.ini revision --autogenerate -m \"initial_schema\" --rev-id 0001)",
+      "Bash(PYTHONPATH=. DATABASE_URL=\"sqlite+aiosqlite:///./test.db\" alembic -c alembic.ini revision --autogenerate -m \"initial_schema\")"
     ]
   }
 }
