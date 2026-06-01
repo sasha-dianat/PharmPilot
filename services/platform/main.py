@@ -14,6 +14,21 @@ from services.platform.config import settings
 from services.platform.database import engine
 from shared.models.base import Base
 
+# Import ALL models here so SQLAlchemy's mapper registry resolves every
+# relationship string reference before the first request is handled.
+from shared.models.pharmacy import Pharmacy  # noqa: F401
+from shared.models.prescriber import Prescriber  # noqa: F401
+from shared.models.auth import Staff, StaffSession  # noqa: F401
+from shared.models.patient import Patient, PatientAllergy, LabResult, ClinicalNote  # noqa: F401
+from shared.models.insurance import PatientInsurance, InsurancePlan  # noqa: F401
+from shared.models.prescription import Prescription, PrescriptionFill, DURAlert, RxStateEvent  # noqa: F401
+from shared.models.claims import ClaimTransaction, ERA835Record, DIRFeeAdjustment  # noqa: F401
+from shared.models.inventory import (  # noqa: F401
+    DrugProduct, InventoryLot, StockLevel, PurchaseOrder, PurchaseOrderLine, ReceivingRecord
+)
+from shared.models.biometric import BiometricIdentity, PharmacyVisit, SecurityEvent  # noqa: F401
+from shared.models.audio import AudioTranscript, ProfileEnrichmentAction  # noqa: F401
+
 logger = structlog.get_logger()
 
 

@@ -1,142 +1,180 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # =============================================================================
-#  PharmPilot — PostgreSQL Setup (handles multiple PG installations on macOS)
-#  Scenario A: Homebrew PostgreSQL (typical dev setup)
-#  Scenario B: EDB PostgreSQL (installer-based, runs as postgres user)
-#  Scenario C: Both installed (use Homebrew on port 5433 or configure EDB)
+#  PharmPilot — PostgreSQL Setup
+#  POSIX sh — works on macOS bash 3.2, zsh, sh. No bash 4+ features.
+#
+#  Strategy: creates a dedicated PharmPilot PostgreSQL cluster at
+#  ~/.pharmpilot/pgdata on port 5433. Runs as your user — no passwords,
+#  no sudo, no conflict with any existing PostgreSQL installation.
 # =============================================================================
-set -euo pipefail
-CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-log()  { echo -e "${CYAN}[pg]${NC}   $1"; }
-ok()   { echo -e "${GREEN}[ ok]${NC}  $1"; }
-warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
-err()  { echo -e "${RED}[err]${NC}  $1"; exit 1; }
+GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+log()  { printf "${CYAN}[pg]${NC}   %s\n" "$1"; }
+ok()   { printf "${GREEN}[ ok]${NC}  %s\n" "$1"; }
+warn() { printf "${YELLOW}[warn]${NC} %s\n" "$1"; }
+err()  { printf "${RED}[err]${NC}  %s\n" "$1"; exit 1; }
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PGDATA_BREW="/usr/local/var/postgresql@16"
-PG_BREW_BIN="/usr/local/opt/postgresql@16/bin"
-EDB_BIN="/Library/PostgreSQL/16/bin"
 
-# ── Detect situation ──────────────────────────────────────────────────────
-EDB_RUNNING=false
-BREW_RUNNING=false
-
-if pgrep -x postgres >/dev/null 2>&1; then
-  PG_PROC=$(ps aux | grep "postgres -D" | grep -v grep | awk '{print $NF}' | head -1)
-  if [[ "$PG_PROC" == *"Library/PostgreSQL"* ]]; then
-    EDB_RUNNING=true
-    log "EDB PostgreSQL detected running on port 5432"
-  elif [[ "$PG_PROC" == *"homebrew"* ]] || [[ "$PG_PROC" == *"/usr/local/var"* ]]; then
-    BREW_RUNNING=true
-    log "Homebrew PostgreSQL detected"
-  fi
-fi
-
-# ── Strategy: Start Homebrew PG on port 5433 if EDB occupies 5432 ─────────
-PG_PORT=5432
-PG_URL_HOST="127.0.0.1"
-
-if $EDB_RUNNING; then
-  warn "EDB PostgreSQL occupies port 5432."
-  warn "Two options:"
-  echo ""
-  echo "  OPTION A (Recommended): Enter your EDB postgres password to create the pharmpilot DB"
-  echo "    The password was set during EDB installer. Check pgAdmin 4 for the password."
-  echo ""
-  echo "  OPTION B: Use Homebrew PostgreSQL on port 5433 alongside EDB"
-  echo ""
-  read -p "  Choose [A/B]: " CHOICE
-  CHOICE="${CHOICE:-A}"
-
-  if [[ "${CHOICE^^}" == "A" ]]; then
-    # Use EDB — ask for password
-    echo ""
-    read -s -p "  Enter postgres superuser password: " PGPASSWORD
-    echo ""
-    export PGPASSWORD
-    PG_CMD="$EDB_BIN/psql -h 127.0.0.1 -U postgres"
-
-    # Test connection
-    $PG_CMD -c "SELECT 'ok'" postgres >/dev/null 2>&1 || err "Wrong password. Try pgAdmin 4 to verify your postgres password."
-    ok "Connected to EDB PostgreSQL"
-
-    # Create user and db
-    $PG_CMD -tc "SELECT 1 FROM pg_roles WHERE rolname='pharmpilot'" postgres | grep -q 1 || \
-      $PG_CMD -c "CREATE USER pharmpilot WITH PASSWORD 'pharmpilot_dev' CREATEDB;" postgres
-    $PG_CMD -tc "SELECT 1 FROM pg_database WHERE datname='pharmpilot'" postgres | grep -q 1 || \
-      $PG_CMD -c "CREATE DATABASE pharmpilot OWNER pharmpilot;" postgres
-    PGPASSWORD="pharmpilot_dev" $EDB_BIN/psql -h 127.0.0.1 -U pharmpilot -d pharmpilot \
-      -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null 2>&1
-    ok "pharmpilot DB ready on EDB PostgreSQL"
-    PG_PORT=5432
-    PG_URL_HOST="127.0.0.1"
-
-  else
-    # Option B: Homebrew on 5433
-    PG_PORT=5433
-    log "Setting up Homebrew PostgreSQL on port 5433..."
-
-    # Initialise if needed
-    if [[ ! -d "$PGDATA_BREW" ]]; then
-      "$PG_BREW_BIN/initdb" --locale=en_US.UTF-8 --encoding=UTF8 -D "$PGDATA_BREW"
+# ── Find initdb / pg_ctl / psql ────────────────────────────────────────────
+find_pg_bin() {
+  for dir in \
+    "/usr/local/opt/postgresql@16/bin" \
+    "/opt/homebrew/opt/postgresql@16/bin" \
+    "/Library/PostgreSQL/16/bin" \
+    "/usr/lib/postgresql/16/bin" \
+    "/usr/local/bin"; do
+    if [ -f "$dir/initdb" ]; then
+      printf "%s" "$dir"
+      return 0
     fi
+  done
+  err "Cannot find PostgreSQL binaries. Run: brew install postgresql@16"
+}
 
-    # Modify port in postgresql.conf
-    sed -i '' "s/#port = 5432/port = 5433/" "$PGDATA_BREW/postgresql.conf" 2>/dev/null || true
-    sed -i '' "s/port = 5432/port = 5433/" "$PGDATA_BREW/postgresql.conf" 2>/dev/null || true
+PG_BIN=$(find_pg_bin)
+log "PostgreSQL binaries: $PG_BIN"
 
-    # Start on port 5433
-    "$PG_BREW_BIN/pg_ctl" status -D "$PGDATA_BREW" >/dev/null 2>&1 || \
-      "$PG_BREW_BIN/pg_ctl" start -D "$PGDATA_BREW" -l "$PGDATA_BREW/server.log" -w
-    sleep 2
+# Dedicated cluster — no conflict with EDB or any other PG
+PHARMPILOT_PGDATA="$HOME/.pharmpilot/pgdata"
+PHARMPILOT_LOG="$HOME/.pharmpilot/postgres.log"
+PG_PORT=5433
+PG_SOCK_DIR="$HOME/.pharmpilot"
+PG_USER="$(whoami)"
+PG_APP_USER="pharmpilot"
+PG_APP_PASS="pharmpilot_dev"
+PG_DB="pharmpilot"
 
-    # Create user and db
-    PG_CMD="$PG_BREW_BIN/psql -h 127.0.0.1 -p 5433 -U $(whoami)"
-    $PG_CMD -tc "SELECT 1 FROM pg_roles WHERE rolname='pharmpilot'" postgres | grep -q 1 || \
-      $PG_CMD -c "CREATE USER pharmpilot WITH PASSWORD 'pharmpilot_dev' CREATEDB;" postgres
-    $PG_CMD -tc "SELECT 1 FROM pg_database WHERE datname='pharmpilot'" postgres | grep -q 1 || \
-      $PG_CMD -c "CREATE DATABASE pharmpilot OWNER pharmpilot;" postgres
-    PGPASSWORD="pharmpilot_dev" "$PG_BREW_BIN/psql" -h 127.0.0.1 -p 5433 -U pharmpilot -d pharmpilot \
-      -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null 2>&1
-    ok "pharmpilot DB ready on Homebrew PostgreSQL port 5433"
-    PG_URL_HOST="127.0.0.1"
-  fi
+mkdir -p "$HOME/.pharmpilot"
 
-else
-  # Only Homebrew — standard setup
-  log "Setting up Homebrew PostgreSQL on port 5432..."
-
-  if [[ ! -d "$PGDATA_BREW" ]]; then
-    "$PG_BREW_BIN/initdb" --locale=en_US.UTF-8 --encoding=UTF8 -D "$PGDATA_BREW"
-  fi
-
-  "$PG_BREW_BIN/pg_ctl" status -D "$PGDATA_BREW" >/dev/null 2>&1 || {
-    "$PG_BREW_BIN/pg_ctl" start -D "$PGDATA_BREW" -l "$PGDATA_BREW/server.log" -w
-    sleep 2
-  }
-
-  PG_CMD="$PG_BREW_BIN/psql -U $(whoami)"
-  $PG_CMD -tc "SELECT 1 FROM pg_roles WHERE rolname='pharmpilot'" postgres | grep -q 1 || \
-    $PG_CMD -c "CREATE USER pharmpilot WITH PASSWORD 'pharmpilot_dev' CREATEDB;" postgres
-  $PG_CMD -tc "SELECT 1 FROM pg_database WHERE datname='pharmpilot'" postgres | grep -q 1 || \
-    $PG_CMD -c "CREATE DATABASE pharmpilot OWNER pharmpilot;" postgres
-  "$PG_BREW_BIN/psql" -U pharmpilot -d pharmpilot \
-    -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS pg_trgm;" >/dev/null 2>&1
-  ok "pharmpilot DB ready"
+# ── Stop any stale PharmPilot PG instance ─────────────────────────────────
+if [ -f "$PHARMPILOT_PGDATA/postmaster.pid" ]; then
+  log "Stopping stale PharmPilot PostgreSQL instance..."
+  LC_ALL=en_US.UTF-8 "$PG_BIN/pg_ctl" stop -D "$PHARMPILOT_PGDATA" -m fast > /dev/null 2>&1 || true
+  sleep 1
+  rm -f "$PHARMPILOT_PGDATA/postmaster.pid"
 fi
 
-# ── Write DATABASE_URL to .env ─────────────────────────────────────────────
-DB_URL="postgresql+asyncpg://pharmpilot:pharmpilot_dev@${PG_URL_HOST}:${PG_PORT}/pharmpilot"
+# ── Initialise cluster if not yet done ────────────────────────────────────
+if [ ! -f "$PHARMPILOT_PGDATA/PG_VERSION" ]; then
+  log "Initialising dedicated PharmPilot PostgreSQL cluster..."
+  log "  Data dir: $PHARMPILOT_PGDATA"
+
+  LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+    "$PG_BIN/initdb" \
+    --pgdata="$PHARMPILOT_PGDATA" \
+    --username="$PG_USER" \
+    --encoding=UTF8 \
+    --locale=en_US.UTF-8 \
+    --auth=trust \
+    > /dev/null 2>&1 \
+    || err "initdb failed. Check: $PG_BIN/initdb --version"
+
+  # Configure: port 5433, listen on 127.0.0.1 only, Unix socket in home dir
+  PGCONF="$PHARMPILOT_PGDATA/postgresql.conf"
+  printf "\nport = %s\n"                     "$PG_PORT"    >> "$PGCONF"
+  printf "listen_addresses = '127.0.0.1'\n"               >> "$PGCONF"
+  printf "unix_socket_directories = '%s'\n"  "$PG_SOCK_DIR" >> "$PGCONF"
+  printf "log_destination = 'stderr'\n"                   >> "$PGCONF"
+  printf "logging_collector = off\n"                      >> "$PGCONF"
+
+  # Allow all local connections without password (trust auth)
+  printf "# PharmPilot local auth\n"                       > "$PHARMPILOT_PGDATA/pg_hba.conf"
+  printf "local all all trust\n"                          >> "$PHARMPILOT_PGDATA/pg_hba.conf"
+  printf "host  all all 127.0.0.1/32 trust\n"            >> "$PHARMPILOT_PGDATA/pg_hba.conf"
+  printf "host  all all ::1/128      trust\n"             >> "$PHARMPILOT_PGDATA/pg_hba.conf"
+
+  ok "Cluster initialised"
+else
+  ok "Cluster already initialised at $PHARMPILOT_PGDATA"
+fi
+
+# ── Start the cluster (skip if already running) ────────────────────────────
+if "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -c "SELECT 1" postgres > /dev/null 2>&1; then
+  ok "PostgreSQL already running on port $PG_PORT"
+else
+  log "Starting PharmPilot PostgreSQL on port $PG_PORT..."
+  LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+    "$PG_BIN/pg_ctl" start \
+    -D "$PHARMPILOT_PGDATA" \
+    -l "$PHARMPILOT_LOG" \
+    -w \
+    -t 15 \
+    > /dev/null 2>&1 || {
+      # pg_ctl might return non-zero even when it started OK on some macOS versions.
+      # Verify by actually connecting before declaring failure.
+      sleep 2
+      "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -c "SELECT 1" postgres > /dev/null 2>&1 || {
+        printf "\nPostgreSQL failed to start. Last log lines:\n"
+        tail -10 "$PHARMPILOT_LOG" 2>/dev/null || true
+        err "pg_ctl start failed. Try: rm -f $PHARMPILOT_PGDATA/postmaster.pid and re-run."
+      }
+    }
+
+  # Final connection verification
+  "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -c "SELECT 1" postgres > /dev/null 2>&1 \
+    || err "Cannot connect on port $PG_PORT after start"
+
+  ok "PostgreSQL running on port $PG_PORT"
+fi
+
+# ── Create app user and database ──────────────────────────────────────────
+log "Creating app user '$PG_APP_USER'..."
+"$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -d postgres \
+  -tc "SELECT 1 FROM pg_roles WHERE rolname='$PG_APP_USER'" \
+  | grep -q 1 || \
+  "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -d postgres \
+    -c "CREATE USER $PG_APP_USER WITH PASSWORD '$PG_APP_PASS' CREATEDB;" \
+    > /dev/null
+ok "User '$PG_APP_USER' ready"
+
+log "Creating database '$PG_DB'..."
+"$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -d postgres \
+  -tc "SELECT 1 FROM pg_database WHERE datname='$PG_DB'" \
+  | grep -q 1 || \
+  "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -d postgres \
+    -c "CREATE DATABASE $PG_DB OWNER $PG_APP_USER;" \
+    > /dev/null
+ok "Database '$PG_DB' ready"
+
+log "Installing extensions..."
+"$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" \
+  -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS pg_trgm;" \
+  > /dev/null 2>&1
+ok "Extensions uuid-ossp, pg_trgm installed"
+
+# ── Write .env ────────────────────────────────────────────────────────────
+DB_URL="postgresql+asyncpg://${PG_APP_USER}:${PG_APP_PASS}@127.0.0.1:${PG_PORT}/${PG_DB}"
 ENV_FILE="$ROOT_DIR/.env"
 
-if [[ -f "$ENV_FILE" ]]; then
-  if grep -q "^DATABASE_URL" "$ENV_FILE"; then
-    sed -i '' "s|^DATABASE_URL=.*|DATABASE_URL=${DB_URL}|" "$ENV_FILE"
-  else
-    echo "DATABASE_URL=${DB_URL}" >> "$ENV_FILE"
-  fi
+if [ ! -f "$ENV_FILE" ]; then
+  cp "$ROOT_DIR/.env.example" "$ENV_FILE" 2>/dev/null || printf "" > "$ENV_FILE"
 fi
 
-ok "DATABASE_URL set to: $DB_URL"
-echo ""
-echo -e "  ${GREEN}PostgreSQL ready.${NC} Run: bash scripts/dev.sh"
+if grep -q "^DATABASE_URL" "$ENV_FILE"; then
+  sed -i.bak "s|^DATABASE_URL=.*|DATABASE_URL=${DB_URL}|" "$ENV_FILE"
+else
+  printf "\nDATABASE_URL=%s\n" "$DB_URL" >> "$ENV_FILE"
+fi
+
+# Also write the pg_bin path so dev.sh can use it
+if grep -q "^PHARMPILOT_PG_BIN" "$ENV_FILE"; then
+  sed -i.bak "s|^PHARMPILOT_PG_BIN=.*|PHARMPILOT_PG_BIN=${PG_BIN}|" "$ENV_FILE"
+else
+  printf "PHARMPILOT_PG_BIN=%s\n"   "$PG_BIN"           >> "$ENV_FILE"
+  printf "PHARMPILOT_PGDATA=%s\n"   "$PHARMPILOT_PGDATA" >> "$ENV_FILE"
+  printf "PHARMPILOT_PGPORT=%s\n"   "$PG_PORT"           >> "$ENV_FILE"
+  printf "PHARMPILOT_PGLOG=%s\n"    "$PHARMPILOT_LOG"    >> "$ENV_FILE"
+fi
+
+ok ".env updated"
+
+printf "\n"
+printf "${GREEN}╔════════════════════════════════════════════════════╗${NC}\n"
+printf "${GREEN}║  PostgreSQL setup complete!                        ║${NC}\n"
+printf "${GREEN}╚════════════════════════════════════════════════════╝${NC}\n"
+printf "\n"
+printf "  Cluster:     %s\n"  "$PHARMPILOT_PGDATA"
+printf "  Port:        %s\n"  "$PG_PORT"
+printf "  Database URL: %s\n" "$DB_URL"
+printf "\n"
+printf "  ${CYAN}Next step:${NC} bash scripts/setup_local.sh\n\n"

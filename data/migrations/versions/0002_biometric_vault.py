@@ -60,30 +60,33 @@ def upgrade() -> None:
         sa.Column("signature_hex", sa.String(64), nullable=False),
     )
 
-    # Append-only enforcement: deny UPDATE and DELETE on vault_access_log
-    op.execute("""
-        CREATE RULE vault_access_log_no_update AS
-            ON UPDATE TO vault_access_log DO INSTEAD NOTHING;
-        CREATE RULE vault_access_log_no_delete AS
-            ON DELETE TO vault_access_log DO INSTEAD NOTHING;
-    """)
+    # Append-only enforcement — one statement per op.execute() (asyncpg requirement)
+    op.execute(
+        "CREATE RULE vault_access_log_no_update AS "
+        "ON UPDATE TO vault_access_log DO INSTEAD NOTHING"
+    )
+    op.execute(
+        "CREATE RULE vault_access_log_no_delete AS "
+        "ON DELETE TO vault_access_log DO INSTEAD NOTHING"
+    )
 
-    # Legal-hold DELETE prevention on vault objects
+    # Legal-hold trigger — split into function creation + trigger creation
     op.execute("""
         CREATE OR REPLACE FUNCTION prevent_vault_delete_on_hold()
         RETURNS TRIGGER AS $$
         BEGIN
             IF OLD.legal_hold = true THEN
-                RAISE EXCEPTION 'Cannot delete biometric vault object under legal hold (id=%). Contact legal counsel.', OLD.id;
+                RAISE EXCEPTION 'Cannot delete vault object under legal hold (id=%). Contact legal counsel.', OLD.id;
             END IF;
             RETURN OLD;
         END;
-        $$ LANGUAGE plpgsql;
-
-        CREATE TRIGGER vault_legal_hold_guard
-            BEFORE DELETE ON biometric_vault_objects
-            FOR EACH ROW EXECUTE FUNCTION prevent_vault_delete_on_hold();
+        $$ LANGUAGE plpgsql
     """)
+    op.execute(
+        "CREATE TRIGGER vault_legal_hold_guard "
+        "BEFORE DELETE ON biometric_vault_objects "
+        "FOR EACH ROW EXECUTE FUNCTION prevent_vault_delete_on_hold()"
+    )
 
     # ── customer_identities (separates customer from patient) ─────────────
     # Phase 32: a customer who walks in may map to 0, 1, or multiple patients
