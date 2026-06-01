@@ -8,9 +8,23 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { useRxQueueStore, useRxQueueWebSocket } from './stores/rxQueue'
 import RxQueue from './components/RxQueue'
 import DURAlertPanel from './components/DURAlertPanel'
+import LoginPage from './components/LoginPage'
 import { rxApi, patientApi, clinicalApi } from './lib/api'
 
 const queryClient = new QueryClient()
+
+// ── Role badge colours ──────────────────────────────────────────────────────
+const ROLE_COLORS: Record<string, string> = {
+  super_admin: 'bg-purple-100 text-purple-800',
+  pharmacy_manager: 'bg-blue-100 text-blue-800',
+  pharmacist: 'bg-green-100 text-green-800',
+  pharmacy_technician: 'bg-yellow-100 text-yellow-700',
+  cashier: 'bg-gray-100 text-gray-700',
+}
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: 'Admin', pharmacy_manager: 'Manager',
+  pharmacist: 'Pharmacist', pharmacy_technician: 'Technician', cashier: 'Cashier',
+}
 
 function BiometricArrivalBanner() {
   const { incomingPatient, biometricMatchConfidence } = useRxQueueStore()
@@ -152,8 +166,15 @@ function VerificationPanel() {
 
 function WorkstationApp() {
   const { selectedRx, wsConnected } = useRxQueueStore()
-  const { connect } = useRxQueueWebSocket('demo-pharmacy-id')
+  const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
+  const userRole   = localStorage.getItem('user_role')   || ''
+  const { connect } = useRxQueueWebSocket(pharmacyId)
   useEffect(() => { const cleanup = connect(); return cleanup }, [])
+
+  const handleLogout = () => {
+    localStorage.clear()
+    window.location.reload()
+  }
   return (
     <div className="h-screen bg-gray-100 flex flex-col overflow-hidden">
       <div className="bg-white border-b px-4 py-2 flex items-center justify-between">
@@ -162,11 +183,22 @@ function WorkstationApp() {
           <span className="text-gray-300">|</span>
           <span className="text-sm text-gray-600">Dispensing Workstation</span>
         </div>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-3 text-sm">
+          {userRole && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${ROLE_COLORS[userRole] || 'bg-gray-100 text-gray-600'}`}>
+              {ROLE_LABELS[userRole] || userRole}
+            </span>
+          )}
           <span className={`flex items-center gap-1 ${wsConnected ? 'text-green-600' : 'text-red-500'}`}>
             <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />
             {wsConnected ? 'Live' : 'Reconnecting…'}
           </span>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded hover:bg-gray-100"
+          >
+            Sign out
+          </button>
         </div>
       </div>
       <div className="flex-1 flex overflow-hidden">
@@ -181,6 +213,23 @@ function WorkstationApp() {
   )
 }
 
+// ── Root: auth gate ─────────────────────────────────────────────────────────
 export default function App() {
-  return <QueryClientProvider client={queryClient}><WorkstationApp /></QueryClientProvider>
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(
+    () => !!localStorage.getItem('access_token')
+  )
+
+  if (!isLoggedIn) {
+    return (
+      <LoginPage
+        onLoginSuccess={() => setIsLoggedIn(true)}
+      />
+    )
+  }
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <WorkstationApp />
+    </QueryClientProvider>
+  )
 }

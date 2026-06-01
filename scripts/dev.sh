@@ -81,27 +81,39 @@ redis-cli -p 6379 ping 2>/dev/null | grep -q PONG \
 
 # ── 3. Qdrant ─────────────────────────────────────────────────────────────
 log "Checking Qdrant (port $QDRANT_PORT)..."
+QDRANT_CONFIG="$ROOT_DIR/.qdrant/config.yaml"
+
+# Write config file (Qdrant doesn't accept --storage-path or --http-port CLI flags)
+cat > "$QDRANT_CONFIG" << QDRANT_CONF
+storage:
+  storage_path: $QDRANT_STORAGE
+
+service:
+  host: 127.0.0.1
+  http_port: $QDRANT_PORT
+  grpc_port: $((QDRANT_PORT + 1))
+  enable_tls: false
+
+telemetry_disabled: true
+QDRANT_CONF
+
 if curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1; then
-  ok "Qdrant          → localhost:$QDRANT_PORT"
+  ok "Qdrant          → http://localhost:$QDRANT_PORT/dashboard"
 elif [ -f "$QDRANT_BIN" ]; then
   log "Starting Qdrant..."
-  "$QDRANT_BIN" \
-    --storage-path "$QDRANT_STORAGE" \
-    --http-port "$QDRANT_PORT" \
+  "$QDRANT_BIN" --config-path "$QDRANT_CONFIG" \
     > "$LOG_DIR/qdrant.log" 2>&1 &
   PIDS+=($!)
-  # Wait up to 8 seconds for Qdrant to be ready
-  for i in $(seq 1 8); do
+  for i in $(seq 1 10); do
     curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1 && break || sleep 1
   done
   curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1 \
-    && ok "Qdrant          → localhost:$QDRANT_PORT" \
-    || warn "Qdrant not yet ready — check $LOG_DIR/qdrant.log"
+    && ok "Qdrant          → http://localhost:$QDRANT_PORT/dashboard" \
+    || warn "Qdrant not ready — check $LOG_DIR/qdrant.log"
 else
   warn "Qdrant binary missing. Run: bash scripts/setup_local.sh"
 fi
 
-# Also update QDRANT_URL in env for the API process
 export QDRANT_URL="http://localhost:$QDRANT_PORT"
 
 # ── 4. Pending migrations ─────────────────────────────────────────────────
