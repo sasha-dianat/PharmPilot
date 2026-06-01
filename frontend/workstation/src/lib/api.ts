@@ -1,7 +1,8 @@
 /**
  * PharmPilot API client — typed wrappers for all backend endpoints.
  */
-import axios, { AxiosInstance } from 'axios'
+import axios from 'axios'
+import type { AxiosInstance } from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1'
 

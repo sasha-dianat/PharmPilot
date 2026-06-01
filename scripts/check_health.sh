@@ -28,8 +28,8 @@ redis-cli -p 6379 ping 2>/dev/null | grep -q PONG \
   || fail "Redis            :6379   NOT running  →  brew services start redis"
 
 # Qdrant
-curl -sf "http://localhost:$QDRANT_PORT/health" 2>/dev/null | grep -q "ok\|true\|status" \
-  && ok "Qdrant           :$QDRANT_PORT  running  → http://localhost:$QDRANT_PORT/dashboard" \
+curl -sf "http://localhost:$QDRANT_PORT/collections" 2>/dev/null | grep -q "collections\|result" \
+  && ok "Qdrant           :$QDRANT_PORT  running  → http://localhost:$QDRANT_PORT/collections (REST API)" \
   || fail "Qdrant           :$QDRANT_PORT  NOT running  (optional for non-AI use)"
 
 # FastAPI
