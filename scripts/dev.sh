@@ -37,6 +37,15 @@ QDRANT_BIN="$ROOT_DIR/.qdrant/qdrant"
 QDRANT_STORAGE="$ROOT_DIR/.qdrant/storage"
 mkdir -p "$QDRANT_STORAGE"
 
+# ── Kill stale PharmPilot processes from previous run ────────────────────
+log "Clearing stale processes on ports $API_PORT and $FRONTEND_PORT..."
+pkill -f "uvicorn services.platform.main" 2>/dev/null || true
+pkill -f "vite.*$FRONTEND_PORT"           2>/dev/null || true
+# Kill anything else occupying our ports
+lsof -ti ":$API_PORT"      2>/dev/null | xargs kill -9 2>/dev/null || true
+lsof -ti ":$FRONTEND_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
+sleep 1   # Give OS time to release ports
+
 # PID list for clean shutdown
 PIDS=()
 cleanup() {
