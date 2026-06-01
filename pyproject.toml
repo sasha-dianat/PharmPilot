@@ -37,7 +37,6 @@ onnxruntime = "^1.18.0"
 
 # Audio Processing
 pyaudio = "^0.2.14"
-numpy = "^1.26.0"
 librosa = "^0.10.2"
 soundfile = "^0.12.1"
 webrtcvad = "^2.0.10"
