@@ -1,0 +1,218 @@
+name: PharmPilot Deploy
+
+on:
+  push:
+    branches:
+      - main      # → production
+      - develop   # → staging
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  # ── Build & push Docker images ─────────────────────────────────────────
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ env.IMAGE_TAG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push API image
+        run: |
+          docker build -f infrastructure/docker/Dockerfile.api \
+            -t $ECR_REGISTRY/pharmpilot-api:$IMAGE_TAG \
+            -t $ECR_REGISTRY/pharmpilot-api:latest .
+          docker push $ECR_REGISTRY/pharmpilot-api:$IMAGE_TAG
+          docker push $ECR_REGISTRY/pharmpilot-api:latest
+
+      - name: Build & push Audio image
+        run: |
+          docker build -f infrastructure/docker/Dockerfile.audio \
+            -t $ECR_REGISTRY/pharmpilot-audio:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/pharmpilot-audio:$IMAGE_TAG
+
+      - name: Build & push Frontend
+        working-directory: frontend/workstation
+        env:
+          VITE_API_URL: ${{ github.ref == 'refs/heads/main' && secrets.PROD_API_URL || secrets.STAGING_API_URL }}
+        run: |
+          npm ci
+          npm run build
+          # Upload built assets to S3 (served via CloudFront)
+          aws s3 sync dist/ s3://pharmpilot-frontend-${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }} \
+            --delete \
+            --cache-control "max-age=31536000,immutable" \
+            --exclude "index.html"
+          aws s3 cp dist/index.html \
+            s3://pharmpilot-frontend-${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}/index.html \
+            --cache-control "no-cache,no-store,must-revalidate"
+          # Invalidate CloudFront cache
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ github.ref == 'refs/heads/main' && secrets.PROD_CF_DISTRIBUTION || secrets.STAGING_CF_DISTRIBUTION }} \
+            --paths "/*"
+
+  # ── Run tests before deploy ────────────────────────────────────────────
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    needs: []  # Run in parallel with build
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pharmpilot_test
+          POSTGRES_USER: pharmpilot
+          POSTGRES_PASSWORD: pharmpilot_dev
+        ports: ["5433:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - name: Install dependencies
+        run: pip install pytest pytest-asyncio httpx fastapi uvicorn pydantic pydantic-settings pydantic[email] sqlalchemy asyncpg alembic python-jose passlib bcrypt==4.0.1 cryptography structlog prometheus-client opentelemetry-api opentelemetry-sdk numpy scikit-learn pyotp email-validator
+      - name: Run migrations
+        run: DATABASE_URL="postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5433/pharmpilot_test" PYTHONPATH=. alembic upgrade head
+        env:
+          SECRET_KEY: test_key_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          VAULT_MASTER_KEY_HEX: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          VAULT_HMAC_SECRET_HEX: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      - name: Run all tests
+        run: PYTHONPATH=. pytest tests/ -v --tb=short --cov=services --cov=shared --cov-fail-under=65
+        env:
+          DATABASE_URL: postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5433/pharmpilot_test
+          ENVIRONMENT: testing
+          SECRET_KEY: test_key_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          VAULT_MASTER_KEY_HEX: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          VAULT_HMAC_SECRET_HEX: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+  # ── Deploy to staging ─────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Run DB migrations (staging)
+        run: |
+          aws ecs run-task \
+            --cluster pharmpilot-staging \
+            --task-definition pharmpilot-migrate \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.STAGING_SUBNET_IDS }}],securityGroups=[${{ secrets.STAGING_SG_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}'
+
+      - name: Deploy ECS services (staging)
+        run: |
+          aws ecs update-service \
+            --cluster pharmpilot-staging \
+            --service pharmpilot-api \
+            --force-new-deployment \
+            --task-definition pharmpilot-api:$(aws ecs describe-task-definition --task-definition pharmpilot-api --query 'taskDefinition.revision' --output text)
+
+      - name: Wait for stable deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster pharmpilot-staging \
+            --services pharmpilot-api
+
+      - name: Smoke test staging
+        run: |
+          sleep 15
+          STATUS=$(curl -sf https://staging-api.pharmpilot.ai/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','fail'))")
+          [ "$STATUS" = "ok" ] || (echo "Staging health check failed" && exit 1)
+
+  # ── Deploy to production (requires approval) ──────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, test]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://app.pharmpilot.ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Run DB migrations (production)
+        run: |
+          aws ecs run-task \
+            --cluster pharmpilot-production \
+            --task-definition pharmpilot-migrate \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.PROD_SUBNET_IDS }}],securityGroups=[${{ secrets.PROD_SG_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["alembic","upgrade","head"]}]}'
+
+      - name: Blue-green deploy API (production)
+        run: |
+          # Register new task definition with updated image
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition pharmpilot-api \
+            --query 'taskDefinition' | \
+            python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          for c in d['containerDefinitions']:
+              if c['name'] == 'api':
+                  c['image'] = '$ECR_REGISTRY/pharmpilot-api:$IMAGE_TAG'
+          # Remove non-registration fields
+          for key in ['taskDefinitionArn','revision','status','requiresAttributes','compatibilities','registeredAt','registeredBy']:
+              d.pop(key, None)
+          print(json.dumps(d))
+          ")
+          NEW_REV=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.revision' --output text)
+
+          # Update service with new task definition (ECS handles rolling deployment)
+          aws ecs update-service \
+            --cluster pharmpilot-production \
+            --service pharmpilot-api \
+            --task-definition "pharmpilot-api:$NEW_REV" \
+            --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200"
+
+      - name: Wait for stable production deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster pharmpilot-production \
+            --services pharmpilot-api
+          echo "Production deployment stable"
+
+      - name: Verify production health
+        run: |
+          sleep 30
+          STATUS=$(curl -sf https://api.pharmpilot.ai/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','fail'))")
+          [ "$STATUS" = "ok" ] || (echo "PRODUCTION HEALTH CHECK FAILED" && exit 1)
+          echo "Production health verified: $STATUS"
+
+      - name: Notify deployment success
+        if: always()
+        run: |
+          echo "Production deployment ${{ job.status }}: pharmpilot-api @ $IMAGE_TAG"

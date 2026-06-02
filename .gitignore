@@ -19,3 +19,4 @@ venv/
 htmlcov/
 .coverage
 node_modules/
+dump.rdb

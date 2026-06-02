@@ -76,6 +76,21 @@ services:
     environment:
       QDRANT__SERVICE__GRPC_PORT: 6334
 
+
+  # ── Graph Database (Neo4j) ─────────────────────────────────────
+  neo4j:
+    image: neo4j:5.19-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/pharmpilot_graph
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
   # ── Core API ───────────────────────────────────────────────────
   api:
     build:
@@ -214,4 +229,6 @@ volumes:
   biometric_index:
   clinical_models:
   ml_models:
+  neo4j_data:
+  neo4j_logs:
   qdrant_data:
