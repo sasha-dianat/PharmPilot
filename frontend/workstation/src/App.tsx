@@ -9,6 +9,7 @@ import { useRxQueueStore, useRxQueueWebSocket } from './stores/rxQueue'
 import RxQueue from './components/RxQueue'
 import DURAlertPanel from './components/DURAlertPanel'
 import LoginPage from './components/LoginPage'
+import DashboardShell from './DashboardShell'
 import { rxApi, patientApi, clinicalApi } from './lib/api'
 
 const queryClient = new QueryClient()
@@ -169,11 +170,17 @@ function WorkstationApp() {
   const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
   const userRole   = localStorage.getItem('user_role')   || ''
   const { connect } = useRxQueueWebSocket(pharmacyId)
+  const [showDashboard, setShowDashboard] = useState(false)
   useEffect(() => { const cleanup = connect(); return cleanup }, [])
 
   const handleLogout = () => {
     localStorage.clear()
     window.location.reload()
+  }
+
+  // Show dashboard shell if requested
+  if (showDashboard) {
+    return <DashboardShell onExitDashboard={() => setShowDashboard(false)} />
   }
   return (
     <div className="h-screen bg-gray-100 flex flex-col overflow-hidden">
@@ -193,6 +200,12 @@ function WorkstationApp() {
             <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />
             {wsConnected ? 'Live' : 'Reconnecting…'}
           </span>
+          <button
+            onClick={() => setShowDashboard(true)}
+            className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-500 font-medium"
+          >
+            📊 Dashboards
+          </button>
           <button
             onClick={handleLogout}
             className="text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded hover:bg-gray-100"
