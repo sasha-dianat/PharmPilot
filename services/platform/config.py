@@ -62,7 +62,13 @@ class Settings(BaseSettings):
     AMERISOURCE_API_KEY: str = ""
 
     # Allowed origins for CORS
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3001", "http://localhost:5173"]
+    ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:3001",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:4173",  # vite preview
+    ]
 
     # Monitoring
     SENTRY_DSN: str = ""

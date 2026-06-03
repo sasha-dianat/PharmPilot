@@ -4,8 +4,9 @@
     {
       "name": "workstation",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "3001", "--host"],
+      "runtimeArgs": ["run", "dev", "--", "--host"],
       "port": 3001,
+      "autoPort": true,
       "cwd": "frontend/workstation"
     }
   ]
