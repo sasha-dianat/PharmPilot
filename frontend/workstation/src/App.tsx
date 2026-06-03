@@ -10,6 +10,7 @@ import RxQueue from './components/RxQueue'
 import DURAlertPanel from './components/DURAlertPanel'
 import LoginPage from './components/LoginPage'
 import DashboardShell from './DashboardShell'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { rxApi, patientApi, clinicalApi } from './lib/api'
 
 const queryClient = new QueryClient()
@@ -242,7 +243,9 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <WorkstationApp />
+      <ErrorBoundary label="Workstation">
+        <WorkstationApp />
+      </ErrorBoundary>
     </QueryClientProvider>
   )
 }

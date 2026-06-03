@@ -8,7 +8,8 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from './lib/api'
-import CommandCenter       from './dashboards/CommandCenter'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
 import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
@@ -188,9 +189,14 @@ export default function DashboardShell({ onExitDashboard }: Props) {
           {criticalAlerts > 0 && `Critical security alert: ${criticalAlerts} unresolved`}
         </div>
 
-        {/* Section content */}
+        {/* Section content — wrapped in ErrorBoundary per section */}
         <main className="flex-1 overflow-y-auto">
-          <ActiveComponent />
+          <ErrorBoundary
+            key={activeSection}
+            label={SECTIONS.find(s => s.id === activeSection)?.label}
+          >
+            <ActiveComponent />
+          </ErrorBoundary>
         </main>
       </div>
     </div>
