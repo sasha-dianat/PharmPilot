@@ -20,3 +20,6 @@ htmlcov/
 .coverage
 node_modules/
 dump.rdb
+
+# Qdrant local storage
+.qdrant/
