@@ -412,58 +412,41 @@ class HereditaryFamilyRiskSpecialist:
         patient: dict,
         family_patients: list[dict],
         db=None,
+        family_consent: bool = True,
     ) -> list[SpecialistFinding]:
-        findings = []
-        drug_lower = rx.get("drug_name", "").lower()
+        """
+        Delegate to the dedicated HereditaryRiskEngine, which cross-references the
+        prescribed drug against the patient's own AND linked-family inherited
+        conditions (G6PD/favism, HAE, long-QT, FH, warfarin sensitivity,
+        porphyria, thalassemia) plus single-gene pharmacogenomics — each with
+        explicit "based on relative" provenance. Consent-gated for family data.
+        """
+        from services.ai.clinical_brain.hereditary.engine import HereditaryRiskEngine
 
-        # Pharmacogenomic prompts
-        for drug_key, (gene, message) in self.HEREDITARY_DRUG_RISKS.items():
-            if drug_key in drug_lower:
-                pgx_data = patient.get("pharmacogenomics")
-                if not pgx_data:
-                    findings.append(SpecialistFinding(
-                        specialist=self.NAME,
-                        severity="counseling",
-                        message=(
-                            f"Pharmacogenomic consideration: {rx.get('drug_name')} response is influenced by {gene}. "
-                            f"{message}. "
-                            "Pharmacogenomic testing may be beneficial if not previously performed."
-                        ),
-                        drug_name=rx.get("drug_name"),
-                        evidence_source="CPIC Guidelines",
-                        evidence_grade="A",
-                    ))
+        engine = HereditaryRiskEngine()
+        hereditary = engine.evaluate(
+            drug_name=rx.get("drug_name", ""),
+            patient=patient,
+            family=family_patients,
+            family_consent=family_consent,
+        )
 
-        # Family hereditary conditions from linked patient profiles
-        if family_patients:
-            family_conditions = []
-            for fp in family_patients:
-                for diagnosis in fp.get("diagnoses", []):
-                    diag_lower = diagnosis.lower()
-                    hereditary_conditions = [
-                        "familial hypercholesterolemia", "diabetes", "hypertension",
-                        "breast cancer", "colon cancer", "heart disease", "stroke",
-                        "alzheimer", "parkinson", "hemophilia", "thalassemia",
-                    ]
-                    for hc in hereditary_conditions:
-                        if hc in diag_lower:
-                            family_conditions.append(
-                                f"{fp.get('relationship', 'family member')}: {diagnosis}"
-                            )
-
-            if family_conditions:
-                unique = list(set(family_conditions))[:5]
-                findings.append(SpecialistFinding(
-                    specialist=self.NAME,
-                    severity="counseling",
-                    message=(
-                        f"Family health history note: Linked family members have documented: "
-                        f"{', '.join(unique)}. "
-                        "This may be relevant context for patient counseling and preventive health discussions."
-                    ),
-                    evidence_grade="C",
-                ))
-
+        findings: list[SpecialistFinding] = []
+        for hf in hereditary:
+            # Surface provenance in the message so the pharmacist sees the basis.
+            prov_line = ""
+            if hf.provenance and hf.provenance != ["self"]:
+                prov_line = " [" + "; ".join(hf.provenance) + "]"
+            elif hf.provenance == ["self"]:
+                prov_line = " [patient's own documented status]"
+            findings.append(SpecialistFinding(
+                specialist=self.NAME,
+                severity=hf.severity,
+                message=hf.message + prov_line + " — For pharmacist review, not a diagnosis.",
+                drug_name=hf.drug_name,
+                evidence_source=hf.evidence_source,
+                evidence_grade=hf.evidence_grade,
+            ))
         return findings
 
 
@@ -625,37 +608,57 @@ class SpecialistCouncil:
         return ". ".join(parts) + "."
 
     async def _load_family_profiles(self, patient_id: UUID) -> list[dict]:
-        """Load profiles of linked family members from the database."""
+        """
+        Load linked family members via the untyped person-link graph (BFS),
+        each with their inherited conditions + diagnoses, so the hereditary
+        engine can cross-reference family history against the prescribed drug.
+        """
         if not self.db:
             return []
         try:
             from sqlalchemy import text
-            result = await self.db.execute(text("""
-                SELECT
-                    p.id, p.first_name, p.last_name, p.date_of_birth,
-                    cpl.relationship,
-                    (
-                        SELECT json_agg(cn.content)
-                        FROM clinical_notes cn
-                        WHERE cn.patient_id = p.id AND cn.note_type = 'condition'
-                    ) AS diagnoses
-                FROM customer_patient_links cpl
-                JOIN patients p ON p.id = cpl.patient_id
-                WHERE cpl.customer_id IN (
-                    SELECT cpl2.customer_id FROM customer_patient_links cpl2
-                    WHERE cpl2.patient_id = :patient_id
-                )
-                AND cpl.patient_id != :patient_id
-                AND p.is_deleted = false
-                LIMIT 10
-            """), {"patient_id": str(patient_id)})
-            rows = result.mappings().all()
+            from services.biometric.identity_resolution.person_links import (
+                PersonLinkGraph, patient_ref,
+            )
+            graph = PersonLinkGraph(self.db)
+            # full connected component, then keep linked patients (exclude self)
+            component = await graph.connected_component(patient_ref(patient_id), max_depth=3)
+            family_refs = [r for r in component if r.startswith("patient:")]
+            family_ids = [r.split(":", 1)[1] for r in family_refs
+                          if r.split(":", 1)[1] != str(patient_id)]
+            if not family_ids:
+                return []
+
+            # relationship hints from the link rows touching this patient
+            rel_rows = (await self.db.execute(text("""
+                SELECT person_a_ref, person_b_ref, relationship FROM person_links
+                WHERE person_a_ref = :self OR person_b_ref = :self
+            """), {"self": patient_ref(patient_id)})).mappings().all()
+            rel_map: dict[str, str] = {}
+            for row in rel_rows:
+                other = (row["person_b_ref"] if row["person_a_ref"] == patient_ref(patient_id)
+                         else row["person_a_ref"])
+                if other.startswith("patient:") and row["relationship"]:
+                    rel_map[other.split(":", 1)[1]] = row["relationship"]
+
+            rows = (await self.db.execute(text("""
+                SELECT p.id, p.first_name, p.last_name,
+                    (SELECT json_agg(cn.content) FROM clinical_notes cn
+                     WHERE cn.patient_id = p.id AND cn.note_type IN ('condition','diagnosis')) AS diagnoses,
+                    (SELECT json_agg(cn2.content) FROM clinical_notes cn2
+                     WHERE cn2.patient_id = p.id AND cn2.note_type = 'inherited_condition') AS inherited
+                FROM patients p
+                WHERE p.id = ANY(:ids) AND p.is_deleted = false
+                LIMIT 12
+            """), {"ids": family_ids})).mappings().all()
+
             return [
                 {
                     "patient_id": str(r["id"]),
                     "name": f"{r['first_name']} {r['last_name']}",
-                    "relationship": r["relationship"],
+                    "relationship": rel_map.get(str(r["id"]), "relative"),
                     "diagnoses": r["diagnoses"] or [],
+                    "inherited_conditions": r["inherited"] or [],
                 }
                 for r in rows
             ]
