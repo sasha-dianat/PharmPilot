@@ -14,7 +14,7 @@ from services.core.pharmacy_workflow.state_machine import (
     EPCSRequiredError, InvalidTransitionError, QueueOwnershipConflict, RxStateMachine
 )
 from shared.models.auth import Staff
-from shared.models.prescription import DURAlert, Prescription, RxStatus, RxStateEvent
+from shared.models.prescription import DURAlert, Prescription, PrescriptionFill, RxStatus, RxStateEvent
 
 router = APIRouter()
 
@@ -224,6 +224,44 @@ async def transition_prescription(
             triggered_by_id=staff.id,
             reason=body.reason,
         )
+
+        # Auto-create a PrescriptionFill record when entering adjudication —
+        # the NCPDP D.0 claim engine requires a fill record to adjudicate against.
+        if to_status == RxStatus.PENDING_ADJUDICATION:
+            from datetime import date as date_type
+            from uuid import uuid4 as _uuid4
+            from sqlalchemy import text as _text
+            # Use raw SQL to avoid ORM greenlet issues after state machine transaction
+            check = await db.execute(
+                _text("SELECT id FROM prescription_fills WHERE prescription_id = :pid LIMIT 1"),
+                {"pid": str(rx.id)}
+            )
+            if not check.scalar():
+                fill_id = str(_uuid4())
+                await db.execute(
+                    _text("""
+                        INSERT INTO prescription_fills
+                            (id, prescription_id, fill_number, ndc_dispensed,
+                             quantity_dispensed, days_supply, fill_date,
+                             dispensing_pharmacist_id, verifying_pharmacist_id,
+                             created_at, updated_at)
+                        VALUES
+                            (:id, :rx_id, 1, :ndc,
+                             :qty, :days, :today,
+                             :pharm_id, :pharm_id,
+                             NOW(), NOW())
+                    """),
+                    {
+                        "id":       fill_id,
+                        "rx_id":    str(rx.id),
+                        "ndc":      rx.ndc,
+                        "qty":      float(rx.quantity_prescribed),
+                        "days":     rx.days_supply,
+                        "today":    date_type.today(),
+                        "pharm_id": str(staff.id),
+                    }
+                )
+
         return {"status": "transitioned", "rx": rx_to_dict(rx)}
     except InvalidTransitionError as e:
         raise HTTPException(422, str(e))
@@ -317,6 +355,33 @@ async def get_dur_alerts(
             "evidence_grade": a.evidence_grade,
         }
         for a in alerts
+    ]
+
+
+@router.get("/{rx_id}/fills")
+async def get_rx_fills(
+    rx_id: UUID,
+    staff: Staff = Depends(require_permission("rx:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all fill records for a prescription (used by adjudication to get fill_id)."""
+    result = await db.execute(
+        select(PrescriptionFill)
+        .where(PrescriptionFill.prescription_id == rx_id)
+        .order_by(PrescriptionFill.fill_number)
+    )
+    fills = result.scalars().all()
+    return [
+        {
+            "id": str(f.id),
+            "prescription_id": str(f.prescription_id),
+            "fill_number": f.fill_number,
+            "ndc_dispensed": f.ndc_dispensed,
+            "quantity_dispensed": float(f.quantity_dispensed),
+            "days_supply": f.days_supply,
+            "fill_date": str(f.fill_date),
+        }
+        for f in fills
     ]
 
 
