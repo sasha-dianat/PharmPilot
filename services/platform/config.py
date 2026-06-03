@@ -46,6 +46,28 @@ class Settings(BaseSettings):
     FDB_API_KEY: str = ""
     MEDSPAN_API_KEY: str = ""
 
+    # ── Identity & localization ───────────────────────────────────────────────
+    # Default deployment is Iranian: national code (کد ملی) primary identifier,
+    # Jalali display calendar, Persian locale. Set to "american" to switch the
+    # primary identifier to SSN and use NCPDP/US insurance by default.
+    DEFAULT_IDENTITY_SYSTEM: Literal["iranian", "american"] = "iranian"
+    DEFAULT_LOCALE: str = "fa-IR"
+
+    # Iranian insurance / social-security adapters. Empty credentials → sandbox.
+    IRANIAN_INSURERS_ENABLED: list[str] = ["salamat", "tamin", "armed_forces", "supplementary"]
+    IRAN_SALAMAT_URL: str = ""
+    IRAN_SALAMAT_API_KEY: str = ""
+    IRAN_TAMIN_URL: str = ""
+    IRAN_TAMIN_API_KEY: str = ""
+    IRAN_ARMED_FORCES_URL: str = ""
+    IRAN_ARMED_FORCES_API_KEY: str = ""
+    IRAN_SUPPLEMENTARY_URL: str = ""
+    IRAN_SUPPLEMENTARY_API_KEY: str = ""
+
+    # Biometric customer archival (loyalty + medical-safety recognition)
+    BIOMETRIC_ARCHIVE_ENABLED: bool = True
+    BIOMETRIC_RECOGNITION_THRESHOLD: float = 0.86  # cosine sim for returning-customer match
+
     # Surescripts
     SURESCRIPTS_SENDER_ID: str = ""
     SURESCRIPTS_PASSWORD: str = ""
