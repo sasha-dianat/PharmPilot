@@ -80,6 +80,78 @@ async def ingest_pdf(
         os.unlink(tmp_path)
 
 
+@router.post("/ingest/docx", status_code=202)
+async def ingest_docx(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    language: str = Form("fa"),
+    collection: str = Form("owner_references"),
+    evidence_level: Optional[str] = Form(None),
+    specialty_tags: Optional[str] = Form(None),
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Owner-fed reference upload: a Word .docx (Iranian pharmacopeia monograph,
+    formulary, SOP). Persian-aware; tagged into the owner-reference corpus and
+    immediately searchable by the clinical brain.
+    """
+    import tempfile, os
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
+        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+        result = await pipeline.ingest_docx(
+            docx_path=tmp_path,
+            title=title or file.filename,
+            language=language,
+            collection=collection,
+            evidence_level=evidence_level,
+            specialty_tags=tags,
+        )
+        return {
+            "status": result["status"],
+            "source_id": result.get("source_id"),
+            "chunks_stored": result.get("chunks_stored", 0),
+            "message": f"Ingested {result.get('chunks_stored', 0)} chunks from {file.filename}.",
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
+class CrawlReferenceRequest(BaseModel):
+    start_url: str
+    max_pages: int = 200
+    same_domain_only: bool = True
+    language: str = "fa"
+    collection: str = "owner_references"
+
+
+@router.post("/ingest/crawl", status_code=202)
+async def crawl_reference_site(
+    body: CrawlReferenceRequest,
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Owner-fed reference crawler: point at a public Iranian pharmacopeia / formulary
+    site and BFS-ingest its pages into the owner-reference corpus. Same-domain by
+    default, rate-limited, Persian-aware.
+    """
+    pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+    result = await pipeline.crawl_site(
+        start_url=body.start_url,
+        max_pages=body.max_pages,
+        same_domain_only=body.same_domain_only,
+        language=body.language,
+        collection=body.collection,
+    )
+    return result
+
+
 @router.post("/ingest/url", status_code=202)
 async def ingest_url(
     url: str,

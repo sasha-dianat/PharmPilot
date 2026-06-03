@@ -11,7 +11,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from services.ai.knowledge_engine.parsers.document_parser import (
-    HTMLParser, PDFParser, PlainTextParser, PubMedParser, ParsedChunk
+    HTMLParser, PDFParser, PlainTextParser, PubMedParser, ParsedChunk, DOCXParser
 )
 from services.ai.knowledge_engine.vector_store import ClinicalVectorStore
 from services.ai.knowledge_engine.schema import SourceType
@@ -155,6 +155,122 @@ class KnowledgeIngestionPipeline:
                 "base_specialty_tags": specialty_tags or [],
             },
         )
+
+    async def ingest_docx(
+        self,
+        docx_path: str,
+        source_type: SourceType = SourceType.CUSTOM_DOCUMENT,
+        title: Optional[str] = None,
+        language: str = "fa",
+        collection: str = "owner_references",
+        evidence_level: Optional[str] = None,
+        specialty_tags: Optional[list] = None,
+    ) -> dict:
+        """
+        Ingest a Word .docx the owner uploads (Iranian pharmacopeia monograph,
+        formulary, SOP). Persian-aware. Tagged into the owner-reference corpus.
+        """
+        path = Path(docx_path)
+        title = title or path.stem.replace("_", " ").strip()
+        logger.info("Ingesting DOCX reference: %s (lang=%s)", title, language)
+        parser = DOCXParser()
+        chunks = parser.parse(docx_path)
+        if not chunks:
+            return {"status": "empty", "title": title}
+
+        source_id = str(uuid4())
+        return await self._process_chunks(
+            chunks=chunks,
+            source_id=source_id,
+            source_meta={
+                "source_id": source_id,
+                "source_title": title,
+                "source_type": source_type.value,
+                "language": language,
+                "collection": collection,
+                "evidence_level": evidence_level,
+                "base_specialty_tags": specialty_tags or [],
+            },
+        )
+
+    async def crawl_site(
+        self,
+        start_url: str,
+        max_pages: int = 200,
+        same_domain_only: bool = True,
+        language: str = "fa",
+        collection: str = "owner_references",
+        session_cookies: Optional[dict] = None,
+    ) -> dict:
+        """
+        Generic owner-fed reference crawler. BFS over links starting at start_url
+        (optionally constrained to the same domain), ingesting each HTML page into
+        the owner-reference corpus. Use for public Iranian pharmacopeia / formulary
+        sites the owner points us at. Polite (rate-limited, sets a UA).
+        """
+        import httpx
+        from urllib.parse import urljoin, urlparse
+        from bs4 import BeautifulSoup
+
+        root_domain = urlparse(start_url).netloc
+        seen: set[str] = set()
+        queue: list[str] = [start_url]
+        result = {"ingested": 0, "failed": 0, "pages_visited": 0}
+
+        headers = {"User-Agent": "PharmPilot-KnowledgeBot/1.0 (owner-fed references)"}
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True,
+                                     cookies=session_cookies or {}) as client:
+            while queue and result["pages_visited"] < max_pages:
+                url = queue.pop(0)
+                if url in seen:
+                    continue
+                seen.add(url)
+                result["pages_visited"] += 1
+                try:
+                    resp = await client.get(url, headers=headers)
+                    resp.raise_for_status()
+                    html = resp.text
+                except Exception as e:
+                    result["failed"] += 1
+                    logger.warning("crawl_site fetch failed %s: %s", url, e)
+                    continue
+
+                chunks = self.html_parser.parse(html, url)
+                if chunks:
+                    source_id = str(uuid4())
+                    ingest = await self._process_chunks(
+                        chunks=chunks,
+                        source_id=source_id,
+                        source_meta={
+                            "source_id": source_id,
+                            "source_title": self._extract_title_from_html(html) or url,
+                            "source_type": SourceType.WEB_CRAWL.value,
+                            "url": url,
+                            "language": language,
+                            "collection": collection,
+                        },
+                    )
+                    if ingest.get("status") == "complete":
+                        result["ingested"] += 1
+
+                # enqueue same-domain links
+                try:
+                    soup = BeautifulSoup(html, "html.parser")
+                    for a in soup.find_all("a", href=True):
+                        nxt = urljoin(url, a["href"]).split("#")[0]
+                        if nxt in seen:
+                            continue
+                        if same_domain_only and urlparse(nxt).netloc != root_domain:
+                            continue
+                        if nxt.startswith("http"):
+                            queue.append(nxt)
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)  # polite delay
+
+        logger.info("crawl_site done: %d ingested / %d visited",
+                    result["ingested"], result["pages_visited"])
+        return result
 
     async def ingest_url(
         self,

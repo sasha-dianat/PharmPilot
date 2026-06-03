@@ -139,6 +139,99 @@ class PDFParser:
         )
 
 
+class DOCXParser:
+    """
+    Parse Word .docx files — Iranian pharmacopeia references, formulary monographs,
+    internal SOPs the owner uploads. Uses python-docx when available, with a
+    zero-dependency fallback that reads word/document.xml directly from the zip.
+    Handles Persian (RTL) text natively (Unicode throughout).
+    """
+
+    def parse(self, docx_path: str) -> list[ParsedChunk]:
+        paragraphs = self._extract_paragraphs(docx_path)
+        if not paragraphs:
+            logger.warning("DOCX produced no text: %s", docx_path)
+            return []
+
+        chunker = TextChunker()
+        chunks: list[ParsedChunk] = []
+        current_section = None
+        buffer = ""
+
+        def flush(section):
+            nonlocal buffer
+            text = buffer.strip()
+            if not text:
+                return
+            produced = chunker.chunk(text, section)
+            if produced:
+                chunks.extend(produced)
+            else:
+                # Short reference monograph: emit directly so it is NOT dropped
+                # by the chunker's minimum-length floor (common for Persian refs).
+                chunks.append(ParsedChunk(content=text, section_title=section))
+            buffer = ""
+
+        for para in paragraphs:
+            text = para.strip()
+            if not text:
+                continue
+            if self._is_heading(text):
+                flush(current_section)
+                current_section = text
+            else:
+                buffer += " " + text
+        flush(current_section)
+
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("DOCX parsed: %d chunks from %s", len(chunks), docx_path)
+        return chunks
+
+    def _extract_paragraphs(self, docx_path: str) -> list[str]:
+        # Preferred: python-docx (also pulls table cell text).
+        try:
+            import docx  # python-docx
+            doc = docx.Document(docx_path)
+            paras = [p.text for p in doc.paragraphs]
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        paras.append(" | ".join(cells))
+            return paras
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning("python-docx failed (%s); trying raw XML fallback", e)
+
+        # Fallback: read word/document.xml from the .docx zip and strip tags.
+        try:
+            import zipfile
+            with zipfile.ZipFile(docx_path) as z:
+                xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
+            # paragraphs are <w:p>…</w:p>; text runs are <w:t>…</w:t>
+            paras = []
+            for p_match in re.findall(r"<w:p[ >].*?</w:p>", xml, re.DOTALL):
+                texts = re.findall(r"<w:t[^>]*>(.*?)</w:t>", p_match, re.DOTALL)
+                joined = "".join(texts)
+                joined = re.sub(r"<[^>]+>", "", joined)
+                if joined.strip():
+                    paras.append(joined)
+            return paras
+        except Exception as e:
+            logger.error("DOCX XML fallback failed for %s: %s", docx_path, e)
+            return []
+
+    def _is_heading(self, line: str) -> bool:
+        # Heading heuristics that also work for Persian (short line, ends with ':')
+        if len(line) > 120:
+            return False
+        return (line.endswith(":") or line.endswith("：") or
+                bool(re.match(r"^\d+[\.\-]\s*\S", line)) or
+                (line.isupper() and len(line.split()) <= 10))
+
+
 class HTMLParser:
     """
     Parse HTML pages — UpToDate, FDA drug labels, PubMed abstracts.
