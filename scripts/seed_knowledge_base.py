@@ -704,7 +704,7 @@ async def main(sources: list[str]):
 
     # Get initial count
     info = qdrant.get_collection(collection)
-    initial_count = info.vectors_count or 0
+    initial_count = getattr(info, 'vectors_count', None) or getattr(getattr(info, 'result', info), 'vectors_count', 0) or 0
     log.info("Initial Qdrant vector count: %d", initial_count)
 
     db_conn = await asyncpg.connect(DATABASE_URL)
@@ -730,7 +730,11 @@ async def main(sources: list[str]):
 
     # Final count
     info = qdrant.get_collection(collection)
-    final_count = info.vectors_count or 0
+    # Qdrant client v1.9+ uses points_count; older uses vectors_count
+    final_count = (getattr(info, 'vectors_count', None)
+                   or getattr(info, 'points_count', None)
+                   or getattr(getattr(info, 'result', type('',(),{'vectors_count':0})()), 'vectors_count', 0)
+                   or 0)
     new_vectors = final_count - initial_count
 
     print("\n" + "="*60)
