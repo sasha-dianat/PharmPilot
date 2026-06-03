@@ -73,7 +73,7 @@ def create_app() -> FastAPI:
     from services.platform.routers import (
         auth, patients, prescriptions, adjudication,
         inventory, biometric, audio, clinical_brain, analytics, knowledge,
-        vault, phase32, clinical_services, security_events, ai_hub,
+        vault, phase32, clinical_services, security_events, ai_hub, identity,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -91,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(phase32.router,         prefix="/api/v1/pharmacy",        tags=["pharmacy journey"])
     app.include_router(security_events.router, prefix="/api/v1/security",   tags=["security"])
     app.include_router(ai_hub.router,          prefix="/api/v1/ai",         tags=["AI hub"])
+    app.include_router(identity.router,        prefix="/api/v1/identity",   tags=["identity"])
 
     @app.get("/health")
     async def health_check():
