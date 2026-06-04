@@ -3,7 +3,7 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from services.platform.database import get_db
 from services.core.pharmacy_workflow.state_machine import (
     EPCSRequiredError, InvalidTransitionError, QueueOwnershipConflict, RxStateMachine
 )
+from services.core.pharmacy_workflow.intake_precompute import precompute_in_background
 from shared.models.auth import Staff
 from shared.models.prescription import DURAlert, Prescription, PrescriptionFill, RxStatus, RxStateEvent
 
@@ -70,6 +71,13 @@ def rx_to_dict(rx: Prescription) -> dict:
         "acb_safety_report": rx.acb_safety_report,
         "ai_risk_score": float(rx.ai_risk_score) if rx.ai_risk_score else None,
         "claimed_by_staff_id": str(rx.claimed_by_staff_id) if rx.claimed_by_staff_id else None,
+        # Precomputed at intake — ready before pharmacist opens the Rx
+        "triage_lane": getattr(rx, "triage_lane", None),
+        "triage_result": getattr(rx, "triage_result", None),
+        "council_cache": getattr(rx, "council_cache", None),
+        "council_computed_at": getattr(rx, "council_computed_at", None).isoformat()
+                               if getattr(rx, "council_computed_at", None) else None,
+        "intake_analysis_status": getattr(rx, "intake_analysis_status", "pending"),
         "created_at": rx.created_at.isoformat(),
         "updated_at": rx.updated_at.isoformat(),
     }
@@ -78,6 +86,7 @@ def rx_to_dict(rx: Prescription) -> dict:
 @router.post("", status_code=201)
 async def intake_prescription(
     body: RxIntakeRequest,
+    background_tasks: BackgroundTasks,
     staff: Staff = Depends(require_permission("rx:write")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -103,11 +112,7 @@ async def intake_prescription(
     db.add(rx)
     await db.flush()
 
-    # Trigger async tasks (in production these go to Kafka/Celery)
-    # 1. SIG NLP parsing
-    # 2. ACB clinical pre-scan
-    # 3. DUR check
-    # These run in background — Rx moves to PENDING_DUR status immediately
+    # Auto-advance to DUR queue
     await sm.transition(
         prescription_id=rx.id,
         to_status=RxStatus.PENDING_DUR,
@@ -115,6 +120,12 @@ async def intake_prescription(
         triggered_by_type="system",
         reason="Auto-advanced to DUR queue",
     )
+
+    # ── Fire precompute via FastAPI BackgroundTasks (reliable, post-response) ──
+    # Council + triage are computed after the HTTP response is returned; cached on
+    # the Rx so the pharmacist's review screen renders analysis instantly (no spinner).
+    rx_id_str = str(rx.id)
+    background_tasks.add_task(precompute_in_background, rx_id_str)
 
     return rx_to_dict(rx)
 
@@ -356,6 +367,52 @@ async def get_dur_alerts(
         }
         for a in alerts
     ]
+
+
+@router.get("/{rx_id}/analysis")
+async def get_rx_analysis(
+    rx_id: UUID,
+    staff: Staff = Depends(require_permission("rx:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return the precomputed council + triage for an Rx.
+    status=ready  → council_cache and triage_result are populated.
+    status=pending → still computing (retry in ~2 s).
+    status=failed  → precompute did not succeed; fall back to SSE council stream.
+    """
+    from sqlalchemy import text as _text
+    row = (await db.execute(
+        _text("""SELECT id, intake_analysis_status, triage_lane, triage_result,
+                        council_cache, council_computed_at
+                 FROM prescriptions WHERE id = :id"""),
+        {"id": str(rx_id)})).mappings().first()
+    if not row:
+        raise HTTPException(404, "Prescription not found")
+    return {
+        "rx_id": str(row["id"]),
+        "status": row["intake_analysis_status"],
+        "triage_lane": row["triage_lane"],
+        "triage_result": row["triage_result"],
+        "council_cache": row["council_cache"],
+        "council_computed_at": row["council_computed_at"].isoformat()
+                               if row["council_computed_at"] else None,
+    }
+
+
+@router.post("/{rx_id}/reanalyze")
+async def reanalyze_prescription(
+    rx_id: UUID,
+    background_tasks: BackgroundTasks,
+    staff: Staff = Depends(require_permission("rx:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Force a fresh precompute — e.g. after new labs, allergy, or family data arrive.
+    Returns immediately; call GET /{rx_id}/analysis to poll for the result.
+    """
+    background_tasks.add_task(precompute_in_background, str(rx_id))
+    return {"status": "triggered", "rx_id": str(rx_id)}
 
 
 @router.get("/{rx_id}/fills")

@@ -53,6 +53,47 @@ interface PDMPResult {
   recommendation: string
 }
 
+// ── Precomputed analysis types (from GET /{rx_id}/analysis) ──────────────────
+interface CouncilFinding {
+  specialist: string
+  severity: string
+  message: string
+  drug_name?: string
+  evidence_source?: string
+  evidence_grade?: string
+}
+
+interface CouncilCache {
+  generated_at: string
+  specialists_consulted: string[]
+  summary: string
+  blockers: CouncilFinding[]
+  cautions: CouncilFinding[]
+  counseling: CouncilFinding[]
+  monitoring: CouncilFinding[]
+  clarification: CouncilFinding[]
+  hereditary: CouncilFinding[]
+  total_findings: number
+  has_blockers: boolean
+}
+
+interface TriageResult {
+  lane: 'green' | 'amber' | 'red'
+  reasons: string[]
+  hard_gates: string[]
+  one_tap_confirm: boolean
+  requires_visual_verification: boolean
+  suggested_priority: number
+}
+
+interface RxAnalysis {
+  status: 'pending' | 'computing' | 'ready' | 'failed'
+  triage_lane: 'green' | 'amber' | 'red' | null
+  triage_result: TriageResult | null
+  council_cache: CouncilCache | null
+  council_computed_at: string | null
+}
+
 export default function VerificationCenter() {
   const { selectedRx, setSelectedRx, updateRxInQueue } = useRxQueueStore()
 
@@ -79,6 +120,19 @@ export default function VerificationCenter() {
     queryFn: () => rxApi.durAlerts(selectedRx!.id).then(r => Array.isArray(r.data) ? r.data : []),
     enabled: !!selectedRx?.id,
     refetchInterval: 8_000,
+  })
+
+  // Fetch precomputed analysis — poll until ready, stop once done
+  const { data: analysis } = useQuery<RxAnalysis>({
+    queryKey: ['analysis', selectedRx?.id],
+    queryFn: () => apiClient.get(`/prescriptions/${selectedRx!.id}/analysis`).then(r => r.data),
+    enabled: !!selectedRx?.id,
+    // Poll every 2s while computing; stop when ready or failed
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      return (s === 'ready' || s === 'failed') ? false : 2_000
+    },
+    staleTime: 60_000,
   })
 
   // PDMP auto-query for controlled substances
@@ -270,15 +324,69 @@ export default function VerificationCenter() {
         </div>
       </ErrorBoundary>
 
-      {/* ── Specialist Council (SSE streaming) ───────────────────────────── */}
+      {/* ── Triage lane badge ─────────────────────────────────────────────── */}
+      {analysis?.triage_lane && (
+        <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium ${
+          analysis.triage_lane === 'green'
+            ? 'bg-green-50 border border-green-400 text-green-800'
+            : analysis.triage_lane === 'amber'
+            ? 'bg-yellow-50 border border-yellow-400 text-yellow-800'
+            : 'bg-red-50 border border-red-500 text-red-800'
+        }`}>
+          <span className="text-lg">
+            {analysis.triage_lane === 'green' ? '🟢' : analysis.triage_lane === 'amber' ? '🟡' : '🔴'}
+          </span>
+          <div className="flex-1">
+            <span className="uppercase font-bold tracking-wide">
+              {analysis.triage_lane === 'green' ? 'Fast Lane'
+                : analysis.triage_lane === 'amber' ? 'Standard Review'
+                : 'Full Scrutiny Required'}
+            </span>
+            {analysis.triage_result?.reasons?.[0] && (
+              <span className="text-xs font-normal ml-2 opacity-75">
+                — {analysis.triage_result.reasons[0]}
+              </span>
+            )}
+          </div>
+          {analysis.triage_result?.requires_visual_verification && (
+            <span className="text-xs bg-white/60 border rounded px-2 py-0.5">
+              Visual verify required
+            </span>
+          )}
+          {analysis.triage_result?.hard_gates?.length ? (
+            <div className="text-xs">
+              Gates: {analysis.triage_result.hard_gates.join(', ')}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ── Specialist Council — precomputed (instant) or SSE (fallback) ─── */}
       {selectedRx.status === 'verification_in_progress' && selectedRx.patient_id && (
         <ErrorBoundary label="Clinical Council" inline>
           <div className="bg-white border rounded-lg p-3">
-            <CouncilReport
-              prescriptionId={selectedRx.id}
-              patientId={selectedRx.patient_id}
-              pharmacyId={pharmacyId}
-            />
+            {analysis?.status === 'ready' && analysis.council_cache ? (
+              <PrecomputedCouncilPanel cache={analysis.council_cache} />
+            ) : analysis?.status === 'computing' || analysis?.status === 'pending' ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-blue-600">
+                  <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  <span>Specialist council computing…</span>
+                </div>
+                {/* SSE stream while computing so there's no blank wait */}
+                <CouncilReport
+                  prescriptionId={selectedRx.id}
+                  patientId={selectedRx.patient_id}
+                  pharmacyId={pharmacyId}
+                />
+              </div>
+            ) : (
+              <CouncilReport
+                prescriptionId={selectedRx.id}
+                patientId={selectedRx.patient_id}
+                pharmacyId={pharmacyId}
+              />
+            )}
           </div>
         </ErrorBoundary>
       )}
@@ -520,6 +628,82 @@ function ActionButtons({
           ⏸ Hold
         </button>
       )}
+    </div>
+  )
+}
+
+// ── Precomputed council panel ─────────────────────────────────────────────────
+const SEVERITY_STYLE: Record<string, { bg: string; border: string; icon: string }> = {
+  blocker:       { bg: 'bg-red-50',    border: 'border-red-500',    icon: '🚫' },
+  caution:       { bg: 'bg-orange-50', border: 'border-orange-400', icon: '⚠️' },
+  counseling:    { bg: 'bg-blue-50',   border: 'border-blue-400',   icon: '💬' },
+  monitoring:    { bg: 'bg-yellow-50', border: 'border-yellow-400', icon: '📋' },
+  clarification: { bg: 'bg-purple-50', border: 'border-purple-400', icon: '❓' },
+}
+
+function FindingRow({ f }: { f: CouncilFinding }) {
+  const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.monitoring
+  return (
+    <div className={`${style.bg} border-l-4 ${style.border} rounded p-2.5 text-xs`}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span>{style.icon}</span>
+        <span className="font-semibold text-gray-700">{f.specialist}</span>
+        {f.evidence_grade && (
+          <span className="bg-white border text-gray-500 px-1 rounded text-[9px]">Grade {f.evidence_grade}</span>
+        )}
+      </div>
+      <p className="text-gray-800 leading-relaxed">{f.message}</p>
+      {f.evidence_source && <p className="text-gray-400 mt-0.5 italic text-[9px]">{f.evidence_source}</p>}
+    </div>
+  )
+}
+
+function PrecomputedCouncilPanel({ cache }: { cache: CouncilCache }) {
+  const allCategories = [
+    { list: cache.blockers,      label: 'Blockers' },
+    { list: cache.cautions,      label: 'Cautions' },
+    { list: cache.hereditary,    label: 'Hereditary / Family Risk' },
+    { list: cache.clarification, label: 'Prescriber Clarification' },
+    { list: cache.counseling,    label: 'Counseling Points' },
+    { list: cache.monitoring,    label: 'Monitoring' },
+  ].filter(c => c.list?.length)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span>🏛️</span>
+          <span className="font-semibold text-gray-800 text-sm">Specialist Council</span>
+          <span className="text-xs text-green-600">✓ {cache.specialists_consulted.length} specialists · pre-computed</span>
+        </div>
+        <div className="flex gap-1 text-[10px]">
+          {cache.blockers?.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">🚫 {cache.blockers.length}</span>}
+          {cache.cautions?.length > 0 && <span className="bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">⚠️ {cache.cautions.length}</span>}
+          {cache.hereditary?.length > 0 && <span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">🧬 {cache.hereditary.length}</span>}
+        </div>
+      </div>
+
+      {allCategories.length === 0 ? (
+        <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-300 rounded text-green-700 text-sm">
+          <span>✅</span><span>No significant considerations identified by the council.</span>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {allCategories.map(({ list, label }) => (
+            <div key={label}>
+              <div className="text-[9px] font-semibold text-gray-500 uppercase tracking-wider mb-1">{label} ({list.length})</div>
+              <div className="space-y-1.5">
+                {list.map((f, i) => <FindingRow key={i} f={f} />)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[9px] text-gray-400 italic border-t pt-1.5">
+        Pre-computed at intake. For pharmacist review — not a diagnosis.
+        {cache.generated_at && ` Computed: ${new Date(cache.generated_at).toLocaleTimeString()}`}
+      </p>
     </div>
   )
 }
