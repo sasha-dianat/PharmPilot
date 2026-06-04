@@ -360,25 +360,234 @@ class PubMedParser:
 
 
 class PlainTextParser:
-    """Parse plain text or markdown files."""
+    """Parse plain text files (UTF-8 / ASCII). Works for .txt and raw transcripts."""
 
     def parse(self, text: str, filename: str = "") -> list[ParsedChunk]:
         chunker = TextChunker()
-        chunks = []
+        chunks: list[ParsedChunk] = []
         current_section = None
 
-        # Detect markdown-style headings
         for line in text.split("\n"):
             stripped = line.strip()
-            if stripped.startswith("#"):
-                current_section = stripped.lstrip("#").strip()
-            elif stripped:
+            if not stripped:
+                continue
+            # Section heading heuristic — keep it tight to avoid false positives
+            # on Persian text containing uppercase English abbreviations (G6PD etc.)
+            words = stripped.split()
+            is_heading = (
+                len(stripped) <= 60 and len(words) <= 8 and (
+                    # All-ASCII-uppercase short line (like "WARNINGS" or "DOSE:")
+                    (stripped.replace(" ", "").replace(":", "").isascii() and
+                     stripped.replace(" ", "").replace(":", "").isupper()) or
+                    stripped.endswith(":") or
+                    bool(re.match(r"^\d+[\.\)]\s+[A-Z؀-ۿ]", stripped))
+                )
+            )
+            if is_heading:
+                current_section = stripped
+            else:
                 new_chunks = chunker.chunk(stripped, current_section)
                 chunks.extend(new_chunks)
+                if not new_chunks and len(stripped) > 30:
+                    chunks.append(ParsedChunk(content=stripped, section_title=current_section))
 
-        # Re-index
-        for i, chunk in enumerate(chunks):
-            chunk.chunk_index = i
-
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
         logger.info("Text parsed: %d chunks from %s", len(chunks), filename)
         return chunks
+
+
+class MarkdownParser:
+    """Parse Markdown (.md) files — preserves heading hierarchy as section titles."""
+
+    def parse(self, text: str, filename: str = "") -> list[ParsedChunk]:
+        chunker = TextChunker()
+        chunks: list[ParsedChunk] = []
+        current_section: str | None = None
+        buffer = ""
+
+        def flush(section: str | None) -> None:
+            nonlocal buffer
+            t = buffer.strip()
+            if not t:
+                buffer = ""
+                return
+            produced = chunker.chunk(t, section)
+            if produced:
+                chunks.extend(produced)
+            elif len(t) > 20:
+                chunks.append(ParsedChunk(content=t, section_title=section))
+            buffer = ""
+
+        for line in text.split("\n"):
+            m = re.match(r"^(#{1,6})\s+(.*)", line.rstrip())
+            if m:
+                flush(current_section)
+                current_section = m.group(2).strip()
+            else:
+                # strip inline Markdown markers
+                clean = re.sub(r"\*{1,2}|_{1,2}|`{1,3}|~~|\[([^\]]+)\]\([^\)]+\)", r"\1", line)
+                buffer += " " + clean.strip()
+
+        flush(current_section)
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("Markdown parsed: %d chunks from %s", len(chunks), filename)
+        return chunks
+
+
+class CSVParser:
+    """
+    Parse CSV/TSV files into knowledge chunks.
+    Each row becomes a sentence: 'Header1: value. Header2: value.'
+    Useful for drug formulary tables, interaction matrices, dosing tables.
+    """
+
+    def parse(self, text: str, filename: str = "", delimiter: str | None = None) -> list[ParsedChunk]:
+        import csv, io
+        chunker = TextChunker()
+        chunks: list[ParsedChunk] = []
+        dialect = "excel-tab" if filename.endswith(".tsv") else "excel"
+        sep = delimiter or ("\t" if filename.endswith(".tsv") else ",")
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect, delimiter=sep)
+        buffer = ""
+        section = filename or "Table"
+
+        for row_num, row in enumerate(reader, 1):
+            # Represent each row as "Key: value; Key: value" prose
+            parts = [f"{k.strip()}: {v.strip()}" for k, v in row.items()
+                     if v and v.strip() and k]
+            if parts:
+                sentence = ". ".join(parts) + "."
+                buffer += " " + sentence
+                if len(buffer) > 900:
+                    produced = chunker.chunk(buffer.strip(), section)
+                    if produced:
+                        chunks.extend(produced)
+                    elif buffer.strip():
+                        chunks.append(ParsedChunk(content=buffer.strip(), section_title=section))
+                    buffer = ""
+
+        if buffer.strip():
+            chunks.append(ParsedChunk(content=buffer.strip(), section_title=section))
+
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("CSV parsed: %d chunks from %s (%d rows)", len(chunks), filename, row_num if chunks else 0)
+        return chunks
+
+
+class RTFParser:
+    """
+    Parse RTF (.rtf) files — strips RTF control words, keeps Unicode/Persian text.
+    Uses the stdlib `codecs` approach with zero extra deps for basic files;
+    falls back to python-striprtf if available.
+    """
+
+    def parse(self, content: bytes | str, filename: str = "") -> list[ParsedChunk]:
+        text = self._strip_rtf(content if isinstance(content, str) else content.decode("latin-1", errors="ignore"))
+        if not text.strip():
+            return []
+        return PlainTextParser().parse(text, filename)
+
+    def _strip_rtf(self, rtf: str) -> str:
+        try:
+            from striprtf.striprtf import rtf_to_text
+            return rtf_to_text(rtf)
+        except ImportError:
+            pass
+        # Minimal built-in strip: remove control words {\word}, \word, \word123
+        # and keep printable Unicode (incl. Persian \uN? sequences)
+        def decode_unicode(m: re.Match) -> str:
+            try:
+                return chr(int(m.group(1)))
+            except Exception:
+                return ""
+        text = re.sub(r"\\u(-?\d+)\?", decode_unicode, rtf)
+        text = re.sub(r"\{[^{}]*\}", " ", text)       # remove groups
+        text = re.sub(r"\\[a-zA-Z]+\d*\s?", " ", text)  # remove control words
+        text = re.sub(r"\\[^a-zA-Z]", " ", text)     # remove control symbols
+        text = re.sub(r"[{}]", "", text)
+        return re.sub(r"  +", " ", text).strip()
+
+
+class EPUBParser:
+    """
+    Parse EPUB e-books — extracts all chapter HTML files, concatenates text.
+    Zero-dep: reads the EPUB ZIP directly; uses HTMLParser for each chapter.
+    """
+
+    def parse(self, epub_path: str) -> list[ParsedChunk]:
+        import zipfile
+        from bs4 import BeautifulSoup
+        chunks: list[ParsedChunk] = []
+        html_p = HTMLParser()
+
+        try:
+            with zipfile.ZipFile(epub_path) as z:
+                names = sorted(n for n in z.namelist()
+                               if n.endswith((".html", ".xhtml", ".htm")))
+                for name in names:
+                    html = z.read(name).decode("utf-8", errors="ignore")
+                    chapter_chunks = html_p.parse(html, url=name)
+                    chunks.extend(chapter_chunks)
+        except Exception as e:
+            logger.error("EPUB parse failed for %s: %s", epub_path, e)
+
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("EPUB parsed: %d chunks from %s", len(chunks), epub_path)
+        return chunks
+
+
+class JSONParser:
+    """
+    Parse JSON files containing clinical data (drug lists, interaction tables, etc.).
+    Handles: list-of-dicts (each dict → sentence), or nested dicts (walk leaves).
+    """
+
+    def parse(self, text: str, filename: str = "") -> list[ParsedChunk]:
+        import json
+        chunker = TextChunker()
+        chunks: list[ParsedChunk] = []
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error("JSON parse failed for %s: %s", filename, e)
+            return []
+
+        sentences: list[str] = []
+        self._walk(data, sentences)
+
+        buffer = ""
+        for s in sentences:
+            buffer += " " + s
+            if len(buffer) > 900:
+                produced = chunker.chunk(buffer.strip(), filename)
+                chunks.extend(produced or [ParsedChunk(content=buffer.strip())])
+                buffer = ""
+        if buffer.strip():
+            chunks.append(ParsedChunk(content=buffer.strip()))
+
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("JSON parsed: %d chunks from %s", len(chunks), filename)
+        return chunks
+
+    def _walk(self, node, acc: list[str], path: str = "") -> None:
+        if isinstance(node, dict):
+            parts = []
+            for k, v in node.items():
+                if isinstance(v, (str, int, float)) and str(v).strip():
+                    parts.append(f"{k}: {v}")
+                else:
+                    self._walk(v, acc, path=k)
+            if parts:
+                acc.append(". ".join(parts) + ".")
+        elif isinstance(node, list):
+            for item in node:
+                self._walk(item, acc, path)
+        elif isinstance(node, (str, int, float)):
+            s = str(node).strip()
+            if len(s) > 20:
+                acc.append(s)

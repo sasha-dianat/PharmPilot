@@ -152,6 +152,81 @@ async def crawl_reference_site(
     return result
 
 
+@router.post("/ingest/file", status_code=202)
+async def ingest_any_file(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    language: str = Form("fa"),
+    collection: str = Form("owner_references"),
+    evidence_level: Optional[str] = Form(None),
+    specialty_tags: Optional[str] = Form(None),
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Universal file upload endpoint — auto-detects format by extension.
+    Supported: PDF, DOCX/DOC, MD, TXT, HTML, CSV/TSV, RTF, EPUB, JSON/JSONL.
+    Persian-aware throughout. Use this for any owner-fed pharmacopeia reference.
+    """
+    import tempfile, os
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".txt"
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
+        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+        result = await pipeline.ingest_file(
+            file_path=tmp_path,
+            title=title or file.filename,
+            language=language,
+            collection=collection,
+            evidence_level=evidence_level,
+            specialty_tags=tags,
+        )
+        return {
+            "status": result.get("status"),
+            "source_id": result.get("source_id"),
+            "chunks_stored": result.get("chunks_stored", 0),
+            "format_detected": suffix,
+            "message": f"Ingested {result.get('chunks_stored', 0)} chunks from {file.filename}.",
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
+class DirectoryImportRequest(BaseModel):
+    directory: str
+    recursive: bool = True
+    language: str = "fa"
+    collection: str = "owner_references"
+
+
+@router.post("/ingest/directory", status_code=202)
+async def ingest_directory(
+    body: DirectoryImportRequest,
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Batch-ingest an entire directory of reference documents (server-side path).
+    Recursively processes all supported formats (PDF/DOCX/MD/TXT/HTML/CSV/RTF/EPUB/JSON).
+    Use with the scripts/import_references.py CLI for large libraries.
+    """
+    from pathlib import Path
+    if not Path(body.directory).is_dir():
+        raise HTTPException(404, f"Directory not found: {body.directory}")
+    pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+    result = await pipeline.ingest_directory(
+        directory=body.directory,
+        recursive=body.recursive,
+        language=body.language,
+        collection=body.collection,
+    )
+    return result
+
+
 @router.post("/ingest/url", status_code=202)
 async def ingest_url(
     url: str,

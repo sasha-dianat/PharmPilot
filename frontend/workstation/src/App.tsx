@@ -11,7 +11,9 @@ import LoginPage from './components/LoginPage'
 import DashboardShell from './DashboardShell'
 import VerificationCenter from './components/VerificationCenter'
 import PatientPanel from './components/PatientPanel'
+import IdentityCard, { type IdentityCandidate } from './components/IdentityCard'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { apiClient } from './lib/api'
 
 const queryClient = new QueryClient()
 
@@ -28,20 +30,72 @@ const ROLE_LABELS: Record<string, string> = {
   pharmacist: 'Pharmacist', pharmacy_technician: 'Technician', cashier: 'Cashier',
 }
 
+interface ResolutionState {
+  data: {
+    candidates: IdentityCandidate[]
+    is_returning_customer: boolean
+    auto_loaded: boolean
+    message: string
+    extracted?: Record<string, unknown>
+    insurance?: Record<string, unknown>
+    primary_candidate_id?: string | null
+    customer_id?: string | null
+  }
+  visible: boolean
+}
+
 function BiometricArrivalBanner() {
   const { incomingPatient, biometricMatchConfidence } = useRxQueueStore()
+  const [resolution, setResolution] = useState<ResolutionState | null>(null)
+  const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
+
+  // When a biometric arrival fires, call the identity orchestrator
+  useEffect(() => {
+    if (!incomingPatient || biometricMatchConfidence < 0.8) return
+    apiClient.post('/identity/identify', {
+      pharmacy_id: pharmacyId,
+      biometric_confidence: biometricMatchConfidence,
+    }).then(r => {
+      setResolution({ data: r.data, visible: true })
+    }).catch(err => {
+      console.warn('Identity resolve failed:', err)
+    })
+  }, [incomingPatient?.id, biometricMatchConfidence])
+
   if (!incomingPatient || biometricMatchConfidence < 0.8) return null
+
+  // Full identity card if resolved
+  if (resolution?.visible && resolution.data.candidates.length > 0) {
+    return (
+      <IdentityCard
+        resolution={resolution.data as Parameters<typeof IdentityCard>[0]['resolution']}
+        onSelect={(patientId) => {
+          console.info('Identity selected:', patientId)
+          setResolution(null)
+          // TODO: pre-load this patient's Rx queue in a future sprint
+        }}
+        onDismiss={() => setResolution(null)}
+      />
+    )
+  }
+
+  // Fallback compact banner while resolving
   return (
     <div className="fixed top-4 right-4 z-50 bg-blue-600 text-white rounded-lg shadow-xl p-4 w-80">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center text-lg">👤</div>
-        <div>
-          <div className="font-semibold">{incomingPatient.first_name} {incomingPatient.last_name} arriving</div>
-          <div className="text-xs text-blue-200">Match: {(biometricMatchConfidence * 100).toFixed(0)}%</div>
-          {incomingPatient.pending_rxs?.length ? (
-            <div className="text-xs mt-1">{incomingPatient.pending_rxs.length} Rx(s) ready</div>
-          ) : null}
+        <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center">
+          {resolution ? '✓' : <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
         </div>
+        <div>
+          <div className="font-semibold text-sm">
+            {incomingPatient.first_name} {incomingPatient.last_name}
+            {resolution ? ' — Identified' : ' — Identifying…'}
+          </div>
+          <div className="text-xs text-blue-200">
+            Match: {(biometricMatchConfidence * 100).toFixed(0)}%
+          </div>
+        </div>
+        <button onClick={() => setResolution(null)} className="ml-auto text-blue-200 hover:text-white text-lg">×</button>
       </div>
     </div>
   )

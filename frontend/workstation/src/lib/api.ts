@@ -107,6 +107,20 @@ export const clinicalApi = {
     apiClient.post('/knowledge/query/drug-interaction', null, { params: { drug_a: drugA, drug_b: drugB } }),
 }
 
+// ── Audio / Dictation ─────────────────────────────────────────────────────
+export const audioApi = {
+  dictate: (blob: Blob, context = 'note', language = 'fa') => {
+    const form = new FormData()
+    form.append('audio_file', blob, 'dictation.webm')
+    form.append('context', context)
+    form.append('language', language)
+    return apiClient.post('/audio/dictate', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 30_000,
+    })
+  },
+}
+
 // ── Biometric ─────────────────────────────────────────────────────────────
 export const biometricApi = {
   identify: (formData: FormData) =>

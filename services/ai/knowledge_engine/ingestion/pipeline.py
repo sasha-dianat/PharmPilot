@@ -11,7 +11,8 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from services.ai.knowledge_engine.parsers.document_parser import (
-    HTMLParser, PDFParser, PlainTextParser, PubMedParser, ParsedChunk, DOCXParser
+    HTMLParser, PDFParser, PlainTextParser, PubMedParser, ParsedChunk,
+    DOCXParser, MarkdownParser, CSVParser, RTFParser, EPUBParser, JSONParser,
 )
 from services.ai.knowledge_engine.vector_store import ClinicalVectorStore
 from services.ai.knowledge_engine.schema import SourceType
@@ -121,10 +122,37 @@ class KnowledgeIngestionPipeline:
         self.vs = vector_store
         self.db = db
         self.ner = MedicalNERTagger()
-        self.pdf_parser = PDFParser()
-        self.html_parser = HTMLParser()
-        self.text_parser = PlainTextParser()
+        self.pdf_parser    = PDFParser()
+        self.html_parser   = HTMLParser()
+        self.text_parser   = PlainTextParser()
         self.pubmed_parser = PubMedParser()
+        self.docx_parser   = DOCXParser()
+        self.md_parser     = MarkdownParser()
+        self.csv_parser    = CSVParser()
+        self.rtf_parser    = RTFParser()
+        self.epub_parser   = EPUBParser()
+        self.json_parser   = JSONParser()
+
+    # ── Extension → (parser, SourceType) routing table ───────────────────────
+    # Maps every supported extension to a (parse_fn, SourceType) pair.
+    _EXT_MAP: dict[str, tuple[str, str]] = {
+        ".pdf":  ("_parse_pdf",  "owner_reference"),
+        ".docx": ("_parse_docx", "owner_reference"),
+        ".doc":  ("_parse_docx", "owner_reference"),   # best-effort via DOCX
+        ".md":   ("_parse_md",   "markdown"),
+        ".markdown": ("_parse_md", "markdown"),
+        ".txt":  ("_parse_txt",  "owner_reference"),
+        ".text": ("_parse_txt",  "owner_reference"),
+        ".html": ("_parse_html", "owner_reference"),
+        ".htm":  ("_parse_html", "owner_reference"),
+        ".xhtml":("_parse_html", "owner_reference"),
+        ".csv":  ("_parse_csv",  "csv_table"),
+        ".tsv":  ("_parse_csv",  "csv_table"),
+        ".rtf":  ("_parse_rtf",  "rtf_document"),
+        ".epub": ("_parse_epub", "epub_book"),
+        ".json": ("_parse_json", "json_data"),
+        ".jsonl":("_parse_json", "json_data"),
+    }
 
     # ── Primary ingestion methods ─────────────────────────────────────────────
 
@@ -192,6 +220,130 @@ class KnowledgeIngestionPipeline:
                 "base_specialty_tags": specialty_tags or [],
             },
         )
+
+    async def ingest_file(
+        self,
+        file_path: str,
+        title: Optional[str] = None,
+        language: str = "fa",
+        collection: str = "owner_references",
+        evidence_level: Optional[str] = None,
+        specialty_tags: Optional[list] = None,
+    ) -> dict:
+        """
+        Universal single-file ingestion: auto-detects format by extension.
+        Supports: PDF, DOCX/DOC, MD, TXT, HTML/HTM/XHTML, CSV/TSV, RTF, EPUB, JSON/JSONL.
+        Safe for Persian (RTL) content throughout.
+        """
+        path = Path(file_path)
+        ext = path.suffix.lower()
+        route = self._EXT_MAP.get(ext)
+        if not route:
+            logger.warning("Unsupported extension '%s' for %s — trying plain text", ext, file_path)
+            parse_method, src_type_str = "_parse_txt", "owner_reference"
+        else:
+            parse_method, src_type_str = route
+
+        title = title or path.stem.replace("_", " ").replace("-", " ").strip()
+        logger.info("Ingesting %s as %s: %s", ext, src_type_str, title)
+
+        try:
+            chunks: list[ParsedChunk] = getattr(self, parse_method)(file_path)
+        except Exception as exc:
+            logger.error("Parse failed for %s: %s", file_path, exc)
+            return {"status": "error", "path": file_path, "error": str(exc)}
+
+        if not chunks:
+            return {"status": "empty", "path": file_path}
+
+        source_id = str(uuid4())
+        try:
+            src_type = SourceType(src_type_str)
+        except ValueError:
+            src_type = SourceType.OWNER_REFERENCE
+
+        return await self._process_chunks(
+            chunks=chunks,
+            source_id=source_id,
+            source_meta={
+                "source_id": source_id,
+                "source_title": title,
+                "source_type": src_type.value,
+                "file_path": str(path.resolve()),
+                "language": language,
+                "collection": collection,
+                "evidence_level": evidence_level,
+                "base_specialty_tags": specialty_tags or [],
+            },
+        )
+
+    async def ingest_directory(
+        self,
+        directory: str,
+        recursive: bool = True,
+        language: str = "fa",
+        collection: str = "owner_references",
+        skip_existing: bool = True,
+    ) -> dict:
+        """
+        Batch-ingest every supported file in a directory tree.
+        The pharmacy owner drops their reference library into a folder and points
+        this at it — the clinical brain learns from the entire library.
+
+        Returns a summary dict with per-file status.
+        """
+        root = Path(directory)
+        if not root.is_dir():
+            return {"status": "error", "reason": f"Not a directory: {directory}"}
+
+        glob = "**/*" if recursive else "*"
+        supported = {ext for ext in self._EXT_MAP}
+        files = [f for f in root.glob(glob) if f.is_file() and f.suffix.lower() in supported]
+        logger.info("ingest_directory: %d supported files in %s", len(files), directory)
+
+        results: dict = {"directory": str(root), "total": len(files),
+                         "ingested": 0, "skipped": 0, "failed": 0, "files": []}
+
+        for fpath in sorted(files):
+            file_result = await self.ingest_file(
+                file_path=str(fpath),
+                language=language,
+                collection=collection,
+            )
+            status = file_result.get("status", "error")
+            if status == "complete":
+                results["ingested"] += 1
+            elif status == "empty":
+                results["skipped"] += 1
+            else:
+                results["failed"] += 1
+            results["files"].append({
+                "path": str(fpath.relative_to(root)),
+                "status": status,
+                "chunks": file_result.get("chunks_stored", 0),
+            })
+            logger.info("%s: %s (%d chunks)", fpath.name, status, file_result.get("chunks_stored", 0))
+
+        logger.info("ingest_directory done: %d ingested / %d failed / %d skipped",
+                    results["ingested"], results["failed"], results["skipped"])
+        return results
+
+    # ── Private format-specific parse helpers ─────────────────────────────────
+    def _parse_pdf(self, path: str)  -> list[ParsedChunk]: return self.pdf_parser.parse(path)
+    def _parse_docx(self, path: str) -> list[ParsedChunk]: return self.docx_parser.parse(path)
+    def _parse_md(self, path: str)   -> list[ParsedChunk]:
+        return self.md_parser.parse(Path(path).read_text(encoding="utf-8", errors="ignore"), path)
+    def _parse_txt(self, path: str)  -> list[ParsedChunk]:
+        return self.text_parser.parse(Path(path).read_text(encoding="utf-8", errors="ignore"), path)
+    def _parse_html(self, path: str) -> list[ParsedChunk]:
+        return self.html_parser.parse(Path(path).read_text(encoding="utf-8", errors="ignore"), url=path)
+    def _parse_csv(self, path: str)  -> list[ParsedChunk]:
+        return self.csv_parser.parse(Path(path).read_text(encoding="utf-8", errors="ignore"), path)
+    def _parse_rtf(self, path: str)  -> list[ParsedChunk]:
+        return self.rtf_parser.parse(Path(path).read_bytes(), path)
+    def _parse_epub(self, path: str) -> list[ParsedChunk]: return self.epub_parser.parse(path)
+    def _parse_json(self, path: str) -> list[ParsedChunk]:
+        return self.json_parser.parse(Path(path).read_text(encoding="utf-8", errors="ignore"), path)
 
     async def crawl_site(
         self,

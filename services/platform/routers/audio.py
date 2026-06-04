@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.database import get_db
+from services.platform.auth import require_permission
+from shared.models.auth import Staff
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -155,6 +157,66 @@ async def transcribe_recording(
         urgency_reason=extraction.urgency_reason,
         status="enriched",
     )
+
+
+@router.post("/dictate")
+async def dictate_note(
+    audio_file: UploadFile = File(...),
+    context: str = Form("note"),   # note | dur_override | counseling
+    language: str = Form("fa"),    # fa (Persian) | en
+    staff: Staff = Depends(require_permission("rx:write")),
+):
+    """
+    Fast dictation endpoint for pharmacist voice notes.
+    No diarization, no NLP extraction — returns raw transcript text in ~2–5 s
+    so the pharmacist can review and confirm before committing to the record.
+
+    context: 'note' | 'dur_override' | 'counseling' — informs the UI how to
+             route the confirmed text (attach to Rx, DUR override reason, etc.)
+    language: 'fa' for Persian (uses Whisper multilingual), 'en' for English.
+    """
+    import io
+    import tempfile
+    import os as _os
+
+    audio_bytes = await audio_file.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Empty audio file")
+
+    # Save to temp file for Whisper (Whisper reads from path)
+    suffix = ".webm" if "webm" in (audio_file.content_type or "") else ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        try:
+            import whisper
+            # Use small multilingual for Persian, base.en for English speed
+            model_name = "small" if language == "fa" else "base.en"
+            model = whisper.load_model(model_name)
+            result = model.transcribe(tmp_path, language=language if language == "fa" else None)
+            text = result.get("text", "").strip()
+        except ImportError:
+            # Whisper not installed locally — return a clear error so UI shows fallback
+            raise HTTPException(503, "Whisper not installed on this server; install openai-whisper")
+        except Exception as exc:
+            raise HTTPException(422, f"Transcription failed: {exc}")
+
+        if not text:
+            return {"status": "empty", "text": "", "context": context}
+
+        return {
+            "status": "ok",
+            "text": text,
+            "language": language,
+            "context": context,
+            "word_count": len(text.split()),
+            "requires_confirmation": True,
+            "disclaimer": "For pharmacist review before saving — AI transcription may contain errors.",
+        }
+    finally:
+        _os.unlink(tmp_path)
 
 
 @router.get("/transcripts/{patient_id}")

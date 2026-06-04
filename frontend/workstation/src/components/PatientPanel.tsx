@@ -14,6 +14,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { patientApi, apiClient } from '../lib/api'
+import { formatJalali, ageFromDob, dateDisplay } from '../lib/jalali'
+import DictateNote from './DictateNote'
 
 interface Props {
   patientId: string
@@ -155,7 +157,8 @@ export default function PatientPanel({ patientId }: Props) {
     return <div className="p-4 text-sm text-red-500">Patient not found</div>
   }
 
-  const age = Math.floor((Date.now() - new Date(patient.date_of_birth).getTime()) / (365.25 * 24 * 3600 * 1000))
+  const age = ageFromDob(patient.date_of_birth)
+  const dobJalali = patient.date_of_birth_jalali || formatJalali(patient.date_of_birth, { short: true })
   const riskStyle = adherence ? RISK_STYLE[adherence.risk_tier] : null
 
   return (
@@ -169,7 +172,8 @@ export default function PatientPanel({ patientId }: Props) {
               {patient.last_name?.toUpperCase()}, {patient.first_name}
             </div>
             <div className="text-xs text-gray-500 mt-0.5">
-              DOB: {patient.date_of_birth} ({age}y) · {patient.gender}
+              {/* Jalali primary, Gregorian secondary */}
+              ت.ت: {dobJalali}{patient.date_of_birth && ` (${patient.date_of_birth})`} · {age !== null ? `${age}y` : ''} · {patient.gender}
             </div>
             {patient.phone_primary && (
               <div className="text-xs text-gray-400">{patient.phone_primary}</div>
@@ -186,6 +190,12 @@ export default function PatientPanel({ patientId }: Props) {
                 {riskStyle.label}
               </span>
             )}
+            {/* Dictate patient note */}
+            <DictateNote
+              context="note"
+              compact
+              onConfirm={(text) => console.info('Patient note confirmed:', text.slice(0, 40))}
+            />
           </div>
         </div>
 
@@ -389,7 +399,7 @@ export default function PatientPanel({ patientId }: Props) {
                     </div>
                     <div className="flex justify-between text-gray-400 mt-0.5">
                       <span>Rx #{fill.rx_number}</span>
-                      <span>{fill.fill_date?.slice(0, 10)}</span>
+                      <span>{formatJalali(fill.fill_date, { short: true, persianDigits: false })}</span>
                     </div>
                     <div className="text-gray-400">{fill.days_supply}d supply</div>
                   </div>

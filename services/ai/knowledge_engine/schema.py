@@ -25,6 +25,12 @@ class SourceType(str, Enum):
     USP_CHAPTER = "usp_chapter"
     CUSTOM_DOCUMENT = "custom_document"           # Uploaded by pharmacy staff
     WEB_CRAWL = "web_crawl"
+    OWNER_REFERENCE = "owner_reference"           # Local file fed by pharmacy owner
+    MARKDOWN = "markdown"
+    CSV_TABLE = "csv_table"
+    RTF_DOCUMENT = "rtf_document"
+    EPUB_BOOK = "epub_book"
+    JSON_DATA = "json_data"
 
 
 class KnowledgeSource(AuditedBase):
