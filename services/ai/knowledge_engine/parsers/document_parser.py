@@ -591,3 +591,170 @@ class JSONParser:
             s = str(node).strip()
             if len(s) > 20:
                 acc.append(s)
+
+
+class SQLiteParser:
+    """
+    Extract clinical knowledge from a SQLite / .db database file.
+
+    Works for any SQLite file on a local path or a mounted network share.
+    Auto-discovers tables and maps columns to clinical semantics — drug names,
+    indications, contraindications, dosing, interactions — without requiring
+    the owner to configure anything.
+
+    Each table row becomes one or more prose sentences:
+        "دارو: متفورمین. نشانه: دیابت نوع ۲. منع مصرف: نارسایی کلیه (eGFR<30)."
+
+    Supports:
+      - Persian column names and values (Unicode throughout)
+      - Mixed English/Persian schemas
+      - Binary blobs are skipped automatically
+      - Tables with ≥2 text columns are included; pure-numeric tables skipped
+    """
+
+    # Column name keywords → semantic role
+    _COL_ROLES: dict[str, str] = {
+        # English
+        "drug": "Drug", "medication": "Drug", "medicine": "Drug", "compound": "Drug",
+        "brand": "Brand", "generic": "Generic", "trade": "Brand",
+        "indication": "Indication", "use": "Use", "disease": "Disease",
+        "contraindication": "Contraindication", "avoid": "Avoid",
+        "dose": "Dose", "dosage": "Dose", "strength": "Strength", "concentration": "Strength",
+        "route": "Route", "administration": "Route",
+        "interaction": "Interaction", "ddi": "Drug Interaction",
+        "side_effect": "Side Effect", "adverse": "Adverse Effect",
+        "warning": "Warning", "caution": "Caution", "precaution": "Caution",
+        "mechanism": "Mechanism", "action": "Mechanism",
+        "category": "Category", "class": "Class", "group": "Class",
+        "note": "Note", "comment": "Note", "description": "Description",
+        "pregnancy": "Pregnancy", "renal": "Renal", "hepatic": "Hepatic",
+        "pediatric": "Pediatric", "geriatric": "Geriatric",
+        # Persian / Arabic
+        "دارو": "دارو", "دوا": "دارو", "قرص": "دارو",
+        "نشانه": "نشانه", "اندیکاسیون": "نشانه",
+        "منع": "منع مصرف", "کنتراندیکاسیون": "منع مصرف",
+        "دوز": "دوز", "مقدار": "دوز",
+        "تداخل": "تداخل دارویی", "واکنش": "عوارض",
+        "عوارض": "عوارض جانبی", "هشدار": "هشدار",
+        "توضیح": "توضیحات", "یادداشت": "یادداشت",
+    }
+
+    def parse(self, db_path: str, tables: list[str] | None = None) -> list[ParsedChunk]:
+        """
+        Parse a SQLite database. If `tables` is None, auto-discovers all
+        tables with sufficient text content.
+        """
+        import sqlite3
+        from services.core.localization.digits import normalize_digits
+
+        chunks: list[ParsedChunk] = []
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+        except Exception as e:
+            logger.error("SQLite open failed for %s: %s", db_path, e)
+            return []
+
+        try:
+            cursor = conn.cursor()
+            # Discover tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            all_tables = [r[0] for r in cursor.fetchall()]
+            target = [t for t in all_tables if t in tables] if tables else all_tables
+
+            for table in target:
+                table_chunks = self._process_table(cursor, table, normalize_digits)
+                chunks.extend(table_chunks)
+                logger.info("SQLite table '%s': %d chunks", table, len(table_chunks))
+        finally:
+            conn.close()
+
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+        logger.info("SQLite parsed: %d total chunks from %s", len(chunks), db_path)
+        return chunks
+
+    def _process_table(self, cursor, table: str, normalize_digits) -> list[ParsedChunk]:
+        """Convert one table to ParsedChunks."""
+        try:
+            cursor.execute(f'PRAGMA table_info("{table}")')   # nosec — table names from sqlite_master
+            col_info = cursor.fetchall()
+        except Exception as e:
+            logger.warning("PRAGMA failed for table %s: %s", table, e)
+            return []
+
+        # Filter to text/numeric columns (skip blobs)
+        cols = [
+            {"name": row[1], "type": (row[2] or "").upper()}
+            for row in col_info
+            if (row[2] or "").upper() not in ("BLOB",)
+        ]
+        text_cols = [c for c in cols if not c["type"].startswith("INT")
+                     and c["type"] not in ("REAL", "NUMERIC", "FLOAT")]
+
+        if len(text_cols) < 2:
+            return []  # Not enough text columns to form meaningful prose
+
+        chunker = TextChunker()
+        chunks: list[ParsedChunk] = []
+        buffer = ""
+        section = table
+
+        try:
+            col_names_safe = ", ".join(f'"{c["name"]}"' for c in text_cols)
+            cursor.execute(f'SELECT {col_names_safe} FROM "{table}" LIMIT 5000')   # nosec
+        except Exception as e:
+            logger.warning("SELECT failed for table %s: %s", table, e)
+            return []
+
+        for row in cursor.fetchall():
+            parts = []
+            for col in text_cols:
+                raw = row[col["name"]]
+                if raw is None:
+                    continue
+                val = normalize_digits(str(raw).strip())
+                if not val or val.lower() in ("null", "none", "", "-"):
+                    continue
+                # Map column name to clinical role label
+                role = self._infer_role(col["name"])
+                parts.append(f"{role}: {val}")
+
+            if not parts:
+                continue
+
+            sentence = ". ".join(parts) + "."
+            buffer += " " + sentence
+
+            if len(buffer) > 900:
+                produced = chunker.chunk(buffer.strip(), section)
+                if produced:
+                    chunks.extend(produced)
+                elif buffer.strip():
+                    chunks.append(ParsedChunk(content=buffer.strip(), section_title=section))
+                buffer = ""
+
+        if buffer.strip():
+            produced = chunker.chunk(buffer.strip(), section)
+            if produced:
+                chunks.extend(produced)
+            else:
+                chunks.append(ParsedChunk(content=buffer.strip(), section_title=section))
+
+        return chunks
+
+    def _infer_role(self, col_name: str) -> str:
+        """Map a raw column name to a human-readable clinical role label."""
+        # Normalise: drug_a_name -> "drug a name"
+        lower = col_name.lower().replace("_", " ").replace("-", " ").strip()
+        # Handle positional suffixes: drug_a / drug_b -> Drug A / Drug B
+        m = re.match(r"^(drug|medication|دارو|قرص)\s+([a-z0-9])$", lower)
+        if m:
+            return f"{self._COL_ROLES.get(m.group(1), m.group(1).title())} {m.group(2).upper()}"
+        # Exact-word match (longest key first to avoid substring collisions)
+        for key in sorted(self._COL_ROLES, key=len, reverse=True):
+            # word-boundary check: key must appear as a whole word
+            if re.search(rf"\b{re.escape(key)}\b", lower):
+                return self._COL_ROLES[key]
+        # Title-case the column name as fallback
+        return col_name.replace("_", " ").title()

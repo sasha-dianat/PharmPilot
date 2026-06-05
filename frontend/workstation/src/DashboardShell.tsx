@@ -17,16 +17,18 @@ import FinancialOperations   from './dashboards/FinancialOperations'
 import PatientAdherence      from './dashboards/PatientAdherence'
 import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
+import KnowledgeManager      from './dashboards/KnowledgeManager'
 
 const SECTIONS = [
-  { id:'command',    key:'1', label:'Command Center',     icon:'🏠', description:'Owner overview', shortcut:'Alt+1' },
-  { id:'inventory',  key:'2', label:'Inventory AI',       icon:'📦', description:'ML stock brain',  shortcut:'Alt+2' },
-  { id:'clinical',   key:'3', label:'Clinical Intel',     icon:'🧠', description:'Patient safety',  shortcut:'Alt+3' },
-  { id:'security',   key:'4', label:'Surveillance',       icon:'🛡️', description:'Security & safety',shortcut:'Alt+4' },
-  { id:'financial',  key:'5', label:'Financial Ops',      icon:'💰', description:'Revenue & claims', shortcut:'Alt+5' },
-  { id:'adherence',  key:'6', label:'Patient Care',       icon:'👥', description:'Adherence & MTM',  shortcut:'Alt+6' },
-  { id:'audio',      key:'7', label:'Conversation AI',    icon:'🎙️', description:'Transcript review', shortcut:'Alt+7' },
-  { id:'ai-hub',     key:'8', label:'AI Hub',             icon:'🤖', description:'Multi-AI control',  shortcut:'Alt+8' },
+  { id:'command',    key:'1', label:'Command Center',     icon:'🏠', description:'Owner overview',      shortcut:'Alt+1' },
+  { id:'inventory',  key:'2', label:'Inventory AI',       icon:'📦', description:'ML stock brain',       shortcut:'Alt+2' },
+  { id:'clinical',   key:'3', label:'Clinical Intel',     icon:'🧠', description:'Patient safety',       shortcut:'Alt+3' },
+  { id:'security',   key:'4', label:'Surveillance',       icon:'🛡️', description:'Security & safety',   shortcut:'Alt+4' },
+  { id:'financial',  key:'5', label:'Financial Ops',      icon:'💰', description:'Revenue & claims',     shortcut:'Alt+5' },
+  { id:'adherence',  key:'6', label:'Patient Care',       icon:'👥', description:'Adherence & MTM',      shortcut:'Alt+6' },
+  { id:'audio',      key:'7', label:'Conversation AI',    icon:'🎙️', description:'Transcript review',   shortcut:'Alt+7' },
+  { id:'ai-hub',     key:'8', label:'AI Hub',             icon:'🤖', description:'Multi-AI control',     shortcut:'Alt+8' },
+  { id:'knowledge',  key:'9', label:'Knowledge Base',     icon:'📚', description:'Train clinical brain', shortcut:'Alt+9' },
 ] as const
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -40,6 +42,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   adherence: PatientAdherence,
   audio:     AudioIntelligence,
   'ai-hub':  AIIntelligenceHub,
+  knowledge: KnowledgeManager,
 }
 
 interface Props {
@@ -66,7 +69,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   // Keyboard shortcuts: Alt+1..8, Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.key >= '1' && e.key <= '8') {
+      if (e.altKey && e.key >= '1' && e.key <= '9') {
         const section = SECTIONS[parseInt(e.key) - 1]
         if (section) setActiveSection(section.id)
         e.preventDefault()

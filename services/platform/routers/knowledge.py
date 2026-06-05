@@ -473,6 +473,162 @@ async def get_knowledge_stats(
         return {"status": "unavailable", "error": str(exc)}
 
 
+@router.get("/sources")
+async def list_sources(
+    limit: int = 100,
+    staff: Staff = Depends(require_permission("clinical:read")),
+):
+    """
+    List all ingested knowledge sources with metadata.
+    Used by the Knowledge Manager UI to show the training library.
+    """
+    vs = _get_vector_store()
+    try:
+        # Scroll Qdrant points to collect unique source metadata
+        from qdrant_client.models import Filter
+        client = vs._get_client()
+        collection = vs.collection
+
+        # Scroll through points and collect unique source_ids
+        seen: dict[str, dict] = {}
+        offset = None
+        while len(seen) < limit:
+            scroll_result = client.scroll(
+                collection_name=collection,
+                limit=500,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, next_offset = scroll_result
+            if not points:
+                break
+            for pt in points:
+                payload = pt.payload or {}
+                sid = payload.get("source_id", "")
+                if sid and sid not in seen:
+                    seen[sid] = {
+                        "source_id": sid,
+                        "title": payload.get("source_title", "—"),
+                        "source_type": payload.get("source_type", "—"),
+                        "language": payload.get("language", "en"),
+                        "collection": payload.get("collection", "—"),
+                        "url": payload.get("url"),
+                        "file_path": payload.get("file_path"),
+                    }
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        # Count chunks per source
+        chunk_counts: dict[str, int] = {}
+        for sid in list(seen.keys()):
+            try:
+                from qdrant_client.models import FieldCondition, MatchValue
+                cnt = client.count(
+                    collection_name=collection,
+                    count_filter=Filter(
+                        must=[FieldCondition(key="source_id", match=MatchValue(value=sid))]
+                    ),
+                    exact=False,
+                )
+                chunk_counts[sid] = cnt.count
+            except Exception:
+                chunk_counts[sid] = 0
+
+        sources = sorted(
+            [{"chunk_count": chunk_counts.get(s["source_id"], 0), **s} for s in seen.values()],
+            key=lambda x: x["chunk_count"],
+            reverse=True,
+        )
+        return {"sources": sources, "total": len(sources)}
+
+    except Exception as exc:
+        return {"sources": [], "total": 0, "error": str(exc)}
+
+
+class SQLiteIngestRequest(BaseModel):
+    db_path: str
+    tables: list[str] | None = None
+    title: str | None = None
+    language: str = "fa"
+    collection: str = "owner_references"
+
+
+@router.post("/ingest/sqlite", status_code=202)
+async def ingest_sqlite_db(
+    body: SQLiteIngestRequest,
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Ingest a SQLite / .db database from a local path or mounted network share.
+    Auto-discovers all tables; pass `tables` to restrict to specific ones.
+    Supports Persian (RTL) column names and values natively.
+    No file upload needed — the file must be accessible on the server filesystem
+    (local path or mounted NFS/SMB share).
+    """
+    from pathlib import Path
+    if not Path(body.db_path).exists():
+        raise HTTPException(404, f"Database file not found: {body.db_path}")
+    if not Path(body.db_path).suffix.lower() in (".sqlite", ".sqlite3", ".db", ".db3"):
+        raise HTTPException(422, "File must be a SQLite database (.sqlite/.db/.db3)")
+
+    pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+    result = await pipeline.ingest_sqlite(
+        db_path=body.db_path,
+        tables=body.tables,
+        title=body.title,
+        language=body.language,
+        collection=body.collection,
+    )
+    return {
+        "status": result.get("status"),
+        "source_id": result.get("source_id"),
+        "chunks_stored": result.get("chunks_stored", 0),
+        "message": f"Ingested {result.get('chunks_stored', 0)} knowledge chunks from {body.db_path}.",
+    }
+
+
+@router.post("/ingest/sqlite/upload", status_code=202)
+async def upload_sqlite_db(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    language: str = Form("fa"),
+    collection: str = Form("owner_references"),
+    tables_filter: Optional[str] = Form(None),  # comma-separated table names
+    staff: Staff = Depends(require_permission("clinical:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload a SQLite .db file directly from the browser.
+    Use this when the DB is on the user's machine, not the server.
+    """
+    import tempfile, os
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        tables = [t.strip() for t in tables_filter.split(",")] if tables_filter else None
+        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+        result = await pipeline.ingest_sqlite(
+            db_path=tmp_path,
+            tables=tables,
+            title=title or file.filename,
+            language=language,
+            collection=collection,
+        )
+        return {
+            "status": result.get("status"),
+            "source_id": result.get("source_id"),
+            "chunks_stored": result.get("chunks_stored", 0),
+            "message": f"Ingested {result.get('chunks_stored', 0)} chunks from {file.filename}.",
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
 @router.delete("/sources/{source_id}")
 async def delete_source(
     source_id: str,

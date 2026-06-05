@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from services.ai.knowledge_engine.parsers.document_parser import (
     HTMLParser, PDFParser, PlainTextParser, PubMedParser, ParsedChunk,
     DOCXParser, MarkdownParser, CSVParser, RTFParser, EPUBParser, JSONParser,
+    SQLiteParser,
 )
 from services.ai.knowledge_engine.vector_store import ClinicalVectorStore
 from services.ai.knowledge_engine.schema import SourceType
@@ -132,10 +133,15 @@ class KnowledgeIngestionPipeline:
         self.rtf_parser    = RTFParser()
         self.epub_parser   = EPUBParser()
         self.json_parser   = JSONParser()
+        self.sqlite_parser = SQLiteParser()
 
     # ── Extension → (parser, SourceType) routing table ───────────────────────
     # Maps every supported extension to a (parse_fn, SourceType) pair.
     _EXT_MAP: dict[str, tuple[str, str]] = {
+        ".sqlite":  ("_parse_sqlite", "owner_reference"),
+        ".sqlite3": ("_parse_sqlite", "owner_reference"),
+        ".db":      ("_parse_sqlite", "owner_reference"),
+        ".db3":     ("_parse_sqlite", "owner_reference"),
         ".pdf":  ("_parse_pdf",  "owner_reference"),
         ".docx": ("_parse_docx", "owner_reference"),
         ".doc":  ("_parse_docx", "owner_reference"),   # best-effort via DOCX
@@ -218,6 +224,42 @@ class KnowledgeIngestionPipeline:
                 "collection": collection,
                 "evidence_level": evidence_level,
                 "base_specialty_tags": specialty_tags or [],
+            },
+        )
+
+    async def ingest_sqlite(
+        self,
+        db_path: str,
+        tables: list[str] | None = None,
+        title: str | None = None,
+        language: str = "fa",
+        collection: str = "owner_references",
+    ) -> dict:
+        """
+        Ingest a SQLite / .db database from a local path or mounted network share.
+        Auto-discovers tables; if `tables` is provided, only those are ingested.
+        Supports Persian column names and values natively.
+        """
+        p = Path(db_path)
+        if not p.exists():
+            return {"status": "error", "path": db_path, "error": "File not found"}
+        title = title or p.stem.replace("_", " ")
+        logger.info("Ingesting SQLite: %s", db_path)
+        chunks = self.sqlite_parser.parse(db_path, tables=tables)
+        if not chunks:
+            return {"status": "empty", "path": db_path}
+        source_id = str(uuid4())
+        return await self._process_chunks(
+            chunks=chunks,
+            source_id=source_id,
+            source_meta={
+                "source_id": source_id,
+                "source_title": title,
+                "source_type": SourceType.OWNER_REFERENCE.value,
+                "file_path": str(p.resolve()),
+                "language": language,
+                "collection": collection,
+                "db_tables": tables or "all",
             },
         )
 
@@ -329,6 +371,7 @@ class KnowledgeIngestionPipeline:
         return results
 
     # ── Private format-specific parse helpers ─────────────────────────────────
+    def _parse_sqlite(self, path: str) -> list[ParsedChunk]: return self.sqlite_parser.parse(path)
     def _parse_pdf(self, path: str)  -> list[ParsedChunk]: return self.pdf_parser.parse(path)
     def _parse_docx(self, path: str) -> list[ParsedChunk]: return self.docx_parser.parse(path)
     def _parse_md(self, path: str)   -> list[ParsedChunk]:
