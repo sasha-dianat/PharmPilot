@@ -43,7 +43,7 @@ function RevenueWaterfall() {
 
 function AdjudicationHistogram() {
   const data = Array.from({length:20}, (_,i) => ({
-    ms: i*20, count: Math.floor(Math.random()*30 + (i<10?20:5)),
+    ms: i*20, count: i < 10 ? (20 + i * 2) : Math.max(5, 20 - (i-10)*3),
     fill: i*20 < 200 ? '#22c55e' : '#ef4444',
   }))
   return (

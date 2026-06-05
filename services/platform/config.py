@@ -92,6 +92,9 @@ class Settings(BaseSettings):
         "http://localhost:4173",  # vite preview
     ]
 
+    # Qdrant vector store
+    QDRANT_URL: str = "http://localhost:6334"
+
     # Monitoring
     SENTRY_DSN: str = ""
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"

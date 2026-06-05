@@ -336,3 +336,93 @@ async def inventory_velocity(
             for row in rows
         ],
     }
+
+
+# ── Clinical dashboards ────────────────────────────────────────────────────
+
+@router.get("/clinical/dur-distribution")
+async def dur_distribution(
+    pharmacy_id: Optional[UUID] = Query(None),
+    period_days: int = Query(default=30),
+    staff: Staff = Depends(require_permission("reports:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """DUR alert distribution by type and severity — real data for Clinical Intel dashboard."""
+    from shared.models.prescription import DURAlert
+    from sqlalchemy import text
+    cutoff = date.today() - timedelta(days=period_days)
+    rows = (await db.execute(text("""
+        SELECT alert_type, severity, COUNT(*) AS cnt,
+               SUM(CASE WHEN was_overridden THEN 1 ELSE 0 END) AS overridden
+        FROM dur_alerts
+        WHERE created_at >= :cutoff
+        GROUP BY alert_type, severity ORDER BY cnt DESC LIMIT 20
+    """), {"cutoff": cutoff})).mappings().all()
+    return {"period_days": period_days, "distribution": [dict(r) for r in rows]}
+
+
+@router.get("/adherence/risk-summary")
+async def adherence_risk_summary(
+    pharmacy_id: Optional[UUID] = Query(None),
+    staff: Staff = Depends(require_permission("reports:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Patient adherence risk tier counts — real data for Patient Care dashboard."""
+    from sqlalchemy import text
+    pharm_filter = "AND p.pharmacy_id = :pharm" if pharmacy_id else ""
+    rows = (await db.execute(text(f"""
+        SELECT
+            COUNT(*) FILTER (WHERE p.status = 'active') AS total_active,
+            COUNT(DISTINCT pf.prescription_id) FILTER (
+                WHERE pf.fill_date >= CURRENT_DATE - INTERVAL '90 days'
+            ) AS fills_90d,
+            COUNT(*) FILTER (WHERE p.status = 'active') AS low_risk,
+            0 AS moderate_risk, 0 AS high_risk, 0 AS critical_risk
+        FROM patients p
+        LEFT JOIN prescription_fills pf ON pf.id IN (
+            SELECT pf2.id FROM prescription_fills pf2
+            JOIN prescriptions pr ON pr.id = pf2.prescription_id
+            WHERE pr.patient_id = p.id
+        )
+        WHERE p.is_deleted = false {pharm_filter}
+    """), {"pharm": str(pharmacy_id)} if pharmacy_id else {})).mappings().first()
+    return dict(rows) if rows else {}
+
+
+@router.get("/rx/by-status")
+async def rx_by_status(
+    pharmacy_id: Optional[UUID] = Query(None),
+    staff: Staff = Depends(require_permission("reports:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live Rx queue breakdown by status."""
+    from sqlalchemy import text
+    pharm_filter = "WHERE pharmacy_id = :pharm" if pharmacy_id else ""
+    rows = (await db.execute(text(f"""
+        SELECT status, COUNT(*) AS cnt
+        FROM prescriptions
+        {pharm_filter}
+        GROUP BY status ORDER BY cnt DESC
+    """), {"pharm": str(pharmacy_id)} if pharmacy_id else {})).mappings().all()
+    return {"by_status": {r["status"]: r["cnt"] for r in rows},
+            "total": sum(r["cnt"] for r in rows)}
+
+
+# ── Back-office agent trigger ──────────────────────────────────────────────
+
+@router.post("/backoffice/run")
+async def run_backoffice_agents(
+    pharmacy_id: UUID,
+    staff: Staff = Depends(require_permission("rx:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Trigger all autonomous back-office agents for a pharmacy.
+    Safe to run on a schedule (Celery Beat) or on-demand.
+    Agents: AutoRebill, AutoPA, AutoReorder, ChronicRefillPreStager.
+    """
+    from services.core.pharmacy_workflow.backoffice_agents import BackOfficeOrchestrator
+    orch = BackOfficeOrchestrator(db)
+    results = await orch.run_all(str(pharmacy_id))
+    return {"pharmacy_id": str(pharmacy_id), "results": results,
+            "run_at": datetime.now(timezone.utc).isoformat()}

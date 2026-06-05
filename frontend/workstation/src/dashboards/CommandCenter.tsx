@@ -295,9 +295,9 @@ function normalizeApiData(raw: Record<string, unknown>): CommandCenterData {
     revenue_30d_avg:              Number(raw?.revenue_30d_avg               ?? 12800),
     revenue_series: Array.from({length:12}, (_,i) => ({
       time:`${i*2}:00`,
-      today:    800 + Math.random()*400,
-      yesterday:750 + Math.random()*350,
-      avg:      780 + Math.random()*300,
+      today:    normalData?.fills?.today * 45 || 1250,
+      yesterday: 1150,
+      avg:      1100,
     })),
     queue_depth:      queueDepth,
     claims_submitted: claimsSubmitted,
@@ -319,7 +319,7 @@ function normalizeApiData(raw: Record<string, unknown>): CommandCenterData {
     rx_heatmap: Array.from({length:7*24}, (_,i) => ({
       day:   Math.floor(i/24),
       hour:  i % 24,
-      count: Math.floor(Math.random() * 30),
+      count: i < 4 ? Math.round(i * 2.5) : 0,
     })),
   }
 }

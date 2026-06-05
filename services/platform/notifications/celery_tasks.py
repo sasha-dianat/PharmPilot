@@ -48,6 +48,11 @@ CELERY_BEAT_SCHEDULE = {
         "task":     "services.platform.notifications.celery_tasks.send_expiry_alerts",
         "schedule": {"hour": 7, "minute": 30},
     },
+    # Back-office agents: auto-rebill, auto-PA, auto-reorder, refill pre-staging (every 2h)
+    "backoffice-agents": {
+        "task":     "services.platform.notifications.celery_tasks.run_backoffice_agents_all_pharmacies",
+        "schedule": {"minute": 0, "hour": "*/2"},
+    },
 }
 
 
@@ -220,3 +225,27 @@ async def send_expiry_alerts(pharmacy_id: str = None, db=None):
     row = result.one_or_none()
     if row and row[0] > 0:
         logger.warning("EXPIRY ALERT: %d lots expiring within 14 days", row[0])
+
+
+async def run_backoffice_agents_all_pharmacies(db=None):
+    """
+    Run all four back-office agents across all active pharmacies.
+    AutoRebill: re-submits recoverable claim rejections
+    AutoPA: initiates prior-auth for PA-required rejects
+    AutoReorder: creates draft POs for below-reorder-point drugs
+    ChronicRefillPreStager: identifies upcoming refill candidates
+    """
+    if not db:
+        logger.info("Back-office agents: no DB session — skipping (will run when Celery is live)")
+        return
+    from sqlalchemy import text
+    rows = (await db.execute(text(
+        "SELECT id FROM pharmacies WHERE is_active = true"))).all()
+    from services.core.pharmacy_workflow.backoffice_agents import BackOfficeOrchestrator
+    for (pharm_id,) in rows:
+        try:
+            orch = BackOfficeOrchestrator(db)
+            result = await orch.run_all(str(pharm_id))
+            logger.info("BackOffice agents for pharmacy %s: %s", str(pharm_id)[:8], result)
+        except Exception as e:
+            logger.error("Back-office agents failed for %s: %s", str(pharm_id)[:8], e)

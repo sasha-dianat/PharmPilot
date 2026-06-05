@@ -214,13 +214,18 @@ class ClinicalVectorStore:
         return getattr(result, "deleted_count", 0)
 
     def get_stats(self) -> dict:
-        """Return collection statistics."""
+        """Return collection statistics (compatible with Qdrant 1.9.x and 1.11+)."""
         client = self._get_client()
         info = client.get_collection(self.collection)
+        # Qdrant 1.9.x uses points_count; 1.11+ may use vectors_count
+        total = (getattr(info, "vectors_count", None)
+                 or getattr(info, "points_count", None)
+                 or 0)
+        indexed = (getattr(info, "indexed_vectors_count", None) or 0)
         return {
             "collection": self.collection,
-            "total_vectors": info.vectors_count,
-            "indexed_vectors": info.indexed_vectors_count,
+            "total_vectors": total,
+            "indexed_vectors": indexed,
             "embedding_model": MEDICAL_EMBEDDING_MODEL,
             "dimension": EMBEDDING_DIM,
         }

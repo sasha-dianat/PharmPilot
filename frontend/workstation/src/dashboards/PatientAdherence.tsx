@@ -123,7 +123,7 @@ function InterventionEffectiveness() {
 // ── Refill Reminder Performance ────────────────────────────────────────────
 function RefillReminderLine() {
   const data = Array.from({length:12}, (_,i) => ({
-    week:`W${i+1}`, sendRate:0.60+Math.random()*0.3, completionRate:0.55+Math.random()*0.3,
+    week:`W${i+1}`, sendRate: 0.65 + (i * 0.04) % 0.25, completionRate: 0.60 + (i * 0.035) % 0.3,
   }))
   return (
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">

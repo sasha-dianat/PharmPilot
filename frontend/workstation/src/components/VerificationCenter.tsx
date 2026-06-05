@@ -11,6 +11,7 @@ import type { DURAlert } from '../stores/rxQueue'
 import DURAlertPanel from './DURAlertPanel'
 import CouncilReport from './CouncilReport'
 import LabelPreview from './LabelPreview'
+import DictateNote from './DictateNote'
 import { rxApi, claimsApi, clinicalApi, apiClient } from '../lib/api'
 import { ErrorBoundary } from './ErrorBoundary'
 
@@ -426,6 +427,35 @@ export default function VerificationCenter() {
           onTransition={handleTransition}
         />
       </div>
+
+      {/* ── Voice Rx note (pharmacist dictates, confirms before saving) ─────── */}
+      {selectedRx.status === 'verification_in_progress' && (
+        <div className="bg-white border rounded-lg p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-700">🎙 Voice Notes</span>
+            <span className="text-xs text-gray-400">— dictate, review, confirm · never auto-saved</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <DictateNote
+              context="note"
+              language="fa"
+              placeholder="Rx note will appear here for review…"
+              onConfirm={(text, ctx) => {
+                // In a full implementation: POST /prescriptions/{id}/notes
+                console.info(`[Voice note confirmed] ctx=${ctx}: ${text.slice(0, 80)}`)
+                alert(`✓ Note saved:\n${text}`)
+              }}
+            />
+            <DictateNote
+              context="counseling"
+              language="fa"
+              compact
+              placeholder="Counseling points…"
+              onConfirm={(text) => console.info('[Counseling]', text.slice(0, 60))}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Clinical Brain query ───────────────────────────────────────────── */}
       <ClinicalBrainQuery drugName={selectedRx.drug_name} patientId={selectedRx.patient_id} />

@@ -1,5 +1,5 @@
 storage:
-  storage_path: /Users/sashad85/pharmpilot-claude/.qdrant/storage
+  storage_path: /Users/sashad85/PharmPilot-Claude/.qdrant/storage
 
 service:
   host: 127.0.0.1

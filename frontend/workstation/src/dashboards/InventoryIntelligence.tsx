@@ -169,8 +169,8 @@ function DemandForecastPanel({ items }: { items: StockItem[] }) {
     const base = item?.avg_daily_demand || 3
     return {
       day: i - 20, label: `${i - 20}d`,
-      actual:   isHistory ? Math.round(base + (Math.random() - 0.5) * base * 0.4) : undefined,
-      forecast: !isHistory ? Math.round(base * (1 + Math.random() * 0.2)) : undefined,
+      actual:   isHistory ? Math.round(base * (0.8 + (i % 5) * 0.09)) : undefined,
+      forecast: !isHistory ? Math.round(base * (1.05 + (i % 4) * 0.05)) : undefined,
       ci_upper: !isHistory ? Math.round(base * 1.4) : undefined,
       ci_lower: !isHistory ? Math.round(base * 0.6) : undefined,
     }
@@ -290,9 +290,9 @@ export default function InventoryIntelligence() {
     refetchInterval: 120_000,
     placeholderData: Array.from({length:20}, (_,i) => ({
       ndc11: `0007${i}015423`, drug_name: ['Metformin 500mg','Atorvastatin 40mg','Lisinopril 10mg','Gabapentin 300mg','Amlodipine 5mg','Omeprazole 20mg','Metoprolol 25mg','Sertraline 50mg','Levothyroxine 50mcg','Hydrochlorothiazide 25mg'][i%10],
-      quantity_on_hand: 20+Math.random()*200, reorder_point: 30+Math.random()*50,
-      avg_daily_demand: 2+Math.random()*8, stockout_probability_7d: Math.random(),
-      days_supply: 5+Math.random()*200, reorder_quantity: 100+Math.random()*400,
+      quantity_on_hand: 80 + (i * 23) % 120, reorder_point: 30 + (i * 7) % 50,
+      avg_daily_demand: 2 + (i * 0.7) % 8, stockout_probability_7d: (i * 0.07) % 0.95,
+      days_supply: 5 + (i * 18) % 200, reorder_quantity: 100 + (i * 37) % 400,
       last_dispensed_at: new Date().toISOString(), forecast_updated_at: new Date().toISOString(),
     })) as StockItem[],
   })
@@ -304,7 +304,7 @@ export default function InventoryIntelligence() {
     placeholderData: Array.from({length:10}, (_,i) => ({
       ndc11: `0007${i}015423`, lot_number: `LOT${i}001`,
       expiry_date: new Date(Date.now()+(i*8+3)*24*3600*1000).toISOString().split('T')[0],
-      days_until_expiry: i*8+3, quantity_on_hand: 20+Math.random()*80,
+      days_until_expiry: i*8+3, quantity_on_hand: 20 + (i * 17) % 80,
       urgency: i<2?'immediate':i<4?'high':i<7?'moderate':'low' as any,
     })),
   })

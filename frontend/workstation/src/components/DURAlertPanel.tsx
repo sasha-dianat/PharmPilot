@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import type { DURAlert, AlertSeverity } from '../stores/rxQueue'
 import { rxApi } from '../lib/api'
+import DictateNote from './DictateNote'
 
 interface Props {
   alerts: DURAlert[]
@@ -145,16 +146,25 @@ export default function DURAlertPanel({ alerts, rxId, onAlertResolved }: Props) 
               {/* Override reason input */}
               {isOverriding && (
                 <div className="space-y-2 pt-2 border-t border-gray-200">
-                  <label className="text-xs font-medium text-gray-700">
-                    Override reason (required, minimum 10 characters):
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-gray-700">
+                      Override reason (required, min 10 chars):
+                    </label>
+                    {/* 🎙 Dictate the override reason hands-free */}
+                    <DictateNote
+                      context="dur_override"
+                      language="fa"
+                      compact
+                      onConfirm={(text) => setOverrideReason(prev => prev ? `${prev} ${text}` : text)}
+                    />
+                  </div>
                   <textarea
                     autoFocus
                     value={overrideReason}
                     onChange={(e) => setOverrideReason(e.target.value)}
                     rows={2}
                     className="w-full text-sm border border-gray-300 rounded p-2 resize-none focus:outline-none focus:ring-2 focus:ring-orange-400"
-                    placeholder="Document clinical reasoning for override..."
+                    placeholder="Document clinical reasoning (or tap 🎙 to dictate)..."
                   />
                   <div className="flex gap-2">
                     <button
