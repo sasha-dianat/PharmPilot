@@ -13,7 +13,7 @@ import VerificationCenter from './components/VerificationCenter'
 import PatientPanel from './components/PatientPanel'
 import IdentityCard, { type IdentityCandidate } from './components/IdentityCard'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { apiClient } from './lib/api'
+import { apiClient, rxApi } from './lib/api'
 import { useAbbreviationScanner } from './lib/useAbbreviationScanner'
 import OfflineIndicator from './components/OfflineIndicator'
 
@@ -111,7 +111,17 @@ function WorkstationApp() {
   const userRole   = localStorage.getItem('user_role')   || ''
   const { connect } = useRxQueueWebSocket(pharmacyId)
   const [showDashboard, setShowDashboard] = useState(false)
-  useEffect(() => { const cleanup = connect(); return cleanup }, [])
+  useEffect(() => {
+    const cleanup = connect()
+    rxApi.queue().then((response) => {
+      if (useRxQueueStore.getState().queue.length === 0) {
+        useRxQueueStore.getState().setQueue(response.data)
+      }
+    }).catch((err) => {
+      console.warn('Initial Rx queue fetch failed:', err)
+    })
+    return cleanup
+  }, [])
   // Global abbreviation tooltip scanner — runs on every render/route change
   useAbbreviationScanner()
 

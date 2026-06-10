@@ -1,4 +1,5 @@
 """Prescription workflow router — intake, queue management, state transitions."""
+import asyncio
 from datetime import date
 from typing import Optional
 from uuid import UUID
@@ -559,33 +560,36 @@ async def rx_queue_websocket(
     Broadcasts queue changes to all connected workstations.
     """
     await websocket.accept()
+
+    async def send_snapshot() -> None:
+        result = await db.execute(
+            select(Prescription).where(
+                Prescription.pharmacy_id == pharmacy_id,
+                Prescription.status.in_([
+                    RxStatus.PENDING_VERIFICATION.value,
+                    RxStatus.VERIFICATION_IN_PROGRESS.value,
+                    RxStatus.PENDING_ADJUDICATION.value,
+                    RxStatus.ADJUDICATION_REJECTED.value,
+                    RxStatus.READY_TO_FILL.value,
+                    RxStatus.FILLING.value,
+                    RxStatus.FILLED.value,
+                    RxStatus.WILL_CALL.value,
+                ]),
+                Prescription.is_deleted == False,  # noqa: E712
+            ).order_by(Prescription.created_at).limit(100)
+        )
+        rxs = result.scalars().all()
+        await websocket.send_json({
+            "event": "queue_update",
+            "count": len(rxs),
+            "items": [rx_to_dict(r) for r in rxs],
+        })
+
     try:
         while True:
             # In production: subscribe to Kafka topic rx.queue.{pharmacy_id}
             # For now: poll every 3 seconds
-            import asyncio
+            await send_snapshot()
             await asyncio.sleep(3)
-            result = await db.execute(
-                select(Prescription).where(
-                    Prescription.pharmacy_id == pharmacy_id,
-                    Prescription.status.in_([
-                        RxStatus.PENDING_VERIFICATION.value,
-                        RxStatus.VERIFICATION_IN_PROGRESS.value,
-                        RxStatus.PENDING_ADJUDICATION.value,
-                        RxStatus.ADJUDICATION_REJECTED.value,
-                        RxStatus.READY_TO_FILL.value,
-                        RxStatus.FILLING.value,
-                        RxStatus.FILLED.value,
-                        RxStatus.WILL_CALL.value,
-                    ]),
-                    Prescription.is_deleted == False,  # noqa: E712
-                ).order_by(Prescription.created_at).limit(100)
-            )
-            rxs = result.scalars().all()
-            await websocket.send_json({
-                "event": "queue_update",
-                "count": len(rxs),
-                "items": [rx_to_dict(r) for r in rxs],
-            })
     except WebSocketDisconnect:
         pass

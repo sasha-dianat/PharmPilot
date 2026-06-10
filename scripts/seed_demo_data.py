@@ -66,9 +66,16 @@ async def seed(reset: bool = False) -> None:
 
         if reset:
             print("Resetting existing demo data…")
+            # FK-safe order: each table is deleted before every table it
+            # references (claims chain → fills → prescriptions → patients).
             for tbl in [
-                "dur_alerts", "rx_state_events", "prescription_fills",
-                "prescriptions", "patient_insurances", "patient_allergies",
+                "dir_fee_adjustments", "claim_transactions",
+                "label_events", "dur_alerts", "rx_state_events",
+                "prescription_fills", "prescriptions",
+                "patient_insurances", "patient_allergies",
+                "lab_results", "clinical_notes", "biometric_identities",
+                "pharmacy_visits", "audio_transcripts",
+                "profile_enrichment_actions",
                 "patients", "prescribers",
             ]:
                 await db.execute(text(f"DELETE FROM {tbl}"))
@@ -210,13 +217,13 @@ async def seed(reset: bool = False) -> None:
                      rx_number, drug_name, ndc, sig_text,
                      quantity_prescribed, days_supply,
                      refills_authorized, refills_remaining,
-                     is_controlled, status, source,
+                     is_controlled, dea_schedule, status, source,
                      written_date, expiry_date, created_at, updated_at)
                 VALUES
                     (:id, :pharm, :pat, :presc,
                      :rxn, :drug, :ndc, :sig,
                      :qty, :days, :refills, :refills,
-                     :ctrl, :status, 'paper',
+                     :ctrl, :dea, :status, 'paper',
                      CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year',
                      NOW(), NOW())
                 ON CONFLICT (rx_number) DO NOTHING
@@ -226,6 +233,8 @@ async def seed(reset: bool = False) -> None:
                 "rxn": rx_num, "drug": drug, "ndc": ndc,
                 "sig": sig, "qty": float(qty), "days": days,
                 "refills": refills, "ctrl": controlled, "status": status,
+                # Alprazolam is the only controlled drug in the demo set (C-IV)
+                "dea": "C-IV" if controlled else None,
             })
 
             # Create fill for dispensed prescriptions

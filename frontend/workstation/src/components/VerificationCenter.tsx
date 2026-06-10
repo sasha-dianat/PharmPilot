@@ -707,7 +707,12 @@ function ActionButtons({
           ⏸ Hold
         </button>
       )}
-      {!['dispensed', 'cancelled', 'returned_to_stock'].includes(status) && (
+      {/* Only statuses with a legal → cancelled edge in the backend
+          RxStateMachine TRANSITIONS map (pending_adjudication, filling,
+          filled, will_call and terminals cannot cancel). */}
+      {['intake', 'pending_dur', 'dur_hold', 'pending_verification',
+        'verification_in_progress', 'adjudication_rejected', 'pending_pa',
+        'ready_to_fill', 'on_hold'].includes(status) && (
         <button onClick={onCancelRx}
           className="px-3 py-2 text-red-600 text-sm rounded-lg border border-red-200 hover:bg-red-50 font-medium">
           Cancel Rx
