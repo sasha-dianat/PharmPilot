@@ -16,6 +16,7 @@ import DictateNote from './DictateNote'
 import { rxApi, claimsApi, clinicalApi, apiClient } from '../lib/api'
 import { ErrorBoundary } from './ErrorBoundary'
 import RxCopilotRail from './RxCopilotRail'
+import CancelRxModal from './CancelRxModal'
 import { IntegrityBanner } from './IntelligenceWorkflowBits'
 
 // ── Step definitions ─────────────────────────────────────────────────────────
@@ -107,6 +108,7 @@ export default function VerificationCenter() {
   const [claimLoading, setClaimLoading] = useState(false)
   const [claimError,   setClaimError]  = useState('')
   const [pdmpLoading,  setPdmpLoading] = useState(false)
+  const [showCancelRx, setShowCancelRx] = useState(false)
 
   const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
 
@@ -116,6 +118,7 @@ export default function VerificationCenter() {
     setPdmpResult(null)
     setShowLabel(false)
     setClaimError('')
+    setShowCancelRx(false)
   }, [selectedRx?.id])
 
   // Fetch DUR alerts
@@ -453,6 +456,15 @@ export default function VerificationCenter() {
           }}
         />
       )}
+      {showCancelRx && (
+        <CancelRxModal
+          rxId={selectedRx.id}
+          rxNumber={selectedRx.rx_number}
+          drugName={selectedRx.drug_name}
+          onClose={() => setShowCancelRx(false)}
+          onCancelled={() => refreshRx(selectedRx.id)}
+        />
+      )}
 
       {/* ── Action buttons ─────────────────────────────────────────────────── */}
       <div className="bg-white border rounded-lg p-3">
@@ -464,6 +476,7 @@ export default function VerificationCenter() {
           onClaim={handleClaim}
           onAdjudicate={handleAdjudicate}
           onShowLabel={() => setShowLabel(true)}
+          onCancelRx={() => setShowCancelRx(true)}
           onTransition={handleTransition}
         />
       </div>
@@ -637,10 +650,10 @@ function ClaimResultPanel({ result, onInitiatePA }: { result: ClaimResult; onIni
 
 function ActionButtons({
   status, criticalHardStops, claimLoading, claimApproved,
-  onClaim, onAdjudicate, onShowLabel, onTransition,
+  onClaim, onAdjudicate, onShowLabel, onCancelRx, onTransition,
 }: {
   status: string; criticalHardStops: number; claimLoading: boolean; claimApproved: boolean
-  onClaim: () => void; onAdjudicate: () => void; onShowLabel: () => void
+  onClaim: () => void; onAdjudicate: () => void; onShowLabel: () => void; onCancelRx: () => void
   onTransition: (s: string) => void
 }) {
   const btn = (label: string, handler: () => void, cls: string, disabled = false) => (
@@ -667,10 +680,6 @@ function ActionButtons({
 
       {status === 'dur_hold' && (<>
         {btn('↩ Return to Verification', () => onTransition('verification_in_progress'), 'bg-blue-600 hover:bg-blue-700')}
-        <button onClick={() => onTransition('cancelled')}
-          className="px-4 py-2 bg-red-100 text-red-700 text-sm rounded-lg hover:bg-red-200 border border-red-300 font-medium">
-          Cancel Rx
-        </button>
       </>)}
 
       {status === 'pending_adjudication' && claimApproved &&
@@ -696,6 +705,12 @@ function ActionButtons({
         <button onClick={() => onTransition('on_hold')}
           className="px-3 py-2 text-gray-500 text-sm rounded-lg border border-gray-200 hover:bg-gray-50">
           ⏸ Hold
+        </button>
+      )}
+      {!['dispensed', 'cancelled', 'returned_to_stock'].includes(status) && (
+        <button onClick={onCancelRx}
+          className="px-3 py-2 text-red-600 text-sm rounded-lg border border-red-200 hover:bg-red-50 font-medium">
+          Cancel Rx
         </button>
       )}
     </div>
