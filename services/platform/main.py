@@ -1,6 +1,7 @@
 """
 PharmPilot AI — Main FastAPI Application
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from prometheus_client import make_asgi_app
 
 from services.platform.config import settings
 from services.platform.database import engine
-from shared.models.base import Base
+from services.platform.migrations import run_migrations_on_boot
 
 # Import ALL models here so SQLAlchemy's mapper registry resolves every
 # relationship string reference before the first request is handled.
@@ -36,9 +37,13 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     logger.info("PharmPilot starting up", environment=settings.ENVIRONMENT)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables verified")
+    if settings.RUN_MIGRATIONS_ON_BOOT:
+        try:
+            await asyncio.to_thread(run_migrations_on_boot)
+        except Exception:
+            logger.exception("Database migration failed during startup")
+            raise
+        logger.info("Database migrated to alembic head")
 
     yield
 

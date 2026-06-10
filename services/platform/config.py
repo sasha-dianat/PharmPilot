@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://pharmpilot:pharmpilot_dev@localhost:5432/pharmpilot"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
+    RUN_MIGRATIONS_ON_BOOT: bool = True
 
     # Redis
     REDIS_URL: str = "redis://:redis_dev@localhost:6379/0"
