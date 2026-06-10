@@ -1,160 +1,267 @@
 /**
  * useAbbreviationScanner
  * =======================
- * Global MutationObserver that automatically detects known pharmacy/clinical
- * abbreviations in any rendered text node and wraps them with tooltip spans.
+ * Read-only global abbreviation helper.
  *
- * Works on ALL text in the app — labels, table cells, badges, chart tooltips,
- * error messages — without requiring manual changes to existing components.
- *
- * How it works:
- *   1. On mount, scans the full DOM for text nodes containing known abbreviations.
- *   2. Splits matching text nodes and inserts <mark class="pp-abbr"> elements.
- *   3. A MutationObserver watches for new nodes (route changes, dynamic data)
- *      and processes them automatically.
- *   4. CSS in index.css renders the tooltip on hover via ::after pseudo-element.
- *
- * Safe guards:
- *   - Skips <script>, <style>, <input>, <textarea>, <pre>, <code> nodes
- *   - Skips nodes already processed (data-abbr-scanned attribute)
- *   - Debounced 150 ms to avoid thrashing on rapid re-renders
- *   - Never modifies React-controlled event attributes
+ * React owns the application DOM, so this hook never rewrites text nodes or
+ * injects wrappers into rendered content. It delegates hover detection from the
+ * document, reads the text node under the pointer with caretRangeFromPoint, and
+ * displays definitions in one tooltip node appended outside React's root.
  */
 import { useEffect } from 'react'
 import { GLOSSARY, GLOSSARY_KEYS } from './glossary'
 
-// Skip these tags — they contain non-display text or user-editable content
-const SKIP_TAGS = new Set([
-  'SCRIPT', 'STYLE', 'INPUT', 'TEXTAREA', 'PRE', 'CODE',
-  'SELECT', 'BUTTON', 'A', 'SVG', 'PATH', 'CANVAS',
-  'VIDEO', 'AUDIO', 'NOSCRIPT', 'TEMPLATE',
-])
+type CaretPointDocument = Document & {
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+  caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null
+}
 
-// Only wrap abbreviations inside these containers (avoids nav, modal backdrop, etc.)
-const SCAN_ROOT_SELECTOR = 'main, [data-dashboard], [role="main"], .workstation-content'
+type TextPosition = {
+  textNode: Text
+  offset: number
+}
 
-let scanScheduled = false
+type GlossaryMatch = {
+  term: string
+  definition: string
+}
 
-/**
- * Build the regex once — sorted longest-first to prefer NDC-11 over NDC.
- */
-const ABBR_PATTERN = new RegExp(
-  `\\b(${GLOSSARY_KEYS.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
-  'g',
+type PointerSnapshot = {
+  x: number
+  y: number
+  target: Element | null
+}
+
+const HOVER_DELAY_MS = 120
+const TOOLTIP_OFFSET_PX = 12
+const VIEWPORT_MARGIN_PX = 8
+
+const INTERACTIVE_SELECTOR = [
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'a',
+  '[contenteditable]',
+  '[data-no-abbr]',
+].join(',')
+
+const GLOSSARY_BY_LOWER = new Map<string, GlossaryMatch>(
+  GLOSSARY_KEYS.map((term) => [
+    term.toLowerCase(),
+    { term, definition: GLOSSARY[term] },
+  ]),
 )
 
-function processTextNode(textNode: Text): void {
-  const text = textNode.textContent || ''
-  if (!text.trim()) return
+const MULTI_WORD_KEYS = GLOSSARY_KEYS.filter((term) => term.includes(' '))
 
-  // Quick check before regex
-  const hasAbbr = GLOSSARY_KEYS.some(k => text.includes(k))
-  if (!hasAbbr) return
+function isWordChar(char: string | undefined): boolean {
+  return !!char && /[A-Za-z0-9-]/.test(char)
+}
 
-  const parent = textNode.parentNode as HTMLElement | null
-  if (!parent) return
-  if (SKIP_TAGS.has(parent.tagName)) return
-  if (parent.closest('[data-no-abbr]')) return
-  if ((parent as HTMLElement).classList?.contains('pp-abbr')) return
+function hasWordBoundary(text: string, start: number, end: number): boolean {
+  return !isWordChar(text[start - 1]) && !isWordChar(text[end])
+}
 
-  // Reset lastIndex for global regex
-  ABBR_PATTERN.lastIndex = 0
-
-  const parts: Array<string | { term: string; def: string }> = []
-  let last = 0
-  let m: RegExpExecArray | null
-
-  while ((m = ABBR_PATTERN.exec(text)) !== null) {
-    const term = m[1]
-    const def  = GLOSSARY[term]
-    if (!def) continue
-    if (m.index > last) parts.push(text.slice(last, m.index))
-    parts.push({ term, def })
-    last = m.index + term.length
+function normalizeTextPosition(node: Node, offset: number): TextPosition | null {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return { textNode: node as Text, offset }
   }
 
-  if (parts.length === 0 || (parts.length === 1 && typeof parts[0] === 'string')) return
-  if (last < text.length) parts.push(text.slice(last))
+  const childAtOffset = node.childNodes.item(offset)
+  if (childAtOffset?.nodeType === Node.TEXT_NODE) {
+    return { textNode: childAtOffset as Text, offset: 0 }
+  }
 
-  // Build fragment replacing the text node
-  const frag = document.createDocumentFragment()
-  for (const part of parts) {
-    if (typeof part === 'string') {
-      frag.appendChild(document.createTextNode(part))
-    } else {
-      const span = document.createElement('mark')
-      span.className    = 'pp-abbr'
-      span.textContent  = part.term
-      span.dataset.def  = part.def
-      span.setAttribute('role', 'term')
-      span.setAttribute('aria-label', `${part.term}: ${part.def}`)
-      frag.appendChild(span)
+  const childBeforeOffset = offset > 0 ? node.childNodes.item(offset - 1) : null
+  if (childBeforeOffset?.nodeType === Node.TEXT_NODE) {
+    return {
+      textNode: childBeforeOffset as Text,
+      offset: childBeforeOffset.textContent?.length ?? 0,
     }
   }
 
-  parent.replaceChild(frag, textNode)
+  return null
 }
 
-function walkNode(node: Node): void {
-  if (node.nodeType === Node.TEXT_NODE) {
-    processTextNode(node as Text)
-    return
+function getTextPositionFromPoint(x: number, y: number): TextPosition | null {
+  const doc = document as CaretPointDocument
+  const range = doc.caretRangeFromPoint?.(x, y)
+
+  if (range) {
+    return normalizeTextPosition(range.startContainer, range.startOffset)
   }
-  if (node.nodeType !== Node.ELEMENT_NODE) return
 
-  const el = node as HTMLElement
-  if (SKIP_TAGS.has(el.tagName)) return
-  if (el.dataset.abbrScanned) return
-  el.dataset.abbrScanned = '1'
+  const position = doc.caretPositionFromPoint?.(x, y)
+  if (position) {
+    return normalizeTextPosition(position.offsetNode, position.offset)
+  }
 
-  // Walk child nodes (collect first — replaceChild mutates childNodes)
-  const children = Array.from(el.childNodes)
-  children.forEach(walkNode)
+  return null
 }
 
-function scanDom(): void {
-  // Scan the broadest container available, fall back to document.body
-  const roots = document.querySelectorAll(SCAN_ROOT_SELECTOR)
-  const targets: Element[] = roots.length > 0
-    ? Array.from(roots)
-    : [document.body]
+function extractWordAtOffset(text: string, rawOffset: number): string | null {
+  if (!text) return null
 
-  targets.forEach(root => {
-    // Reset scanned flag so updated nodes get re-processed
-    root.querySelectorAll('[data-abbr-scanned]').forEach(el =>
-      delete (el as HTMLElement).dataset.abbrScanned
-    )
-    walkNode(root)
+  let offset = Math.min(Math.max(rawOffset, 0), text.length)
+  if (offset === text.length) offset -= 1
+  if (!isWordChar(text[offset]) && offset > 0 && isWordChar(text[offset - 1])) {
+    offset -= 1
+  }
+  if (!isWordChar(text[offset])) return null
+
+  let start = offset
+  while (start > 0 && isWordChar(text[start - 1])) start -= 1
+
+  let end = offset + 1
+  while (end < text.length && isWordChar(text[end])) end += 1
+
+  return text.slice(start, end)
+}
+
+function findMultiWordMatch(text: string, offset: number): GlossaryMatch | null {
+  if (MULTI_WORD_KEYS.length === 0) return null
+
+  const lowerText = text.toLowerCase()
+  for (const term of MULTI_WORD_KEYS) {
+    const lowerTerm = term.toLowerCase()
+    let index = lowerText.indexOf(lowerTerm)
+
+    while (index !== -1) {
+      const end = index + lowerTerm.length
+      if (offset >= index && offset <= end && hasWordBoundary(text, index, end)) {
+        return GLOSSARY_BY_LOWER.get(lowerTerm) ?? null
+      }
+      index = lowerText.indexOf(lowerTerm, index + 1)
+    }
+  }
+
+  return null
+}
+
+function findGlossaryMatch(textPosition: TextPosition): GlossaryMatch | null {
+  const text = textPosition.textNode.textContent ?? ''
+  const offset = Math.min(Math.max(textPosition.offset, 0), text.length)
+
+  const multiWordMatch = findMultiWordMatch(text, offset)
+  if (multiWordMatch) return multiWordMatch
+
+  const word = extractWordAtOffset(text, offset)
+  if (!word) return null
+
+  return GLOSSARY_BY_LOWER.get(word.toLowerCase()) ?? null
+}
+
+function createTooltip(): HTMLDivElement {
+  const tooltip = document.createElement('div')
+  tooltip.className = 'pp-abbr-tooltip'
+  tooltip.setAttribute('role', 'tooltip')
+  Object.assign(tooltip.style, {
+    position: 'fixed',
+    display: 'none',
+    zIndex: '9999',
+    maxWidth: '340px',
+    padding: '8px 12px',
+    border: '1px solid rgba(139, 92, 246, 0.4)',
+    borderRadius: '8px',
+    background: '#1e1b4b',
+    color: '#e0e7ff',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.5), 0 0 0 1px rgba(139,92,246,0.15)',
+    fontFamily: 'system-ui, sans-serif',
+    fontSize: '11.5px',
+    fontWeight: '400',
+    lineHeight: '1.5',
+    pointerEvents: 'none',
+    whiteSpace: 'normal',
   })
+  document.body.appendChild(tooltip)
+  return tooltip
 }
 
-function scheduleScan(): void {
-  if (scanScheduled) return
-  scanScheduled = true
-  setTimeout(() => {
-    scanScheduled = false
-    scanDom()
-  }, 150)
+function shouldSkipTarget(target: Element | null): boolean {
+  return !target || !!target.closest(INTERACTIVE_SELECTOR)
 }
 
 export function useAbbreviationScanner(): void {
   useEffect(() => {
-    // Initial scan
-    scheduleScan()
+    const tooltip = createTooltip()
+    let hoverTimer: ReturnType<typeof window.setTimeout> | null = null
 
-    // Watch for DOM changes (route transitions, async data loads)
-    const observer = new MutationObserver((mutations) => {
-      const hasNewNodes = mutations.some(m => m.addedNodes.length > 0)
-      if (hasNewNodes) scheduleScan()
-    })
+    const clearHoverTimer = (): void => {
+      if (hoverTimer === null) return
+      window.clearTimeout(hoverTimer)
+      hoverTimer = null
+    }
 
-    observer.observe(document.body, {
-      childList:  true,
-      subtree:    true,
-      attributes: false,
-      characterData: false,
-    })
+    const hideTooltip = (): void => {
+      clearHoverTimer()
+      tooltip.style.display = 'none'
+      tooltip.textContent = ''
+    }
 
-    return () => observer.disconnect()
+    const showTooltip = (match: GlossaryMatch, pointer: PointerSnapshot): void => {
+      tooltip.textContent = `${match.term}: ${match.definition}`
+      tooltip.style.display = 'block'
+      tooltip.style.left = '0px'
+      tooltip.style.top = '0px'
+
+      const rect = tooltip.getBoundingClientRect()
+      const preferredLeft = pointer.x + TOOLTIP_OFFSET_PX
+      const preferredTop = pointer.y + TOOLTIP_OFFSET_PX
+      const maxLeft = window.innerWidth - rect.width - VIEWPORT_MARGIN_PX
+      const maxTop = window.innerHeight - rect.height - VIEWPORT_MARGIN_PX
+      const fallbackTop = pointer.y - rect.height - TOOLTIP_OFFSET_PX
+
+      const left = Math.max(VIEWPORT_MARGIN_PX, Math.min(preferredLeft, maxLeft))
+      const top = preferredTop > maxTop
+        ? Math.max(VIEWPORT_MARGIN_PX, fallbackTop)
+        : Math.max(VIEWPORT_MARGIN_PX, preferredTop)
+
+      tooltip.style.left = `${left}px`
+      tooltip.style.top = `${top}px`
+    }
+
+    const updateTooltip = (pointer: PointerSnapshot): void => {
+      if (shouldSkipTarget(pointer.target)) {
+        hideTooltip()
+        return
+      }
+
+      const textPosition = getTextPositionFromPoint(pointer.x, pointer.y)
+      const match = textPosition ? findGlossaryMatch(textPosition) : null
+
+      if (!match) {
+        hideTooltip()
+        return
+      }
+
+      showTooltip(match, pointer)
+    }
+
+    const onMouseMove = (event: MouseEvent): void => {
+      clearHoverTimer()
+      const pointer: PointerSnapshot = {
+        x: event.clientX,
+        y: event.clientY,
+        target: event.target instanceof Element ? event.target : null,
+      }
+
+      hoverTimer = window.setTimeout(() => {
+        hoverTimer = null
+        updateTooltip(pointer)
+      }, HOVER_DELAY_MS)
+    }
+
+    document.addEventListener('mousemove', onMouseMove, { passive: true })
+    document.addEventListener('scroll', hideTooltip, { capture: true, passive: true })
+    document.addEventListener('mouseleave', hideTooltip)
+
+    return () => {
+      clearHoverTimer()
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('scroll', hideTooltip, true)
+      document.removeEventListener('mouseleave', hideTooltip)
+      tooltip.remove()
+    }
   }, [])
 }

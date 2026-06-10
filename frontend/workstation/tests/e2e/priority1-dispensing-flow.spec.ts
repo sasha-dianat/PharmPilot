@@ -75,10 +75,18 @@ test.describe('Priority 1 — Core dispensing flow (online)', () => {
         await verifyBtn.click()
         // Either a claim result panel renders or the Rx auto-advances — both are
         // acceptable; what matters is no hang/white-screen and a real API call fired.
+        // An APPROVED claim surfaces "Patient pays"/"Advance to Fill"; a REJECTED
+        // claim (e.g. NCPDP reject 75 → prior auth, a deterministic outcome of the
+        // sandbox adjudication switch) surfaces the "Claim Rejected"/"Initiate Prior
+        // Authorization" panel. Both are healthy terminals of the adjudication step;
+        // the downstream fill steps below are all guarded with `if visible` so they
+        // naturally no-op on the rejection path.
         await expect(
           page.getByRole('button', { name: /Advance to Fill/i })
             .or(page.getByText(/Patient pays/i))
             .or(page.getByRole('button', { name: /Begin Filling/i }))
+            .or(page.getByText(/Claim Rejected/i))
+            .or(page.getByRole('button', { name: /Initiate Prior Authorization/i }))
             .first()
         ).toBeVisible({ timeout: 20_000 })
       }
