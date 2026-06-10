@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.auth import get_current_staff, require_permission
+from services.platform.config import settings
 from services.platform.database import get_db
 from services.core.adjudication.engine import AdjudicationEngine
 from services.core.adjudication.reject_resolver import RejectResolver
@@ -76,7 +77,7 @@ async def submit_claim(
     )
     prescriber = prescriber_result.scalar_one_or_none()
 
-    engine = AdjudicationEngine(db)
+    engine = AdjudicationEngine(db, integrations_sandbox=settings.INTEGRATIONS_SANDBOX)
     result = await engine.submit_claim(
         fill_id=body.fill_id,
         claim_data={
@@ -210,7 +211,7 @@ async def reverse_claim(
     if claim.status != "approved":
         raise HTTPException(422, f"Can only reverse approved claims (current status: {claim.status})")
 
-    engine = AdjudicationEngine(db)
+    engine = AdjudicationEngine(db, integrations_sandbox=settings.INTEGRATIONS_SANDBOX)
     fill_result = await db.execute(
         select(PrescriptionFill).where(PrescriptionFill.id == claim.fill_id)
     )

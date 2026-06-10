@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     FDB_API_KEY: str = ""
     MEDSPAN_API_KEY: str = ""
 
+    # External integrations. Default-on sandbox lets pilots run without live
+    # third-party credentials or outbound network calls.
+    INTEGRATIONS_SANDBOX: bool = True
+
     # ── Identity & localization ───────────────────────────────────────────────
     # Default deployment is Iranian: national code (کد ملی) primary identifier,
     # Jalali display calendar, Persian locale. Set to "american" to switch the
