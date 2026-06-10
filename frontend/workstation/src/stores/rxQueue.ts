@@ -96,7 +96,17 @@ export const useRxQueueStore = create<RxQueueState>((set) => ({
   wsConnected: false,
   wsLastUpdate: null,
 
-  setQueue: (queue) => set({ queue, wsLastUpdate: new Date() }),
+  setQueue: (queue) => set((state) => {
+    const nextState: Partial<RxQueueState> = { queue, wsLastUpdate: new Date() }
+
+    if (state.selectedRxId) {
+      const refreshedSelection = queue.find((rx) => rx.id === state.selectedRxId) || null
+      nextState.selectedRxId = refreshedSelection?.id || null
+      nextState.selectedRx = refreshedSelection
+    }
+
+    return nextState
+  }),
 
   selectRx: (id) => set((state) => ({
     selectedRxId: id,
@@ -111,12 +121,18 @@ export const useRxQueueStore = create<RxQueueState>((set) => ({
     set({ incomingPatient: patient, biometricMatchConfidence: confidence }),
 
   updateRxInQueue: (id, updates) =>
-    set((state) => ({
-      queue: state.queue.map((rx) => rx.id === id ? { ...rx, ...updates } : rx),
-      selectedRx: state.selectedRxId === id
-        ? { ...state.selectedRx!, ...updates }
-        : state.selectedRx,
-    })),
+    set((state) => {
+      const queue = state.queue.map((rx) => rx.id === id ? { ...rx, ...updates } : rx)
+      const nextState: Partial<RxQueueState> = { queue }
+
+      if (state.selectedRxId) {
+        const refreshedSelection = queue.find((rx) => rx.id === state.selectedRxId) || null
+        nextState.selectedRxId = refreshedSelection?.id || null
+        nextState.selectedRx = refreshedSelection
+      }
+
+      return nextState
+    }),
 
   removeFromQueue: (id) =>
     set((state) => ({

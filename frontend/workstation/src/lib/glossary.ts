@@ -29,6 +29,9 @@ export const GLOSSARY: Record<string, string> = {
   'AWP':        'Average Wholesale Price — benchmark list price for a drug; AWP = WAC × 1.07 (generic). Used as a pricing reference — pharmacies rarely pay AWP',
   'WAC':        'Wholesale Acquisition Cost — manufacturer\'s published list price to wholesalers before discounts',
   'AAC':        'Actual Acquisition Cost — the real price the pharmacy paid for the drug after all discounts',
+  'MAC':        'Maximum Allowable Cost — payer or PBM reimbursement ceiling for generic and multisource drugs',
+  'AMP':        'Average Manufacturer Price — average price manufacturers receive from wholesalers and retail pharmacies, used in Medicaid rebate calculations',
+  'ASP':        'Average Sales Price — CMS pricing benchmark based on manufacturer sales net of discounts, commonly used for Medicare Part B drugs',
   'DIR':        'Direct and Indirect Remuneration — retroactive fees clawed back by PBMs from pharmacies after claim adjudication; often wiping out the original margin',
   'GPI':        'Generic Product Identifier — 14-character hierarchical drug classification code used for formulary management',
   'GCN':        'Generic Code Number — identifier for generic drug equivalency groupings',
@@ -102,12 +105,14 @@ export const GLOSSARY: Record<string, string> = {
   'MDS':        'Minimum Data Set — standardized comprehensive assessment tool used in LTC facilities for care planning and Medicare/Medicaid reimbursement',
   'POCT':       'Point-of-Care Testing — diagnostic testing performed at or near the patient rather than in a central lab (e.g., A1C, flu, strep)',
   'GPO':        'Group Purchasing Organization — entity that negotiates volume purchasing contracts with vendors on behalf of member pharmacies or hospitals',
-  'TTAC':       'Track and Trace Assistance Center — drug shortage search system (HDA); for shortage lookup only, not product authentication',
 
   // ── Financial / POS ──────────────────────────────────────────────────────
   'POS':        'Point of Sale — the location and system where a patient pays for their medication; also refers to real-time insurance eligibility check at dispensing',
   'HSA':        'Health Savings Account — tax-advantaged account for individuals with high-deductible health plans; can be used to pay prescription copays',
   'FSA':        'Flexible Spending Account — employer-established benefit allowing employees to set aside pre-tax dollars for healthcare expenses including prescriptions',
+  'U&C':        'Usual and Customary — the pharmacy\'s cash price charged to the general public for a prescription before insurance discounts',
+  'FFS':        'Fee-For-Service — payment model where each prescription or service is reimbursed separately rather than through a capitated arrangement',
+  'GER':        'Generic Effective Rate — contract benchmark for aggregate generic reimbursement, often expressed as a discount from AWP',
   'EOD':        'End of Day — daily reconciliation of cash drawer, claims, and payments',
   'AR':         'Accounts Receivable — money owed to the pharmacy by patients, insurers, or other payers',
 

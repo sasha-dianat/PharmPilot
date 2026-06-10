@@ -104,30 +104,47 @@ class PDFParser:
             current_section = None
 
             for page_num, page in enumerate(reader.pages, start=1):
-                text = page.extract_text() or ""
-                if not text.strip():
+                try:
+                    page_chunks, current_section = self.parse_page(page, page_num, current_section, chunker)
+                    chunks.extend(page_chunks)
+                except Exception as exc:
+                    logger.warning("PDF page %d failed for %s: %s", page_num, pdf_path, exc)
                     continue
-
-                # Detect section headings (ALL CAPS lines or lines ending with colon)
-                lines = text.split("\n")
-                page_text = ""
-                for line in lines:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    if self._is_heading(stripped):
-                        if page_text.strip():
-                            chunks.extend(chunker.chunk(page_text, current_section, page_num - 1))
-                            page_text = ""
-                        current_section = stripped
-                    else:
-                        page_text += " " + stripped
-
-                if page_text.strip():
-                    chunks.extend(chunker.chunk(page_text, current_section, page_num))
 
         logger.info("PDF parsed: %d chunks from %s", len(chunks), pdf_path)
         return chunks
+
+    def parse_page(
+        self,
+        page,
+        page_num: int,
+        current_section: Optional[str] = None,
+        chunker: Optional[TextChunker] = None,
+    ) -> tuple[list[ParsedChunk], Optional[str]]:
+        chunker = chunker or TextChunker()
+        text = page.extract_text() or ""
+        if not text.strip():
+            return [], current_section
+
+        chunks: list[ParsedChunk] = []
+        lines = text.split("\n")
+        page_text = ""
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if self._is_heading(stripped):
+                if page_text.strip():
+                    chunks.extend(chunker.chunk(page_text, current_section, page_num - 1))
+                    page_text = ""
+                current_section = stripped
+            else:
+                page_text += " " + stripped
+
+        if page_text.strip():
+            chunks.extend(chunker.chunk(page_text, current_section, page_num))
+
+        return chunks, current_section
 
     def _is_heading(self, line: str) -> bool:
         return (

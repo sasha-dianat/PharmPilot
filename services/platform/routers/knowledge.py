@@ -2,9 +2,14 @@
 Knowledge Engine API — ingest documents, query the knowledge base,
 manage sources. The richer the knowledge base, the smarter the ACB becomes.
 """
+import asyncio
+import inspect
 import logging
-from typing import Optional
-from uuid import UUID
+import os
+import tempfile
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -12,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.auth import get_current_staff, require_permission
 from services.platform.config import settings
-from services.platform.database import get_db
+from services.platform.database import AsyncSessionLocal, get_db
 from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.ai.knowledge_engine.vector_store import ClinicalVectorStore
 from services.ai.knowledge_engine.ingestion.pipeline import KnowledgeIngestionPipeline
@@ -22,6 +27,132 @@ from shared.models.auth import Staff
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+INGEST_JOBS: dict[str, dict[str, Any]] = {}
+
+# Strong references to in-flight ingest tasks. asyncio only keeps weak
+# references to tasks, so a long-running ingest spawned via create_task can be
+# garbage-collected mid-execution if nothing else holds it. Retain each task
+# until it finishes, then drop it.
+_INGEST_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_ingest_task(coro) -> None:
+    task = asyncio.create_task(coro)
+    _INGEST_TASKS.add(task)
+    task.add_done_callback(_INGEST_TASKS.discard)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _register_ingest_job(filename: str | None) -> dict[str, Any]:
+    job_id = str(uuid4())
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "filename": filename or "upload",
+        "chunks_stored": 0,
+        "pages_total": None,
+        "pages_done": 0,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+    }
+    INGEST_JOBS[job_id] = job
+    return job
+
+
+def _update_ingest_job(job_id: str, **updates: Any) -> None:
+    job = INGEST_JOBS.get(job_id)
+    if not job:
+        return
+    job.update(updates)
+
+
+def _method_accepts_kwarg(method: Callable[..., Any], kwarg: str) -> bool:
+    params = inspect.signature(method).parameters
+    return kwarg in params or any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in params.values()
+    )
+
+
+async def _save_upload_to_temp_file(file: UploadFile, suffix: str) -> str:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = tmp.name
+        while chunk := await file.read(1024 * 1024):
+            tmp.write(chunk)
+    return tmp_path
+
+
+async def _run_ingest_job(
+    job_id: str,
+    ingest_method: str,
+    temp_path: str,
+    ingest_kwargs: dict[str, Any],
+    pipeline_factory: Optional[Callable[[AsyncSession], Any]] = None,
+    session_factory: Callable[[], Any] = AsyncSessionLocal,
+    remove_temp_file: bool = True,
+) -> None:
+    _update_ingest_job(
+        job_id,
+        status="running",
+        started_at=_utc_now_iso(),
+        finished_at=None,
+        error=None,
+    )
+
+    try:
+        async with session_factory() as db:
+            try:
+                pipeline = (
+                    pipeline_factory(db)
+                    if pipeline_factory
+                    else KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
+                )
+                method = getattr(pipeline, ingest_method)
+                call_kwargs = dict(ingest_kwargs)
+
+                if _method_accepts_kwarg(method, "progress_callback"):
+                    call_kwargs["progress_callback"] = lambda progress: _update_ingest_job(
+                        job_id,
+                        **{
+                            key: value
+                            for key, value in progress.items()
+                            if key in {"pages_total", "pages_done"}
+                        },
+                    )
+
+                result = await method(**call_kwargs)
+                if hasattr(db, "commit"):
+                    await db.commit()
+            except Exception:
+                if hasattr(db, "rollback"):
+                    await db.rollback()
+                raise
+
+        _update_ingest_job(
+            job_id,
+            status="completed",
+            chunks_stored=result.get("chunks_stored", 0),
+            finished_at=_utc_now_iso(),
+        )
+    except Exception as exc:
+        logger.exception("Knowledge ingest job %s failed", job_id)
+        _update_ingest_job(
+            job_id,
+            status="failed",
+            error=str(exc),
+            finished_at=_utc_now_iso(),
+        )
+    finally:
+        if remove_temp_file:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
 
 
 def _get_vector_store() -> ClinicalVectorStore:
@@ -48,37 +179,29 @@ async def ingest_pdf(
     evidence_level: Optional[str] = Form(None),
     specialty_tags: Optional[str] = Form(None),  # comma-separated
     staff: Staff = Depends(require_permission("clinical:write")),
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Upload a PDF document to the clinical knowledge base.
     Accepts: guidelines, package inserts, textbook chapters, research papers, etc.
     Content is immediately searchable after processing (~30 seconds for typical document).
     """
-    import tempfile, os
-    content = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    try:
-        tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
-        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
-        result = await pipeline.ingest_pdf(
-            pdf_path=tmp_path,
-            source_type=SourceType(source_type),
-            title=title or file.filename,
-            evidence_level=evidence_level,
-            specialty_tags=tags,
-        )
-        return {
-            "status": result["status"],
-            "source_id": result.get("source_id"),
-            "chunks_stored": result.get("chunks_stored", 0),
-            "message": f"Successfully ingested {result.get('chunks_stored', 0)} knowledge chunks.",
-        }
-    finally:
-        os.unlink(tmp_path)
+    parsed_source_type = SourceType(source_type)
+    tmp_path = await _save_upload_to_temp_file(file, ".pdf")
+    tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
+    job = _register_ingest_job(file.filename)
+    _spawn_ingest_task(_run_ingest_job(
+        job_id=job["job_id"],
+        ingest_method="ingest_pdf",
+        temp_path=tmp_path,
+        ingest_kwargs={
+            "pdf_path": tmp_path,
+            "source_type": parsed_source_type,
+            "title": title or file.filename,
+            "evidence_level": evidence_level,
+            "specialty_tags": tags,
+        },
+    ))
+    return {"job_id": job["job_id"], "status": "queued"}
 
 
 @router.post("/ingest/docx", status_code=202)
@@ -90,37 +213,40 @@ async def ingest_docx(
     evidence_level: Optional[str] = Form(None),
     specialty_tags: Optional[str] = Form(None),
     staff: Staff = Depends(require_permission("clinical:write")),
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Owner-fed reference upload: a Word .docx (Iranian pharmacopeia monograph,
     formulary, SOP). Persian-aware; tagged into the owner-reference corpus and
     immediately searchable by the clinical brain.
     """
-    import tempfile, os
-    content = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-    try:
-        tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
-        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
-        result = await pipeline.ingest_docx(
-            docx_path=tmp_path,
-            title=title or file.filename,
-            language=language,
-            collection=collection,
-            evidence_level=evidence_level,
-            specialty_tags=tags,
-        )
-        return {
-            "status": result["status"],
-            "source_id": result.get("source_id"),
-            "chunks_stored": result.get("chunks_stored", 0),
-            "message": f"Ingested {result.get('chunks_stored', 0)} chunks from {file.filename}.",
-        }
-    finally:
-        os.unlink(tmp_path)
+    tmp_path = await _save_upload_to_temp_file(file, ".docx")
+    tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
+    job = _register_ingest_job(file.filename)
+    _spawn_ingest_task(_run_ingest_job(
+        job_id=job["job_id"],
+        ingest_method="ingest_docx",
+        temp_path=tmp_path,
+        ingest_kwargs={
+            "docx_path": tmp_path,
+            "title": title or file.filename,
+            "language": language,
+            "collection": collection,
+            "evidence_level": evidence_level,
+            "specialty_tags": tags,
+        },
+    ))
+    return {"job_id": job["job_id"], "status": "queued"}
+
+
+@router.get("/ingest/jobs/{job_id}")
+async def get_ingest_job(
+    job_id: str,
+    staff: Staff = Depends(require_permission("clinical:write")),
+):
+    job = INGEST_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingest job not found")
+    return dict(job)
 
 
 class CrawlReferenceRequest(BaseModel):
@@ -162,39 +288,30 @@ async def ingest_any_file(
     evidence_level: Optional[str] = Form(None),
     specialty_tags: Optional[str] = Form(None),
     staff: Staff = Depends(require_permission("clinical:write")),
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Universal file upload endpoint — auto-detects format by extension.
     Supported: PDF, DOCX/DOC, MD, TXT, HTML, CSV/TSV, RTF, EPUB, JSON/JSONL.
     Persian-aware throughout. Use this for any owner-fed pharmacopeia reference.
     """
-    import tempfile, os
     suffix = os.path.splitext(file.filename or "")[1].lower() or ".txt"
-    content = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-    try:
-        tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
-        pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
-        result = await pipeline.ingest_file(
-            file_path=tmp_path,
-            title=title or file.filename,
-            language=language,
-            collection=collection,
-            evidence_level=evidence_level,
-            specialty_tags=tags,
-        )
-        return {
-            "status": result.get("status"),
-            "source_id": result.get("source_id"),
-            "chunks_stored": result.get("chunks_stored", 0),
-            "format_detected": suffix,
-            "message": f"Ingested {result.get('chunks_stored', 0)} chunks from {file.filename}.",
-        }
-    finally:
-        os.unlink(tmp_path)
+    tmp_path = await _save_upload_to_temp_file(file, suffix)
+    tags = [t.strip() for t in specialty_tags.split(",")] if specialty_tags else []
+    job = _register_ingest_job(file.filename)
+    _spawn_ingest_task(_run_ingest_job(
+        job_id=job["job_id"],
+        ingest_method="ingest_file",
+        temp_path=tmp_path,
+        ingest_kwargs={
+            "file_path": tmp_path,
+            "title": title or file.filename,
+            "language": language,
+            "collection": collection,
+            "evidence_level": evidence_level,
+            "specialty_tags": tags,
+        },
+    ))
+    return {"job_id": job["job_id"], "status": "queued"}
 
 
 class DirectoryImportRequest(BaseModel):

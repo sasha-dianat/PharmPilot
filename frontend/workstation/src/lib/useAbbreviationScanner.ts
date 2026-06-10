@@ -53,7 +53,7 @@ const GLOSSARY_BY_LOWER = new Map<string, GlossaryMatch>(
   ]),
 )
 
-const MULTI_WORD_KEYS = GLOSSARY_KEYS.filter((term) => term.includes(' '))
+const PHRASE_KEYS = GLOSSARY_KEYS.filter((term) => /[^A-Za-z0-9-]/.test(term))
 
 function isWordChar(char: string | undefined): boolean {
   return !!char && /[A-Za-z0-9-]/.test(char)
@@ -119,11 +119,11 @@ function extractWordAtOffset(text: string, rawOffset: number): string | null {
   return text.slice(start, end)
 }
 
-function findMultiWordMatch(text: string, offset: number): GlossaryMatch | null {
-  if (MULTI_WORD_KEYS.length === 0) return null
+function findPhraseMatch(text: string, offset: number): GlossaryMatch | null {
+  if (PHRASE_KEYS.length === 0) return null
 
   const lowerText = text.toLowerCase()
-  for (const term of MULTI_WORD_KEYS) {
+  for (const term of PHRASE_KEYS) {
     const lowerTerm = term.toLowerCase()
     let index = lowerText.indexOf(lowerTerm)
 
@@ -143,8 +143,8 @@ function findGlossaryMatch(textPosition: TextPosition): GlossaryMatch | null {
   const text = textPosition.textNode.textContent ?? ''
   const offset = Math.min(Math.max(textPosition.offset, 0), text.length)
 
-  const multiWordMatch = findMultiWordMatch(text, offset)
-  if (multiWordMatch) return multiWordMatch
+  const phraseMatch = findPhraseMatch(text, offset)
+  if (phraseMatch) return phraseMatch
 
   const word = extractWordAtOffset(text, offset)
   if (!word) return null
@@ -197,9 +197,11 @@ export function useAbbreviationScanner(): void {
       clearHoverTimer()
       tooltip.style.display = 'none'
       tooltip.textContent = ''
+      document.body.style.cursor = ''
     }
 
     const showTooltip = (match: GlossaryMatch, pointer: PointerSnapshot): void => {
+      document.body.style.cursor = 'help'
       tooltip.textContent = `${match.term}: ${match.definition}`
       tooltip.style.display = 'block'
       tooltip.style.left = '0px'
@@ -258,6 +260,7 @@ export function useAbbreviationScanner(): void {
 
     return () => {
       clearHoverTimer()
+      document.body.style.cursor = ''
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('scroll', hideTooltip, true)
       document.removeEventListener('mouseleave', hideTooltip)
