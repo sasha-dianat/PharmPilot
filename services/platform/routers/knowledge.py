@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.platform.auth import get_current_staff, require_permission
 from services.platform.config import settings
 from services.platform.database import get_db
+from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.ai.knowledge_engine.vector_store import ClinicalVectorStore
 from services.ai.knowledge_engine.ingestion.pipeline import KnowledgeIngestionPipeline
 from services.ai.knowledge_engine.retrieval.rag_engine import ClinicalRAGEngine
@@ -291,10 +292,20 @@ async def crawl_uptodate(
     }
 
 
+class PubMedIngestRequest(BaseModel):
+    # Both names are accepted (see ingest_pubmed below) — neither is required
+    # on its own so a body supplying only one of them still validates. The
+    # handler raises 422 if BOTH are missing/blank.
+    query: Optional[str] = None             # frontend sends "query"
+    search_query: Optional[str] = None      # alternate name accepted too (legacy CLI)
+    max_results: int = 100
+    language: str = "en"
+    collection: str = "owner_references"
+
+
 @router.post("/ingest/pubmed")
 async def ingest_pubmed(
-    search_query: str,
-    max_results: int = 100,
+    body: PubMedIngestRequest,
     staff: Staff = Depends(require_permission("clinical:write")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -307,8 +318,12 @@ async def ingest_pubmed(
     - "metformin renal impairment dosing"
     - "SGLT2 inhibitor heart failure[MeSH]"
     """
+    # Accept both "query" (frontend) and "search_query" (legacy CLI) field names
+    q = body.search_query or body.query
+    if not q:
+        raise HTTPException(422, "Must provide 'query' or 'search_query'")
     pipeline = KnowledgeIngestionPipeline(vector_store=_get_vector_store(), db=db)
-    result = await pipeline.ingest_pubmed_search(search_query, max_results)
+    result = await pipeline.ingest_pubmed_search(q, body.max_results)
     return result
 
 
@@ -384,13 +399,14 @@ async def query_knowledge_base(
                         egfr = float(lab.value)
                     except ValueError:
                         pass
+            clinical_context = await load_active_medications_and_diagnoses(db, body.patient_id)
             patient_context = {
                 "age": age,
                 "gender": patient.gender,
                 "egfr": egfr,
                 "allergies": [{"allergen_name": a.allergen_name} for a in allergies_result.scalars().all()],
-                "active_medications": [],
-                "diagnoses": [],
+                "active_medications": clinical_context["active_medications"],
+                "diagnoses": clinical_context["diagnoses"],
             }
 
     rag = _get_rag_engine()

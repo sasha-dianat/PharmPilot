@@ -289,6 +289,34 @@ class SmartReorderEngine:
             f"Estimated {days_of_supply_remaining:.0f} days of supply remaining."
         )
 
+        preferred_wholesaler = "mckesson"
+        try:
+            db = getattr(self.forecaster, "db", None)
+            if db is not None:
+                from sqlalchemy import select
+                from shared.models.pharmacy import Pharmacy
+
+                result = await db.execute(
+                    select(Pharmacy).where(Pharmacy.id == pharmacy_id)
+                )
+                pharmacy = result.scalar_one_or_none()
+                config = getattr(pharmacy, "config", None)
+                if isinstance(config, dict):
+                    wholesaler_contracts = config.get("wholesaler_contracts", {})
+                    if not isinstance(wholesaler_contracts, dict):
+                        wholesaler_contracts = {}
+                    per_drug_wholesaler = wholesaler_contracts.get(ndc11)
+                    pharmacy_default_wholesaler = config.get("preferred_wholesaler")
+                    if isinstance(per_drug_wholesaler, str) and per_drug_wholesaler:
+                        preferred_wholesaler = per_drug_wholesaler
+                    elif (
+                        isinstance(pharmacy_default_wholesaler, str)
+                        and pharmacy_default_wholesaler
+                    ):
+                        preferred_wholesaler = pharmacy_default_wholesaler
+        except Exception as exc:
+            logger.debug("Failed to load preferred wholesaler config: %s", exc)
+
         return ReorderDecision(
             ndc11=ndc11,
             pharmacy_id=pharmacy_id,
@@ -298,7 +326,7 @@ class SmartReorderEngine:
             recommended_quantity=round(eoq, 0),
             estimated_cost=round(estimated_cost, 2),
             urgency=urgency,
-            preferred_wholesaler="mckesson",  # TODO: load from contract config
+            preferred_wholesaler=preferred_wholesaler,
             alternative_wholesalers=["cardinal", "amerisource"],
             stockout_eta_days=round(days_of_supply_remaining, 1) if reorder_now else None,
             rationale=rationale,

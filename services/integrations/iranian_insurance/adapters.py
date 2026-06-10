@@ -180,6 +180,16 @@ class SalamatAdapter(_SandboxFallbackAdapter):
             resp.raise_for_status()
             return self._map_salamat(resp.json(), national_code)
 
+    async def _live_family(self, national_code: str) -> FamilyCoverage:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url}/family",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"nationalCode": national_code},
+            )
+            resp.raise_for_status()
+            return self._map_salamat_family(resp.json(), national_code)
+
     def _map_salamat(self, payload: dict, national_code: str) -> InsuranceMember:
         from services.core.localization.jalali import jalali_str_to_date
         dob_j = payload.get("birthDateShamsi")
@@ -197,6 +207,21 @@ class SalamatAdapter(_SandboxFallbackAdapter):
             province=payload.get("province"),
             copay_percent=payload.get("patientSharePercent", 10.0),
             raw=payload,
+        )
+
+    def _map_salamat_family(self, payload: dict, national_code: str) -> FamilyCoverage:
+        principal_national_code = payload.get("principalNationalCode", national_code)
+        members = []
+        for member_payload in payload.get("members", []):
+            member_code = member_payload.get("nationalCode", principal_national_code)
+            member = self._map_salamat(member_payload, member_code)
+            member.relationship_to_principal = member_payload.get("relationshipToPrincipal")
+            member.principal_national_code = member_payload.get("principalNationalCode")
+            members.append(member)
+        return FamilyCoverage(
+            principal_national_code=principal_national_code,
+            org=self.org,
+            members=members,
         )
 
 

@@ -15,7 +15,13 @@ from services.platform.auth import get_current_staff, require_permission
 from services.platform.database import get_db
 from shared.models.auth import Staff
 from shared.models.claims import ClaimTransaction, DIRFeeAdjustment
-from shared.models.prescription import Prescription, PrescriptionFill, RxStatus
+from shared.models.prescription import (
+    CancellationReason,
+    Prescription,
+    PrescriptionFill,
+    RxStateEvent,
+    RxStatus,
+)
 from shared.models.inventory import StockLevel, InventoryLot
 
 router = APIRouter()
@@ -117,6 +123,61 @@ async def operational_dashboard(
         "inventory": {
             "expiring_lots_30d": expiring_lots,
             "stockouts": stockouts,
+        },
+    }
+
+
+@router.get("/cancellations")
+async def cancellation_analytics(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    staff: Staff = Depends(require_permission("reports:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cancellation counts grouped by canonical reason code for the staff member's pharmacy.
+    Defaults to the last 30 days when a date range is not provided.
+    """
+    if not end_date:
+        end_date = date.today()
+    if not start_date:
+        start_date = end_date - timedelta(days=30)
+
+    pharmacy_id = staff.pharmacy_id
+    start_at = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_at = datetime.combine(
+        end_date + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+
+    result = await db.execute(
+        select(
+            RxStateEvent.reason,
+            func.count(RxStateEvent.id).label("count"),
+        )
+        .join(Prescription, RxStateEvent.prescription_id == Prescription.id)
+        .where(
+            Prescription.pharmacy_id == pharmacy_id,
+            RxStateEvent.to_status == RxStatus.CANCELLED.value,
+            RxStateEvent.created_at >= start_at,
+            RxStateEvent.created_at < end_at,
+        )
+        .group_by(RxStateEvent.reason)
+    )
+
+    rows = result.all()
+    by_reason = {reason.value: 0 for reason in CancellationReason}
+    for row in rows:
+        by_reason[row.reason or "unspecified"] = row.count
+
+    return {
+        "period_start": start_date.isoformat(),
+        "period_end": end_date.isoformat(),
+        "pharmacy_id": str(pharmacy_id),
+        "cancellations": {
+            "by_reason": by_reason,
+            "total": sum(row.count for row in rows),
         },
     }
 

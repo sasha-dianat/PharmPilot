@@ -10,6 +10,8 @@ import {
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import MarginOptimizerPanel from '../components/MarginOptimizerPanel'
+import AnalyticsChat from '../components/AnalyticsChat'
 
 const formatDollar = (v: number) => v >= 1000 ? `$${(v/1000).toFixed(0)}K` : `$${v}`
 
@@ -168,6 +170,12 @@ export default function FinancialOperations() {
       <div className="grid grid-cols-2 gap-4">
         <RejectPareto />
         <CMSStarGauges />
+      </div>
+
+      {/* Offline-first AI — Margin Optimization (#19) + Ask Your Data (#3) */}
+      <div className="grid grid-cols-2 gap-4">
+        <MarginOptimizerPanel />
+        <AnalyticsChat />
       </div>
     </div>
   )

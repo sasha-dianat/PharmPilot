@@ -14,6 +14,8 @@ import PatientPanel from './components/PatientPanel'
 import IdentityCard, { type IdentityCandidate } from './components/IdentityCard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { apiClient } from './lib/api'
+import { useAbbreviationScanner } from './lib/useAbbreviationScanner'
+import OfflineIndicator from './components/OfflineIndicator'
 
 const queryClient = new QueryClient()
 
@@ -110,6 +112,8 @@ function WorkstationApp() {
   const { connect } = useRxQueueWebSocket(pharmacyId)
   const [showDashboard, setShowDashboard] = useState(false)
   useEffect(() => { const cleanup = connect(); return cleanup }, [])
+  // Global abbreviation tooltip scanner — runs on every render/route change
+  useAbbreviationScanner()
 
   const handleLogout = () => {
     localStorage.clear()
@@ -122,6 +126,8 @@ function WorkstationApp() {
   }
   return (
     <div className="h-screen bg-gray-100 flex flex-col overflow-hidden">
+      {/* Phase 33 — offline indicator always visible when connection lost */}
+      <OfflineIndicator />
       <div className="bg-white border-b px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="font-bold text-blue-700 text-lg">💊 PharmPilot</span>

@@ -35,6 +35,20 @@ class Patient(AuditedBase):
     gender: Mapped[Gender] = mapped_column(String(1), nullable=False)
     ssn_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
 
+    # ── Iranian identity (migration 0003) ───────────────────────────────
+    # کد ملی — 10-digit national ID (Luhn-validated at intake)
+    national_id: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    # Jalali (Shamsi) date of birth for display, e.g. "1357/06/31"
+    date_of_birth_jalali: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # "iranian" | "american"  (set by onboarding; controls which fields appear)
+    identity_system: Mapped[str] = mapped_column(String(20), default="american")
+    # Father's name — used in many Iranian ID documents
+    father_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Whether this patient record was auto-created from OCR/voice rather than manual entry
+    auto_created: Mapped[bool] = mapped_column(default=False)
+    # JSON blob: {"source": "voice", "confidence": 0.97, "matched_insurer": "salamat"}
+    identity_provenance: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Contact
     phone_primary: Mapped[str | None] = mapped_column(String(20), nullable=True)
     phone_secondary: Mapped[str | None] = mapped_column(String(20), nullable=True)

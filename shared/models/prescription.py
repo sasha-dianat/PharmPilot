@@ -38,6 +38,23 @@ class RxSource(str, Enum):
     REFILL_REQUEST = "refill_request"
 
 
+class CancellationReason(str, Enum):
+    """
+    Canonical values expected in RxStateEvent.reason when to_status == CANCELLED.
+
+    The reason column remains free text for flexibility; API/frontend callers
+    should pass one of these strings for cancellations so analytics can group
+    and filter cancellation patterns reliably.
+    """
+
+    CUSTOMER_DECLINED = "customer_declined"
+    PRESCRIBER_CANCELLED = "prescriber_cancelled"
+    DUPLICATE = "duplicate"
+    EXPIRED = "expired"
+    INSURANCE_ISSUE = "insurance_issue"
+    OTHER = "other"
+
+
 class Prescription(AuditedBase):
     __tablename__ = "prescriptions"
 
@@ -96,6 +113,17 @@ class Prescription(AuditedBase):
     # EPCS
     epcs_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     epcs_signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ── Precomputed council + triage (migration 0004) ───────────────────────
+    # "pending" | "ready" | "failed"
+    intake_analysis_status: Mapped[str] = mapped_column(String(20), default="pending")
+    # "green" | "amber" | "red"
+    triage_lane: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # JSON result blob from ReviewTriageEngine
+    triage_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # JSON result blob from SpecialistCouncil
+    council_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    council_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     patient: Mapped["Patient"] = relationship(back_populates="prescriptions")
@@ -171,3 +199,15 @@ class RxStateEvent(AuditedBase):
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 for tamper evidence
 
     prescription: Mapped["Prescription"] = relationship(back_populates="state_events")
+
+
+class LabelEvent(AuditedBase):
+    """Audit trail for label-engine actions (handwritten overrides, prints, etc.)."""
+    __tablename__ = "label_events"
+
+    rx_id: Mapped[UUID] = mapped_column(
+        ForeignKey("prescriptions.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # e.g. "handwritten", "printed"
+    staff_id: Mapped[UUID] = mapped_column(ForeignKey("staff.id"), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

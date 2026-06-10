@@ -48,37 +48,65 @@ export default function CouncilReport({ prescriptionId, patientId, pharmacyId }:
     setCompletedSpecialists([])
     setStatus('loading')
 
-    const token = localStorage.getItem('access_token') || ''
     const API = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1'
-    const url = `${API}/pharmacy/council/stream?prescription_id=${prescriptionId}&patient_id=${patientId}`
+    const accessToken = localStorage.getItem('access_token') || ''
 
-    const es = new EventSource(url)
+    let es: EventSource | null = null
+    let cancelled = false
 
-    es.onmessage = (e) => {
-      try {
-        const data: StreamEvent = JSON.parse(e.data)
+    // Browsers' EventSource cannot send an Authorization header, and the
+    // long-lived access token must never be placed in a URL (it would be
+    // exposed via logs, browser history, and Referer headers). Instead we
+    // mint a short-lived, single-purpose SSE ticket via an authenticated
+    // POST, then pass ONLY that ticket in the stream URL.
+    fetch(`${API}/auth/sse-ticket`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to obtain stream ticket (${res.status})`)
+        return res.json()
+      })
+      .then((data: { ticket: string }) => {
+        if (cancelled) return
 
-        if (data.event === 'council_started') {
-          setStatus('loading')
-        } else if (data.event === 'specialist_complete' && data.specialist) {
-          setCompletedSpecialists((prev) => [...prev, data.specialist!])
-          if (data.findings && data.findings.length > 0) {
-            setFindings((prev) => [...prev, ...data.findings!])
-          }
-        } else if (data.event === 'council_complete') {
-          setStatus('complete')
-          es.close()
+        const url = `${API}/pharmacy/council/stream?prescription_id=${prescriptionId}&patient_id=${patientId}&ticket=${encodeURIComponent(data.ticket)}`
+        es = new EventSource(url)
+
+        es.onmessage = (e) => {
+          try {
+            const data: StreamEvent = JSON.parse(e.data)
+
+            if (data.event === 'council_started') {
+              setStatus('loading')
+            } else if (data.event === 'specialist_complete' && data.specialist) {
+              setCompletedSpecialists((prev) => [...prev, data.specialist!])
+              if (data.findings && data.findings.length > 0) {
+                setFindings((prev) => [...prev, ...data.findings!])
+              }
+            } else if (data.event === 'council_complete') {
+              setStatus('complete')
+              es?.close()
+            }
+          } catch { /* ignore parse errors */ }
         }
-      } catch { /* ignore parse errors */ }
-    }
 
-    es.onerror = () => {
-      setStatus('error')
-      setErrorMsg('Council connection lost. Reload to retry.')
-      es.close()
-    }
+        es.onerror = () => {
+          setStatus('error')
+          setErrorMsg('Council connection lost. Reload to retry.')
+          es?.close()
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setStatus('error')
+        setErrorMsg('Could not start council stream. Reload to retry.')
+      })
 
-    return () => es.close()
+    return () => {
+      cancelled = true
+      es?.close()
+    }
   }, [prescriptionId, patientId])
 
   const blockers     = findings.filter(f => f.severity === 'blocker')

@@ -13,6 +13,9 @@ import {
 } from 'recharts'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import { DrugPricingTable, RecallAlertBanner, PatientSavingsPanel } from '../components/PricingIntelligence'
+import PackageVerificationDashboard from '../components/PackageVerification'
+import { ExpiryRiskPanel, SupplyRiskPanel } from '../components/IntelligenceInventoryPanels'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface StockItem {
@@ -47,7 +50,7 @@ function StockoutRiskGauges({ items }: { items: StockItem[] }) {
           return (
             <div key={item.ndc11}>
               <div className="flex justify-between text-xs mb-1">
-                <span className="font-mono text-slate-300 truncate max-w-[60%]">{item.drug_name}</span>
+                <span className="font-mono text-slate-300 truncate flex-1 min-w-0 mr-2">{item.drug_name}</span>
                 <span className="font-semibold" style={{ color }}>{pct.toFixed(0)}% risk</span>
               </div>
               <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -329,10 +332,10 @@ export default function InventoryIntelligence() {
         </button>
       </div>
 
-      {/* Row 1: Narrative + Stockout */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2"><AINarrative pharmacyId={pharmacyId} /></div>
-        <StockoutRiskGauges items={items} />
+      {/* Row 1: Narrative + Stockout — 5-col so stockout gets 2/5 (~370px) to fit long drug names */}
+      <div className="grid grid-cols-5 gap-4">
+        <div className="col-span-3"><AINarrative pharmacyId={pharmacyId} /></div>
+        <div className="col-span-2"><StockoutRiskGauges items={items} /></div>
       </div>
 
       {/* Row 2: Forecast + Expiry */}
@@ -346,6 +349,41 @@ export default function InventoryIntelligence() {
         <div className="col-span-2"><StockHealthMatrix items={items} /></div>
         <ShrinkageFeed events={mockShrinkage} />
       </div>
+
+      {/* Row 3.5: Offline-first AI — Expiry Waste Prevention (#12) + Supply-Chain Early Warning (#17) */}
+      <div className="grid grid-cols-2 gap-4">
+        <ExpiryRiskPanel />
+        <SupplyRiskPanel />
+      </div>
+
+      {/* Row 4: Pricing Intelligence — AWP/WAC/AAC margin table + Recall alerts + Patient savings */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-slate-300">Pricing Intelligence</h2>
+          <span className="text-[10px] text-slate-600 bg-slate-800 px-2 py-0.5 rounded-full">
+            Phase 21 · AWP/WAC/DIR · Live FDA recalls
+          </span>
+        </div>
+        <RecallAlertBanner />
+      </div>
+
+      <div className="grid grid-cols-4 gap-4">
+        {/* Pricing margin table spans 3 columns */}
+        <div className="col-span-3">
+          <DrugPricingTable items={items} />
+        </div>
+        {/* Patient savings panel in rightmost column */}
+        <div>
+          <PatientSavingsPanel
+            ndc={items[0]?.ndc11 ?? '00781-1001-01'}
+            drugName={items[0]?.drug_name ?? 'Atorvastatin 40mg'}
+            insuranceCopay={45.00}
+          />
+        </div>
+      </div>
+
+      {/* Row 5: Package Visual Verification — Phase 24 */}
+      <PackageVerificationDashboard />
     </div>
   )
 }

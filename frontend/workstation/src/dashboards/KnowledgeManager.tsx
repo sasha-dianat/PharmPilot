@@ -164,7 +164,7 @@ export default function KnowledgeManager() {
       <div className="flex flex-1 overflow-hidden">
 
         {/* ── Left: Ingestion panel ─────────────────────────────────────── */}
-        <div className="w-[420px] flex-shrink-0 flex flex-col border-r border-[#1e293b] overflow-hidden">
+        <div className="w-[38%] min-w-[400px] max-w-[560px] flex-shrink-0 flex flex-col border-r border-[#1e293b] overflow-hidden">
 
           {/* Language + Collection selectors */}
           <div className="flex-shrink-0 px-4 pt-3 pb-2 border-b border-[#1e293b] flex gap-3">

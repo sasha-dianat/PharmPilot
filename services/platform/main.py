@@ -74,6 +74,12 @@ def create_app() -> FastAPI:
         auth, patients, prescriptions, adjudication,
         inventory, biometric, audio, clinical_brain, analytics, knowledge,
         vault, phase32, clinical_services, security_events, ai_hub, identity,
+        drug_database, label_engine, package_verification,
+        pos, dur_overrides, rx_documents, rx_transcription,
+        intelligence, intel_finance, intel_inventory,
+        intel_dur, intel_prescriber,
+        intel_analytics, intel_docs, intel_label,
+        intel_clinical, intel_workflow,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -92,6 +98,23 @@ def create_app() -> FastAPI:
     app.include_router(security_events.router, prefix="/api/v1/security",   tags=["security"])
     app.include_router(ai_hub.router,          prefix="/api/v1/ai",         tags=["AI hub"])
     app.include_router(identity.router,        prefix="/api/v1/identity",   tags=["identity"])
+    app.include_router(drug_database.router,   prefix="/api/v1/drug-database",       tags=["drug database & pricing"])
+    app.include_router(label_engine.router,    prefix="/api/v1/labels",              tags=["label engine"])           # Phase 23
+    app.include_router(package_verification.router, prefix="/api/v1/package-verification", tags=["package verification"])  # Phase 24
+    app.include_router(pos.router,            prefix="/api/v1/pos",                 tags=["pos"])                    # Phase 29
+    app.include_router(dur_overrides.router,  prefix="/api/v1/dur",                 tags=["dur overrides"])          # Phase 31
+    app.include_router(rx_documents.router,     prefix="/api/v1/rx-documents",        tags=["rx documents"])           # Phase 32
+    app.include_router(rx_transcription.router,prefix="/api/v1/rx-transcription",    tags=["rx transcription"])       # Phase 32+
+    app.include_router(intelligence.router,    prefix="/api/v1/intelligence",        tags=["intelligence"])           # Offline-first AI substrate
+    app.include_router(intel_finance.router,   prefix="/api/v1/intelligence/finance",   tags=["intelligence: finance"])   # #19 Margin
+    app.include_router(intel_inventory.router, prefix="/api/v1/intelligence/inventory", tags=["intelligence: inventory"]) # #12 Expiry + #17 Supply
+    app.include_router(intel_dur.router,       prefix="/api/v1/intelligence/dur",        tags=["intelligence: dur"])       # #5 DUR patterns
+    app.include_router(intel_prescriber.router,prefix="/api/v1/intelligence/prescriber", tags=["intelligence: prescriber"])# #13 Prescriber
+    app.include_router(intel_analytics.router, prefix="/api/v1/intelligence/analytics",  tags=["intelligence: analytics"])# #3 Ask Your Data
+    app.include_router(intel_docs.router,      prefix="/api/v1/intelligence/docs",        tags=["intelligence: docs"])     # #18 Clinical docs
+    app.include_router(intel_label.router,     prefix="/api/v1/intelligence/label",       tags=["intelligence: label"])    # #8 Label simplify
+    app.include_router(intel_clinical.router,  prefix="/api/v1/intelligence/clinical",    tags=["intelligence: clinical"]) # #11 Counseling + #6 Integrity + #10 Compounding
+    app.include_router(intel_workflow.router,  prefix="/api/v1/intelligence/workflow",    tags=["intelligence: workflow"]) # #2 Queue + #16 Trajectory + #15 Copilot
 
     @app.get("/health")
     async def health_check():

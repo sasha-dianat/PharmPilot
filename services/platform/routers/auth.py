@@ -10,7 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.auth import (
-    authenticate_staff, get_current_staff, hash_password, require_permission
+    authenticate_staff, create_sse_ticket, get_current_staff,
+    get_current_staff_with_jti, hash_password, require_permission,
+    SSE_TICKET_EXPIRE_SECONDS,
 )
 from services.platform.database import get_db
 from shared.models.auth import Staff, StaffRole, StaffSession
@@ -201,6 +203,23 @@ async def create_staff(
         "role": new_staff.role,
         "status": "created",
     }
+
+
+@router.post("/sse-ticket")
+async def issue_sse_ticket(staff_and_jti: tuple[Staff, str] = Depends(get_current_staff_with_jti)):
+    """
+    Mint a short-lived, single-purpose ticket for opening Server-Sent Events
+    connections from the browser (EventSource cannot send Authorization headers,
+    so the long-lived access token must never be placed in a URL).
+
+    The returned `ticket` is bound to the caller's existing session (jti),
+    expires in SSE_TICKET_EXPIRE_SECONDS, and is valid ONLY for SSE routes —
+    it cannot be used as a general bearer credential. Call this immediately
+    before opening an EventSource connection.
+    """
+    staff, jti = staff_and_jti
+    ticket = create_sse_ticket(staff.id, jti)
+    return {"ticket": ticket, "expires_in": SSE_TICKET_EXPIRE_SECONDS, "token_type": "sse-ticket"}
 
 
 @router.get("/me")

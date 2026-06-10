@@ -1,114 +1,145 @@
-/* Tailwind v4 syntax */
+/* Tailwind v4 */
 @import "tailwindcss";
 
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+/* ── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  /* Standard 16px base so rem units match Tailwind's scale exactly */
+  font-size: 16px;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  text-rendering: optimizeLegibility;
+  background: #0f1117;
+  color: #f1f5f9;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
+/* Root fills the full viewport — no centering, no max-width */
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  box-sizing: border-box;
 }
 
-body {
-  margin: 0;
+/* ── Abbreviation Tooltips (pp-abbr) ───────────────────────────────────────
+   Auto-injected by useAbbreviationScanner for every known pharmacy/clinical
+   abbreviation found anywhere in the DOM.
+   Design: subtle dotted underline, rich tooltip card on hover.
+───────────────────────────────────────────────────────────────────────────── */
+mark.pp-abbr {
+  background: transparent;
+  color: inherit;
+  border-bottom: 1.5px dotted rgba(139, 92, 246, 0.7);   /* purple-500/70 */
+  cursor: help;
+  position: relative;
+  display: inline;
+  white-space: nowrap;
+  font-weight: inherit;
+  padding: 0;
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+mark.pp-abbr::after {
+  content: attr(data-def);
+  /* ── Positioning ── */
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  /* ── Dimensions ── */
+  min-width: 220px;
+  max-width: 340px;
+  width: max-content;
+  /* ── Appearance ── */
+  background: #1e1b4b;              /* indigo-950 */
+  color: #e0e7ff;                   /* indigo-100 */
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  font-family: system-ui, sans-serif;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: left;
+  /* ── Arrow ── */
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 0 1px rgba(139,92,246,0.15);
+  /* ── Show/hide ── */
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+  z-index: 9999;
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
-  margin: 0;
+/* Caret / arrow pointing down */
+mark.pp-abbr::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(139, 92, 246, 0.4);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+  z-index: 9999;
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+mark.pp-abbr:hover::after,
+mark.pp-abbr:focus::after {
+  opacity: 1;
+  visibility: visible;
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+mark.pp-abbr:hover::before,
+mark.pp-abbr:focus::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* On dark backgrounds the term itself gets a subtle tint on hover */
+mark.pp-abbr:hover {
+  background: rgba(139, 92, 246, 0.12);
+  border-radius: 2px;
+}
+
+/* Ensure tooltip doesn't clip at viewport left edge */
+mark.pp-abbr:first-child::after { left: 0; transform: none; }
+mark.pp-abbr:last-child::after  { left: auto; right: 0; transform: none; }
+
+/* ── Offline indicator bar ─────────────────────────────────────────────── */
+.pp-offline-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: #92400e;             /* amber-800 */
+  color: #fef3c7;                  /* amber-100 */
+  text-align: center;
+  font-size: 13px;
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  animation: pp-slide-in 0.3s ease;
+}
+
+@keyframes pp-slide-in {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+
+/* ── Payment / POS modal ───────────────────────────────────────────────── */
+.pp-change-display {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }

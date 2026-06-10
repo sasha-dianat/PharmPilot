@@ -223,7 +223,7 @@ function ABTestPanel() {
         placeholder="Enter a clinical query to compare providers..."
         className="w-full bg-[#0f1117] border border-[#334155] rounded-lg px-3 py-2 text-sm
                    text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500" />
-      <div className="flex gap-2 items-center">
+      <div className="flex flex-wrap gap-1.5 items-center">
         {['anthropic','openai','google','cohere','mistral'].map(p => (
           <button key={p} onClick={() => providerA === p ? setProviderA('anthropic') : providerA === 'anthropic' ? setProviderA(p) : setProviderB(p)}
             className={`text-xs px-2 py-1 rounded border transition-colors ${

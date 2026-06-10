@@ -67,6 +67,13 @@ export const patientApi = {
 // ── Prescriptions ─────────────────────────────────────────────────────────
 export const rxApi = {
   queue: (status?: string) => apiClient.get('/prescriptions', { params: { status } }),
+  // Patient-scoped Rx history — reuses GET /prescriptions?patient_id=… (see
+  // get_queue in services/platform/routers/prescriptions.py), which already
+  // returns drug_name/sig_text/status/fill_date/etc. per row. Powers the
+  // PatientPanel's "active meds" and "recent fills" tabs without standing up
+  // a parallel per-patient endpoint.
+  byPatient: (patientId: string, limit = 20) =>
+    apiClient.get('/prescriptions', { params: { patient_id: patientId, limit } }),
   get: (id: string) => apiClient.get(`/prescriptions/${id}`),
   intake: (data: RxIntakeData) => apiClient.post('/prescriptions', data),
   claim: (id: string) => apiClient.post(`/prescriptions/${id}/claim`),

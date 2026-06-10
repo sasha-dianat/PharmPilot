@@ -168,13 +168,13 @@ export default function LoginPage({ onLoginSuccess }: Props) {
           <p className="font-semibold text-blue-100 mb-2">Demo credentials:</p>
           <div className="space-y-1 font-mono">
             <div className="flex justify-between">
-              <span>admin</span><span className="text-blue-300">Admin1234!</span>
+              <span>admin</span><span className="text-blue-300">PharmPilot2024!</span>
             </div>
             <div className="flex justify-between">
-              <span>pharmacist</span><span className="text-blue-300">Pharmacist1234!</span>
+              <span>pharmacist</span><span className="text-blue-300">Pharmacist2024!</span>
             </div>
             <div className="flex justify-between">
-              <span>tech</span><span className="text-blue-300">Tech1234!</span>
+              <span>tech</span><span className="text-blue-300">Tech2024!</span>
             </div>
           </div>
         </div>

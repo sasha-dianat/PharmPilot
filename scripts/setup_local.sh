@@ -217,9 +217,9 @@ async def seed():
             result2 = await db.execute(select(Staff).where(Staff.username == "admin"))
             if not result2.scalar_one_or_none():
                 for username, role, first, last, pw in [
-                    ("admin",      StaffRole.SUPER_ADMIN,          "Pharmacy", "Admin",      "Admin1234!"),
-                    ("pharmacist", StaffRole.PHARMACIST,           "Demo",     "Pharmacist", "Pharmacist1234!"),
-                    ("tech",       StaffRole.PHARMACY_TECHNICIAN,  "Demo",     "Technician", "Tech1234!"),
+                    ("admin",      StaffRole.SUPER_ADMIN,          "Pharmacy", "Admin",      "PharmPilot2024!"),
+                    ("pharmacist", StaffRole.PHARMACIST,           "Demo",     "Pharmacist", "Pharmacist2024!"),
+                    ("tech",       StaffRole.PHARMACY_TECHNICIAN,  "Demo",     "Technician", "Tech2024!"),
                 ]:
                     db.add(Staff(
                         pharmacy_id=pharmacy.id,
@@ -269,9 +269,9 @@ echo -e "  ${YELLOW}Login credentials:${NC}"
 echo -e "  ┌──────────────┬──────────────┬─────────────────┐"
 echo -e "  │ Role         │ Username     │ Password        │"
 echo -e "  ├──────────────┼──────────────┼─────────────────┤"
-echo -e "  │ Admin        │ admin        │ Admin1234!      │"
-echo -e "  │ Pharmacist   │ pharmacist   │ Pharmacist1234! │"
-echo -e "  │ Technician   │ tech         │ Tech1234!       │"
+echo -e "  │ Admin        │ admin        │ PharmPilot2024! │"
+echo -e "  │ Pharmacist   │ pharmacist   │ Pharmacist2024! │"
+echo -e "  │ Technician   │ tech         │ Tech2024!       │"
 echo -e "  └──────────────┴──────────────┴─────────────────┘"
 echo ""
 echo -e "  ${YELLOW}Enable AI features:${NC}  Add to .env → ANTHROPIC_API_KEY=sk-ant-..."

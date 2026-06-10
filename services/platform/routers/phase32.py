@@ -11,11 +11,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.platform.auth import get_current_staff
+from services.platform.auth import get_current_staff, get_current_staff_sse
 from services.platform.config import settings
 from services.platform.database import get_db
+from services.biometric.identity_resolution.person_links import (
+    PersonLinkGraph,
+    customer_ref,
+    patient_ref,
+)
 from services.biometric.patient_resolver.resolver import PatientResolver
 from services.ai.clinical_brain.council.specialist_council import SpecialistCouncil
+from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from shared.models.auth import Staff
 
 router = APIRouter()
@@ -160,6 +166,7 @@ async def get_council_report(
             except ValueError:
                 pass
 
+    clinical_context = await load_active_medications_and_diagnoses(db, body.patient_id)
     patient_profile = {
         "age": age,
         "gender": patient.gender,
@@ -167,8 +174,8 @@ async def get_council_report(
         "weight_kg": None,
         "allergies": [{"allergen_name": a.allergen_name, "severity": a.severity, "reaction": a.reaction}
                       for a in allergies_result.scalars().all()],
-        "active_medications": [],   # TODO: load from medication list
-        "diagnoses": [],             # TODO: load from problem list
+        "active_medications": clinical_context["active_medications"],
+        "diagnoses": clinical_context["diagnoses"],
         "recent_labs": labs_dict,
         "pharmacogenomics": None,
     }
@@ -243,12 +250,17 @@ async def get_council_report(
 async def stream_council_report(
     prescription_id: UUID,
     patient_id: UUID,
-    staff: Staff = Depends(get_current_staff),
+    staff: Staff = Depends(get_current_staff_sse),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Server-Sent Events stream of council findings as each specialist completes.
     The pharmacist UI displays findings progressively — no waiting for all specialists.
+
+    Auth note: browsers' native EventSource cannot send an Authorization header,
+    so this route accepts the JWT either via the standard Bearer header (for
+    non-browser/test clients) or a `?token=` query parameter (for EventSource).
+    See get_current_staff_sse in services/platform/auth.py.
     """
     import json
     from sqlalchemy import select
@@ -272,14 +284,15 @@ async def stream_council_report(
     from datetime import date
     age = (date.today() - patient.date_of_birth).days // 365
 
+    clinical_context = await load_active_medications_and_diagnoses(db, patient_id)
     patient_profile = {
         "age": age,
         "gender": patient.gender,
         "egfr": None,
         "weight_kg": None,
         "allergies": [{"allergen_name": a.allergen_name} for a in allergies_result.scalars().all()],
-        "active_medications": [],
-        "diagnoses": [],
+        "active_medications": clinical_context["active_medications"],
+        "diagnoses": clinical_context["diagnoses"],
     }
 
     prescription_dict = {
@@ -351,16 +364,16 @@ async def register_customer_entry(
             FROM patients
             WHERE biometric_identity_id = :bio_id AND is_deleted = false
         """), {"bio_id": str(biometric_identity_id)})
+        graph = PersonLinkGraph(db)
         for row in patient_result.mappings().all():
-            await db.execute(text("""
-                INSERT INTO customer_patient_links (id, customer_id, patient_id, relationship, confidence, linked_by)
-                VALUES (:id, :customer_id, :patient_id, 'self', :confidence, 'biometric')
-            """), {
-                "id": str(uuid4()),
-                "customer_id": str(customer_id),
-                "patient_id": str(row["id"]),
-                "confidence": biometric_confidence,
-            })
+            await graph.link(
+                staff.pharmacy_id,
+                customer_ref(customer_id),
+                patient_ref(row["id"]),
+                relationship="self",
+                confidence=biometric_confidence,
+                source="biometric",
+            )
             linked_patients.append({
                 "patient_id": str(row["id"]),
                 "name": f"{row['first_name']} {row['last_name']}",
