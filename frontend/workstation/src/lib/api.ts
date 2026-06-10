@@ -108,6 +108,8 @@ export const inventoryApi = {
 export const clinicalApi = {
   reviewRx: (prescriptionId: string, patientId: string, pharmacyId: string) =>
     apiClient.post('/clinical/rx-review', { prescription_id: prescriptionId, patient_id: patientId, pharmacy_id: pharmacyId }),
+  evaluateCDS: (patientId: string, medications?: CDSMedicationInput[]) =>
+    apiClient.post('/cds/evaluate', { patient_id: patientId, ...(medications ? { medications } : {}) }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   queryDrugInteraction: (drugA: string, drugB: string) =>
@@ -154,4 +156,12 @@ export interface ClaimSubmitData {
 }
 export interface PurchaseOrderData {
   wholesaler: string; lines: Array<{ ndc11: string; quantity_ordered: number }>
+}
+export interface CDSMedicationInput {
+  drug_name: string
+  strength?: string
+  dose?: string
+  route?: string
+  frequency?: string
+  source?: string
 }

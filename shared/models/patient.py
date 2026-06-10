@@ -69,6 +69,11 @@ class Patient(AuditedBase):
     primary_patient_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("patients.id"), nullable=True
     )
+    weight_kg: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    pregnancy_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    renal_function: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    hepatic_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    conditions: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
     # Biometric linkage
     biometric_identity_id: Mapped[UUID | None] = mapped_column(nullable=True, index=True)
@@ -82,6 +87,7 @@ class Patient(AuditedBase):
 
     # Relationships
     allergies: Mapped[list["PatientAllergy"]] = relationship(back_populates="patient")
+    medications: Mapped[list["Medication"]] = relationship(back_populates="patient")
     prescriptions: Mapped[list["Prescription"]] = relationship(back_populates="patient")
     insurance_plans: Mapped[list["PatientInsurance"]] = relationship(back_populates="patient")
     lab_results: Mapped[list["LabResult"]] = relationship(back_populates="patient")

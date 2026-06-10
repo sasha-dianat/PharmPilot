@@ -1,7 +1,7 @@
 /**
  * PharmPilot Dashboard Shell
  * ===========================
- * Main navigation hub connecting all 9 dashboard sections.
+ * Main navigation hub connecting all dashboard sections.
  * Left sidebar with section nav. Top bar with live status + AI cost.
  * Keyboard: 1–9 switches sections. Escape returns to workstation.
  */
@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  type LucideIcon,
+  Stethoscope, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -23,17 +23,19 @@ import PatientAdherence      from './dashboards/PatientAdherence'
 import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
+import ClinicalAssistant     from './dashboards/ClinicalAssistant'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
-  { id:'security',   key:'4', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+4' },
-  { id:'financial',  key:'5', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+5' },
-  { id:'adherence',  key:'6', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+6' },
-  { id:'audio',      key:'7', label:'Conversation AI',    icon:Mic,         description:'Transcript review',    shortcut:'Alt+7' },
-  { id:'ai-hub',     key:'8', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+8' },
-  { id:'knowledge',  key:'9', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+9' },
+  { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
+  { id:'security',   key:'5', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+5' },
+  { id:'financial',  key:'6', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+6' },
+  { id:'adherence',  key:'7', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+7' },
+  { id:'audio',      key:'8', label:'Conversation AI',    icon:Mic,         description:'Transcript review',    shortcut:'Alt+8' },
+  { id:'ai-hub',     key:'9', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+9' },
+  { id:'knowledge',  key:'0', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+0' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -42,6 +44,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
   clinical:  ClinicalIntelligence,
+  cds:       ClinicalAssistant,
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
@@ -91,11 +94,11 @@ export default function DashboardShell({ onExitDashboard }: Props) {
     return () => mql.removeEventListener('change', onChange)
   }, [])
 
-  // Keyboard shortcuts: Alt+1..9, Escape, Alt+B to toggle sidebar
+  // Keyboard shortcuts: Alt+1..9/0, Escape, Alt+B to toggle sidebar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.key >= '1' && e.key <= '9') {
-        const section = SECTIONS[parseInt(e.key) - 1]
+      if (e.altKey && ((e.key >= '1' && e.key <= '9') || e.key === '0')) {
+        const section = SECTIONS.find(s => s.key === e.key)
         if (section) setActiveSection(section.id)
         e.preventDefault()
       }
