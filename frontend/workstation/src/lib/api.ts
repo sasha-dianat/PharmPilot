@@ -117,6 +117,12 @@ export const clinicalApi = {
       ...(onsetDate ? { onset_date: onsetDate } : {}),
       ...(medications ? { medications } : {}),
     }),
+  reviewPolypharmacy: (patientId: string, medications?: PolyMedicationInput[], messageFormat: 'sbar' | 'concise' = 'sbar') =>
+    apiClient.post('/polypharmacy/review', {
+      patient_id: patientId,
+      message_format: messageFormat,
+      ...(medications ? { medications } : {}),
+    }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   queryDrugInteraction: (drugA: string, drugB: string) =>
@@ -176,4 +182,10 @@ export interface ADRMedicationInput extends CDSMedicationInput {
   start_date?: string
   stop_date?: string
   recent_dose_increase?: boolean
+}
+export interface PolyMedicationInput {
+  drug_name: string
+  indication?: string
+  status?: string
+  source?: string
 }

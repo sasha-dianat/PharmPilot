@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, ClipboardCheck, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -25,6 +25,7 @@ import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
 import ClinicalAssistant     from './dashboards/ClinicalAssistant'
 import ADRDetective          from './dashboards/ADRDetective'
+import PolypharmacyReview    from './dashboards/PolypharmacyReview'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
@@ -32,10 +33,10 @@ const SECTIONS = [
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
-  { id:'security',   key:'6', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+6' },
-  { id:'financial',  key:'7', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+7' },
-  { id:'adherence',  key:'8', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+8' },
-  { id:'audio',      key:'9', label:'Conversation AI',    icon:Mic,         description:'Transcript review',    shortcut:'Alt+9' },
+  { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
+  { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
+  { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
+  { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
   { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
   { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
@@ -48,6 +49,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   clinical:  ClinicalIntelligence,
   cds:       ClinicalAssistant,
   adr:       ADRDetective,
+  poly:      PolypharmacyReview,
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,

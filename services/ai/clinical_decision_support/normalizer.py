@@ -87,7 +87,12 @@ def normalize(name: str | None) -> str:
         return ""
     cleaned = re.sub(r"[^a-zA-Z0-9\s-]", " ", name).lower()
     cleaned = re.sub(r"\b(tablet|tab|capsule|cap|oral|solution|mg|mcg|ml|er|xr|sr)\b", " ", cleaned)
-    tokens = [token for token in re.split(r"[\s/-]+", cleaned) if token]
+    # Drop strength/dose tokens (e.g. "25mg", "10", "0.5") — a drug name never
+    # starts with a digit, but a strength suffix does. Without this, an
+    # unrecognized drug like "diphenhydramine 25mg" normalizes to
+    # "diphenhydramine 25mg" instead of "diphenhydramine", so downstream
+    # exact-name lookups (e.g. the anticholinergic-burden table) miss.
+    tokens = [token for token in re.split(r"[\s/-]+", cleaned) if token and not token[0].isdigit()]
     for token in tokens:
         if token in BRAND_TO_GENERIC:
             return BRAND_TO_GENERIC[token]
