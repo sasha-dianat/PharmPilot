@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -26,6 +26,7 @@ import KnowledgeManager      from './dashboards/KnowledgeManager'
 import ClinicalAssistant     from './dashboards/ClinicalAssistant'
 import ADRDetective          from './dashboards/ADRDetective'
 import PolypharmacyReview    from './dashboards/PolypharmacyReview'
+import Pharmacogenomics      from './dashboards/Pharmacogenomics'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
@@ -34,6 +35,7 @@ const SECTIONS = [
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
   { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
+  { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
   { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
   { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
   { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
@@ -50,6 +52,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   cds:       ClinicalAssistant,
   adr:       ADRDetective,
   poly:      PolypharmacyReview,
+  pgx:       Pharmacogenomics,
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
@@ -103,7 +106,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k'))) {
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g'))) {
         const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()

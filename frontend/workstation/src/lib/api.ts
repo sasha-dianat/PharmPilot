@@ -123,6 +123,12 @@ export const clinicalApi = {
       message_format: messageFormat,
       ...(medications ? { medications } : {}),
     }),
+  interpretPGx: (patientId: string, drugs?: string[], genotypes?: PGxGenotypeInput[]) =>
+    apiClient.post('/pgx/interpret', {
+      patient_id: patientId,
+      ...(drugs?.length ? { drugs } : {}),
+      ...(genotypes?.length ? { genotypes } : {}),
+    }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   queryDrugInteraction: (drugA: string, drugB: string) =>
@@ -187,5 +193,11 @@ export interface PolyMedicationInput {
   drug_name: string
   indication?: string
   status?: string
+  source?: string
+}
+export interface PGxGenotypeInput {
+  gene: string
+  diplotype?: string
+  phenotype?: string
   source?: string
 }

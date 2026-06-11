@@ -29,6 +29,19 @@ class Medication(AuditedBase):
     patient: Mapped["Patient"] = relationship(back_populates="medications")
 
 
+class GenotypeResult(AuditedBase):
+    __tablename__ = "genotype_results"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    patient_id: Mapped[UUID] = mapped_column(ForeignKey("patients.id"), nullable=False, index=True)
+    gene: Mapped[str] = mapped_column(String(40), nullable=False)
+    diplotype: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    phenotype: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="lab_report")
+
+    patient: Mapped["Patient"] = relationship(back_populates="genotype_results")
+
+
 class ClinicalAlert(AuditedBase):
     __tablename__ = "clinical_alerts"
 

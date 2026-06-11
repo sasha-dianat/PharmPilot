@@ -88,6 +88,7 @@ class Patient(AuditedBase):
     # Relationships
     allergies: Mapped[list["PatientAllergy"]] = relationship(back_populates="patient")
     medications: Mapped[list["Medication"]] = relationship(back_populates="patient")
+    genotype_results: Mapped[list["GenotypeResult"]] = relationship(back_populates="patient")
     prescriptions: Mapped[list["Prescription"]] = relationship(back_populates="patient")
     insurance_plans: Mapped[list["PatientInsurance"]] = relationship(back_populates="patient")
     lab_results: Mapped[list["LabResult"]] = relationship(back_populates="patient")

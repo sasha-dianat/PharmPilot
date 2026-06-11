@@ -21,7 +21,7 @@ from shared.models.pharmacy import Pharmacy  # noqa: F401
 from shared.models.prescriber import Prescriber  # noqa: F401
 from shared.models.auth import Staff, StaffSession  # noqa: F401
 from shared.models.patient import Patient, PatientAllergy, LabResult, ClinicalNote  # noqa: F401
-from shared.models.clinical import Medication, ClinicalAlert, ClinicalAuditLog  # noqa: F401
+from shared.models.clinical import Medication, GenotypeResult, ClinicalAlert, ClinicalAuditLog  # noqa: F401
 from shared.models.insurance import PatientInsurance, InsurancePlan  # noqa: F401
 from shared.models.prescription import Prescription, PrescriptionFill, DURAlert, RxStateEvent  # noqa: F401
 from shared.models.claims import ClaimTransaction, ERA835Record, DIRFeeAdjustment  # noqa: F401
@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
         intelligence, intel_finance, intel_inventory,
         intel_dur, intel_prescriber,
         intel_analytics, intel_docs, intel_label,
-        intel_clinical, intel_workflow, cds, adr, polypharmacy,
+        intel_clinical, intel_workflow, cds, adr, polypharmacy, pgx,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(cds.router,             prefix="/api/v1/cds",                      tags=["clinical decision support"])
     app.include_router(adr.router,             prefix="/api/v1/adr",                      tags=["adr detective"])
     app.include_router(polypharmacy.router,    prefix="/api/v1/polypharmacy",             tags=["polypharmacy"])
+    app.include_router(pgx.router,             prefix="/api/v1/pgx",                      tags=["pharmacogenomics"])
 
     @app.get("/health")
     async def health_check():
