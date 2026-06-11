@@ -110,6 +110,13 @@ export const clinicalApi = {
     apiClient.post('/clinical/rx-review', { prescription_id: prescriptionId, patient_id: patientId, pharmacy_id: pharmacyId }),
   evaluateCDS: (patientId: string, medications?: CDSMedicationInput[]) =>
     apiClient.post('/cds/evaluate', { patient_id: patientId, ...(medications ? { medications } : {}) }),
+  assessADR: (patientId: string, complaint: string, onsetDate?: string, medications?: ADRMedicationInput[]) =>
+    apiClient.post('/adr/assess', {
+      patient_id: patientId,
+      complaint,
+      ...(onsetDate ? { onset_date: onsetDate } : {}),
+      ...(medications ? { medications } : {}),
+    }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   queryDrugInteraction: (drugA: string, drugB: string) =>
@@ -164,4 +171,9 @@ export interface CDSMedicationInput {
   route?: string
   frequency?: string
   source?: string
+}
+export interface ADRMedicationInput extends CDSMedicationInput {
+  start_date?: string
+  stop_date?: string
+  recent_dose_increase?: boolean
 }
