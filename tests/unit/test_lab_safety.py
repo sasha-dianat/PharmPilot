@@ -97,6 +97,33 @@ def test_metformin_egfr_caution():
     assert finding.severity == "moderate"
 
 
+def test_metformin_creatinine_does_not_match_egfr_requirement():
+    result = assess(run([med("metformin")], [lab("Creatinine", "1.1", "mg/dL")]))
+
+    assert not [item for item in result.findings if item.rule_id == "metformin_renal"]
+    assert any(
+        item.drug == "metformin"
+        and item.lab_name == "egfr"
+        and item.reason == "no result on record"
+        for item in result.missing_labs
+    )
+
+
+def test_amiodarone_less_than_tsh_threshold_triggers_suppressed_tsh():
+    result = assess(run([med("amiodarone")], [lab("TSH", "<0.1", "mIU/L")]))
+
+    finding = next(item for item in result.findings if item.rule_id == "amiodarone_thyroid_liver")
+    assert finding.severity == "high"
+    assert finding.lab_name == "tsh"
+    assert finding.lab_value == "<0.1"
+
+
+def test_electrolytes_panel_value_does_not_match_potassium():
+    result = assess(run([med("lisinopril")], [lab("Electrolytes", "140")]))
+
+    assert not [item for item in result.findings if item.rule_id == "acei_arb_hyperkalemia"]
+
+
 def test_clozapine_anc_critical():
     result = assess(run([med("clozapine")], [lab("ANC", "800", "/uL")]))
 

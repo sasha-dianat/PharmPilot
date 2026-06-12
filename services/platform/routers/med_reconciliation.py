@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.ai.clinical_decision_support.normalizer import normalize
@@ -129,7 +129,6 @@ async def _load_source_meds(
             Medication.patient_id == patient.id,
             Medication.pharmacy_id == staff.pharmacy_id,
             Medication.source == source_filter,
-            or_(Medication.status == "active", Medication.status.is_(None)),
             Medication.is_deleted == False,  # noqa: E712
         )
     )

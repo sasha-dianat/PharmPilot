@@ -104,12 +104,16 @@ def _numeric_value(raw_value: Any) -> tuple[float | None, str | None]:
     return float(match.group(0)), qualifier_match.group(1) if qualifier_match else None
 
 
-def _threshold_triggered(value: float, threshold: LabThreshold) -> bool:
+def _threshold_triggered(value: float, qualifier: str | None, threshold: LabThreshold) -> bool:
     if threshold.lower_bound is not None and threshold.upper_bound is not None:
         return threshold.lower_bound <= value <= threshold.upper_bound
     if threshold.lower_bound is not None:
+        if qualifier == "<":
+            return value <= threshold.lower_bound
         return value < threshold.lower_bound
     if threshold.upper_bound is not None:
+        if qualifier == ">":
+            return value >= threshold.upper_bound
         return value > threshold.upper_bound
     return False
 
@@ -197,7 +201,7 @@ def assess(context: LabSafetyContext) -> LabSafetyResult:
                 found_labs_for_rule.add(threshold.lab_name)
                 labs_evaluated.add(threshold.lab_name)
                 numeric, qualifier = _numeric_value(_get(lab, "value"))
-                if numeric is None or not _threshold_triggered(numeric, threshold):
+                if numeric is None or not _threshold_triggered(numeric, qualifier, threshold):
                     continue
 
                 result_date = _as_datetime(_get(lab, "result_date"))

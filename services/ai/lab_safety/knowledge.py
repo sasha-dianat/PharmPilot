@@ -26,9 +26,9 @@ class DrugLabRule:
     required_labs: list[str]
 
 
-EGFR_ALIASES = ["egfr", "gfr", "estimated gfr", "ckd-epi", "mdrd", "creatinine clearance", "crcl", "creatinine", "serum creatinine", "cr,serum"]
-POTASSIUM_ALIASES = ["potassium", "serum potassium", "k+", "k,serum", "electrolytes"]
-SODIUM_ALIASES = ["sodium", "serum sodium", "na,serum", "na+", "electrolytes"]
+EGFR_ALIASES = ["egfr", "gfr", "estimated gfr", "ckd-epi", "mdrd", "creatinine clearance", "crcl"]
+POTASSIUM_ALIASES = ["potassium", "serum potassium", "k+", "k,serum"]
+SODIUM_ALIASES = ["sodium", "serum sodium", "na,serum", "na+"]
 TSH_ALIASES = ["tsh", "thyroid stimulating hormone", "thyroid function"]
 ALT_ALIASES = ["alt", "alanine aminotransferase", "sgpt", "liver enzymes", "lft"]
 
