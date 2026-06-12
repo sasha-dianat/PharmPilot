@@ -141,6 +141,8 @@ export const clinicalApi = {
       ...(patientId ? { patient_id: patientId } : {}),
       top_k: topK,
     }),
+  getDrugMonograph: (params: DrugMonographParams) =>
+    apiClient.post('/drug-intelligence/monograph', params),
   queryDrugInteraction: (drugA: string, drugB: string) =>
     apiClient.post('/knowledge/query/drug-interaction', null, { params: { drug_a: drugA, drug_b: drugB } }),
 }
@@ -245,6 +247,33 @@ export interface SecondBrainResponse {
   llm_used: boolean
   degraded: boolean
   pharmacist_verification_notice: string
+}
+export interface DrugMonographParams {
+  drug_name?: string
+  rx_id?: string
+  sections?: string[]
+  top_k?: number
+}
+export interface DrugMonographSection {
+  key: string
+  label: string
+  answer: string
+  sources: SecondBrainSource[]
+  confidence: 'high' | 'moderate' | 'low' | 'none'
+  refused: boolean
+  unsupported: boolean
+  llm_used: boolean
+}
+export interface DrugMonographResponse {
+  drug_name: string
+  normalized_name: string
+  model_version: string
+  sections: DrugMonographSection[]
+  any_evidence: boolean
+  llm_used: boolean
+  degraded: boolean
+  pharmacist_verification_notice: string
+  trainable_note: string
 }
 export interface PGxGenotypeInput {
   gene: string

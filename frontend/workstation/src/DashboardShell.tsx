@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -30,6 +30,7 @@ import PolypharmacyReview    from './dashboards/PolypharmacyReview'
 import Pharmacogenomics      from './dashboards/Pharmacogenomics'
 import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
 import SecondBrainChat       from './dashboards/SecondBrainChat'
+import DrugIntelligence      from './dashboards/DrugIntelligence'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
@@ -40,6 +41,7 @@ const SECTIONS = [
   { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
   { id:'physmsg',    key:'m', label:'Physician Message',  icon:Send,        description:'Prescriber communication', shortcut:'Alt+M' },
   { id:'second-brain', key:'r', label:'Second Brain',     icon:BookOpen,    description:'RAG clinical Q&A',       shortcut:'Alt+R' },
+  { id:'drug-intel', key:'d', label:'Drug Intelligence',  icon:Pill,        description:'Offline drug monograph', shortcut:'Alt+D' },
   { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
   { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
   { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
@@ -60,6 +62,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   counselling: CounsellingGenerator,
   physmsg:   PhysicianMessageComposer,
   'second-brain': SecondBrainChat,
+  'drug-intel': DrugIntelligence,
   poly:      PolypharmacyReview,
   pgx:       Pharmacogenomics,
   security:  SecuritySurveillance,
@@ -115,7 +118,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r'))) {
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r' || key === 'd'))) {
         const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()
