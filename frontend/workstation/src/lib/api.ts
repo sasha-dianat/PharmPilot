@@ -2,14 +2,21 @@
  * PharmPilot API client — typed wrappers for all backend endpoints.
  */
 import axios from 'axios'
-import type { AxiosInstance } from 'axios'
+import type { AxiosInstance, AxiosResponse } from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1'
 
-export const apiClient: AxiosInstance = axios.create({
+interface PharmPilotApiClient extends AxiosInstance {
+  medReconcile: (payload: MedReconcilePayload) => Promise<AxiosResponse<MedReconcileResponse>>
+}
+
+export const apiClient = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
-})
+}) as PharmPilotApiClient
+
+apiClient.medReconcile = (payload: MedReconcilePayload) =>
+  apiClient.post('/med-reconciliation/reconcile', payload)
 
 // Inject auth token on every request
 apiClient.interceptors.request.use((config) => {
@@ -135,6 +142,8 @@ export const clinicalApi = {
     }),
   labSafetyAssess: (patientId: string) =>
     apiClient.post('/lab-safety/assess', { patient_id: patientId }),
+  medReconcile: (payload: MedReconcilePayload) =>
+    apiClient.medReconcile(payload),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
@@ -228,6 +237,54 @@ export interface PolyMedicationInput {
   indication?: string
   status?: string
   source?: string
+}
+export interface MedReconcileMedicationInput {
+  drug_name: string
+  normalized_name?: string
+  strength?: string
+  dose?: string
+  route?: string
+  frequency?: string
+  indication?: string
+  status?: string
+  source?: string
+  patient_id?: string
+  id?: string
+}
+export interface MedReconcilePayload {
+  patient_id: string
+  source_a_label?: string
+  source_b_label?: string
+  source_a?: string
+  source_b?: string
+  source_a_meds?: MedReconcileMedicationInput[]
+  source_b_meds?: MedReconcileMedicationInput[]
+}
+export interface MedReconcileDiscrepancy {
+  discrepancy_id: string
+  discrepancy_type: string
+  severity: 'high' | 'moderate' | 'low'
+  source_a_label: string
+  source_b_label: string
+  drug_name: string
+  drugs_involved: string[]
+  source_a_entry: MedReconcileMedicationInput | null
+  source_b_entry: MedReconcileMedicationInput | null
+  explanation: string
+  suggested_pharmacist_action: string
+  confidence: number
+  pharmacist_verification_notice: string
+}
+export interface MedReconcileResponse {
+  patient_id: string
+  source_a_label: string
+  source_b_label: string
+  discrepancies: MedReconcileDiscrepancy[]
+  drugs_in_source_a: number
+  drugs_in_source_b: number
+  reconciled_count: number
+  assessment_date: string
+  pharmacist_verification_notice: string
 }
 export interface SecondBrainSource {
   source_id: string
