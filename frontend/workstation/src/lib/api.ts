@@ -133,6 +133,8 @@ export const clinicalApi = {
       ...(drugs?.length ? { drugs } : {}),
       ...(genotypes?.length ? { genotypes } : {}),
     }),
+  labSafetyAssess: (patientId: string) =>
+    apiClient.post('/lab-safety/assess', { patient_id: patientId }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
