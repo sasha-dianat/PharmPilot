@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -28,6 +28,7 @@ import ADRDetective          from './dashboards/ADRDetective'
 import CounsellingGenerator  from './dashboards/CounsellingGenerator'
 import PolypharmacyReview    from './dashboards/PolypharmacyReview'
 import Pharmacogenomics      from './dashboards/Pharmacogenomics'
+import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
@@ -36,6 +37,7 @@ const SECTIONS = [
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
   { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
+  { id:'physmsg',    key:'m', label:'Physician Message',  icon:Send,        description:'Prescriber communication', shortcut:'Alt+M' },
   { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
   { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
   { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
@@ -54,6 +56,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   cds:       ClinicalAssistant,
   adr:       ADRDetective,
   counselling: CounsellingGenerator,
+  physmsg:   PhysicianMessageComposer,
   poly:      PolypharmacyReview,
   pgx:       Pharmacogenomics,
   security:  SecuritySurveillance,
@@ -109,7 +112,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c'))) {
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm'))) {
         const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()

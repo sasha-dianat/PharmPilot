@@ -119,6 +119,8 @@ export const clinicalApi = {
     }),
   generateCounselling: (params: CounsellingGenerateParams) =>
     apiClient.post('/counselling/generate', params),
+  generatePhysicianMessage: (params: PhysicianMessageGenerateParams) =>
+    apiClient.post('/physician-message/generate', params),
   reviewPolypharmacy: (patientId: string, medications?: PolyMedicationInput[], messageFormat: 'sbar' | 'concise' = 'sbar') =>
     apiClient.post('/polypharmacy/review', {
       patient_id: patientId,
@@ -196,6 +198,19 @@ export interface CounsellingGenerateParams {
   rx_id?: string
   patient_id?: string
   level?: 'professional' | 'standard' | 'low_literacy' | 'elderly' | 'caregiver'
+  language?: 'en' | 'fr' | 'fa' | 'ar' | 'es'
+}
+export interface PhysicianMessageGenerateParams {
+  patient_id?: string
+  prescriber_name?: string
+  patient_context?: string
+  medication_issue: string
+  clinical_rationale?: string
+  recommendation_or_question: string
+  urgency?: 'routine' | 'urgent' | 'emergent'
+  supporting_data?: string[]
+  pharmacist_name?: string
+  format?: 'sbar' | 'soap' | 'concise' | 'letter'
   language?: 'en' | 'fr' | 'fa' | 'ar' | 'es'
 }
 export interface PolyMedicationInput {
