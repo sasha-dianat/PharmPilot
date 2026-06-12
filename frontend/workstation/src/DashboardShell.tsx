@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -25,6 +25,7 @@ import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
 import ClinicalAssistant     from './dashboards/ClinicalAssistant'
 import ADRDetective          from './dashboards/ADRDetective'
+import CounsellingGenerator  from './dashboards/CounsellingGenerator'
 import PolypharmacyReview    from './dashboards/PolypharmacyReview'
 import Pharmacogenomics      from './dashboards/Pharmacogenomics'
 
@@ -34,6 +35,7 @@ const SECTIONS = [
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
+  { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
   { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
   { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
   { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
@@ -51,6 +53,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   clinical:  ClinicalIntelligence,
   cds:       ClinicalAssistant,
   adr:       ADRDetective,
+  counselling: CounsellingGenerator,
   poly:      PolypharmacyReview,
   pgx:       Pharmacogenomics,
   security:  SecuritySurveillance,
@@ -106,7 +109,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g'))) {
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c'))) {
         const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()

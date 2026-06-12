@@ -117,6 +117,8 @@ export const clinicalApi = {
       ...(onsetDate ? { onset_date: onsetDate } : {}),
       ...(medications ? { medications } : {}),
     }),
+  generateCounselling: (params: CounsellingGenerateParams) =>
+    apiClient.post('/counselling/generate', params),
   reviewPolypharmacy: (patientId: string, medications?: PolyMedicationInput[], messageFormat: 'sbar' | 'concise' = 'sbar') =>
     apiClient.post('/polypharmacy/review', {
       patient_id: patientId,
@@ -188,6 +190,13 @@ export interface ADRMedicationInput extends CDSMedicationInput {
   start_date?: string
   stop_date?: string
   recent_dose_increase?: boolean
+}
+export interface CounsellingGenerateParams {
+  drug_name?: string
+  rx_id?: string
+  patient_id?: string
+  level?: 'professional' | 'standard' | 'low_literacy' | 'elderly' | 'caregiver'
+  language?: 'en' | 'fr' | 'fa' | 'ar' | 'es'
 }
 export interface PolyMedicationInput {
   drug_name: string

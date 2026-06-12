@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
         intelligence, intel_finance, intel_inventory,
         intel_dur, intel_prescriber,
         intel_analytics, intel_docs, intel_label,
-        intel_clinical, intel_workflow, cds, adr, polypharmacy, pgx,
+        intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -123,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(intel_workflow.router,  prefix="/api/v1/intelligence/workflow",    tags=["intelligence: workflow"]) # #2 Queue + #16 Trajectory + #15 Copilot
     app.include_router(cds.router,             prefix="/api/v1/cds",                      tags=["clinical decision support"])
     app.include_router(adr.router,             prefix="/api/v1/adr",                      tags=["adr detective"])
+    app.include_router(counselling.router,     prefix="/api/v1/counselling",              tags=["patient counselling"])
     app.include_router(polypharmacy.router,    prefix="/api/v1/polypharmacy",             tags=["polypharmacy"])
     app.include_router(pgx.router,             prefix="/api/v1/pgx",                      tags=["pharmacogenomics"])
 
