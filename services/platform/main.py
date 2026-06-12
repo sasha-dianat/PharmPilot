@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
         intel_dur, intel_prescriber,
         intel_analytics, intel_docs, intel_label,
         intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx, physician_message,
+        second_brain,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(physician_message.router, prefix="/api/v1/physician-message",      tags=["physician message"])
     app.include_router(polypharmacy.router,    prefix="/api/v1/polypharmacy",             tags=["polypharmacy"])
     app.include_router(pgx.router,             prefix="/api/v1/pgx",                      tags=["pharmacogenomics"])
+    app.include_router(second_brain.router,    prefix="/api/v1/second-brain",             tags=["second brain"])
 
     @app.get("/health")
     async def health_check():

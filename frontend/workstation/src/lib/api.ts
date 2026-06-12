@@ -135,6 +135,12 @@ export const clinicalApi = {
     }),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
+  querySecondBrain: (question: string, patientId?: string, topK = 8) =>
+    apiClient.post('/second-brain/query', {
+      question,
+      ...(patientId ? { patient_id: patientId } : {}),
+      top_k: topK,
+    }),
   queryDrugInteraction: (drugA: string, drugB: string) =>
     apiClient.post('/knowledge/query/drug-interaction', null, { params: { drug_a: drugA, drug_b: drugB } }),
 }
@@ -218,6 +224,27 @@ export interface PolyMedicationInput {
   indication?: string
   status?: string
   source?: string
+}
+export interface SecondBrainSource {
+  source_id: string
+  source_title: string
+  source_type: string
+  snippet: string
+  similarity_score: number
+  evidence_grade?: string | null
+  url?: string | null
+}
+export interface SecondBrainResponse {
+  question: string
+  answer: string
+  sources: SecondBrainSource[]
+  patient_context?: string | null
+  confidence: 'high' | 'moderate' | 'low' | 'none'
+  refused: boolean
+  unsupported: boolean
+  llm_used: boolean
+  degraded: boolean
+  pharmacist_verification_notice: string
 }
 export interface PGxGenotypeInput {
   gene: string
