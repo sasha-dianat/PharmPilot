@@ -106,7 +106,7 @@ class AIInvocationRecord:
     staff_id: Optional[str]
     success: bool
     error: Optional[str]
-    pharmacist_rating: Optional[int]  # 1-5, collected post-hoc
+    pharmacist_rating: Optional[int] = None  # 1-5, collected post-hoc (set later via rate endpoint)
     invoked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -1,4 +1,5 @@
 """Prescription workflow router — intake, queue management, state transitions."""
+import asyncio
 from datetime import date
 from typing import Optional
 from uuid import UUID
@@ -134,28 +135,125 @@ async def intake_prescription(
 async def get_queue(
     status: Optional[str] = None,
     pharmacy_id: Optional[UUID] = None,
+    patient_id: Optional[UUID] = None,
     limit: int = 50,
     staff: Staff = Depends(require_permission("rx:read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the Rx queue for this pharmacy, optionally filtered by status."""
-    stmt = select(Prescription).where(
-        Prescription.pharmacy_id == staff.pharmacy_id,
-        Prescription.is_deleted == False,  # noqa: E712
-    )
+    """
+    Get the Rx queue for this pharmacy, optionally filtered by status and/or
+    patient.
+
+    `patient_id` is the minimal additive hook the Patient Intelligence panel
+    needs for a real "dispense history + council history" view: it reuses this
+    exact endpoint/response shape (which already carries `council_cache`,
+    `council_computed_at`, `drug_name`, `status`, `fill_date`, etc. per row —
+    see `rx_to_dict_from_row`) instead of standing up a parallel history
+    surface. When `patient_id` is supplied without an explicit `status`, the
+    default "active queue only" filter is lifted — a patient-history lookup
+    is *for* seeing dispensed/cancelled Rxs too, that's the whole point.
+    """
+    from sqlalchemy import text as _text
+
+    params: dict = {"pharm": str(staff.pharmacy_id), "lim": limit}
+    clauses: list[str] = []
+
     if status:
-        stmt = stmt.where(Prescription.status == status)
-    else:
-        # Default: show active workflow states (not terminal)
+        clauses.append("rx.status = :status")
+        params["status"] = status
+    elif not patient_id:
         active_statuses = [
             s.value for s in RxStatus
-            if s not in (RxStatus.DISPENSED, RxStatus.CANCELLED, RxStatus.RETURNED_TO_STOCK, RxStatus.TRANSFERRED_OUT)
+            if s not in (RxStatus.DISPENSED, RxStatus.CANCELLED,
+                         RxStatus.RETURNED_TO_STOCK, RxStatus.TRANSFERRED_OUT)
         ]
-        stmt = stmt.where(Prescription.status.in_(active_statuses))
+        placeholders = ", ".join(f":s{i}" for i in range(len(active_statuses)))
+        clauses.append(f"rx.status IN ({placeholders})")
+        params.update({f"s{i}": v for i, v in enumerate(active_statuses)})
+    # else: patient_id given, no explicit status → full history, all statuses.
 
-    stmt = stmt.order_by(Prescription.created_at).limit(limit)
-    result = await db.execute(stmt)
-    return [rx_to_dict(rx) for rx in result.scalars().all()]
+    if patient_id:
+        clauses.append("rx.patient_id = :patient_id")
+        params["patient_id"] = str(patient_id)
+
+    status_clause = ("AND " + " AND ".join(clauses)) if clauses else ""
+    # Patient-history lookups read newest-first; the live queue stays FIFO.
+    order_clause = "rx.created_at DESC" if patient_id else "rx.created_at"
+
+    rows = (await db.execute(_text(f"""
+        SELECT
+            rx.*,
+            pat.first_name  AS patient_first_name,
+            pat.last_name   AS patient_last_name,
+            pat.date_of_birth AS patient_dob,
+            pat.date_of_birth_jalali AS patient_dob_jalali,
+            pat.national_id AS patient_national_id,
+            pat.identity_system AS patient_identity_system,
+            presc.first_name || ' ' || presc.last_name AS prescriber_name,
+            presc.specialty AS prescriber_specialty,
+            presc.npi       AS prescriber_npi
+        FROM prescriptions rx
+        LEFT JOIN patients pat     ON pat.id = rx.patient_id
+        LEFT JOIN prescribers presc ON presc.id = rx.prescriber_id
+        WHERE rx.pharmacy_id = :pharm
+          AND rx.is_deleted = false
+          {status_clause}
+        ORDER BY {order_clause}
+        LIMIT :lim
+    """), params)).mappings().all()
+
+    def _row_to_dict(r) -> dict:
+        d = rx_to_dict_from_row(r)
+        d["patient_first_name"] = r.get("patient_first_name")
+        d["patient_last_name"]  = r.get("patient_last_name")
+        d["patient_dob"]        = r.get("patient_dob").isoformat() if r.get("patient_dob") else None
+        d["patient_dob_jalali"] = r.get("patient_dob_jalali")
+        d["patient_national_id"] = r.get("patient_national_id")
+        d["patient_identity_system"] = r.get("patient_identity_system")
+        d["prescriber_name"]    = r.get("prescriber_name")
+        d["prescriber_specialty"] = r.get("prescriber_specialty")
+        d["prescriber_npi"]     = r.get("prescriber_npi")
+        return d
+
+    return [_row_to_dict(r) for r in rows]
+
+
+def rx_to_dict_from_row(r) -> dict:
+    """Build an Rx dict from a raw SQL row mapping (mirror of rx_to_dict)."""
+    def _str(v): return str(v) if v else None
+    def _dt(v): return v.isoformat() if v else None
+    return {
+        "id": _str(r["id"]),
+        "rx_number": r["rx_number"],
+        "patient_id": _str(r["patient_id"]),
+        "prescriber_id": _str(r["prescriber_id"]),
+        "ndc": r["ndc"],
+        "drug_name": r["drug_name"],
+        "drug_strength": r.get("drug_strength"),
+        "sig_text": r["sig_text"],
+        "sig_structured": r.get("sig_structured"),
+        "quantity_prescribed": float(r["quantity_prescribed"]),
+        "days_supply": r["days_supply"],
+        "refills_authorized": r["refills_authorized"],
+        "refills_remaining": r["refills_remaining"],
+        "dea_schedule": r.get("dea_schedule"),
+        "is_controlled": r["is_controlled"],
+        "status": r["status"],
+        "source": r["source"],
+        "written_date": _dt(r["written_date"]),
+        "fill_date": _dt(r.get("fill_date")),
+        "daw_code": r["daw_code"],
+        "acb_safety_report": r.get("acb_safety_report"),
+        "ai_risk_score": float(r["ai_risk_score"]) if r.get("ai_risk_score") else None,
+        "claimed_by_staff_id": _str(r.get("claimed_by_staff_id")),
+        "triage_lane": r.get("triage_lane"),
+        "triage_result": r.get("triage_result"),
+        "council_cache": r.get("council_cache"),
+        "council_computed_at": _dt(r.get("council_computed_at")),
+        "intake_analysis_status": r.get("intake_analysis_status", "pending"),
+        "created_at": _dt(r["created_at"]),
+        "updated_at": _dt(r["updated_at"]),
+    }
 
 
 @router.get("/{rx_id}")
@@ -385,8 +483,8 @@ async def get_rx_analysis(
     row = (await db.execute(
         _text("""SELECT id, intake_analysis_status, triage_lane, triage_result,
                         council_cache, council_computed_at
-                 FROM prescriptions WHERE id = :id"""),
-        {"id": str(rx_id)})).mappings().first()
+                 FROM prescriptions WHERE id = :id AND pharmacy_id = :pharmacy_id"""),
+        {"id": str(rx_id), "pharmacy_id": str(staff.pharmacy_id)})).mappings().first()
     if not row:
         raise HTTPException(404, "Prescription not found")
     return {
@@ -411,6 +509,15 @@ async def reanalyze_prescription(
     Force a fresh precompute — e.g. after new labs, allergy, or family data arrive.
     Returns immediately; call GET /{rx_id}/analysis to poll for the result.
     """
+    result = await db.execute(
+        select(Prescription).where(
+            Prescription.id == rx_id,
+            Prescription.pharmacy_id == staff.pharmacy_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Prescription not found")
+
     background_tasks.add_task(precompute_in_background, str(rx_id))
     return {"status": "triggered", "rx_id": str(rx_id)}
 
@@ -453,33 +560,36 @@ async def rx_queue_websocket(
     Broadcasts queue changes to all connected workstations.
     """
     await websocket.accept()
+
+    async def send_snapshot() -> None:
+        result = await db.execute(
+            select(Prescription).where(
+                Prescription.pharmacy_id == pharmacy_id,
+                Prescription.status.in_([
+                    RxStatus.PENDING_VERIFICATION.value,
+                    RxStatus.VERIFICATION_IN_PROGRESS.value,
+                    RxStatus.PENDING_ADJUDICATION.value,
+                    RxStatus.ADJUDICATION_REJECTED.value,
+                    RxStatus.READY_TO_FILL.value,
+                    RxStatus.FILLING.value,
+                    RxStatus.FILLED.value,
+                    RxStatus.WILL_CALL.value,
+                ]),
+                Prescription.is_deleted == False,  # noqa: E712
+            ).order_by(Prescription.created_at).limit(100)
+        )
+        rxs = result.scalars().all()
+        await websocket.send_json({
+            "event": "queue_update",
+            "count": len(rxs),
+            "items": [rx_to_dict(r) for r in rxs],
+        })
+
     try:
         while True:
             # In production: subscribe to Kafka topic rx.queue.{pharmacy_id}
             # For now: poll every 3 seconds
-            import asyncio
+            await send_snapshot()
             await asyncio.sleep(3)
-            result = await db.execute(
-                select(Prescription).where(
-                    Prescription.pharmacy_id == pharmacy_id,
-                    Prescription.status.in_([
-                        RxStatus.PENDING_VERIFICATION.value,
-                        RxStatus.VERIFICATION_IN_PROGRESS.value,
-                        RxStatus.PENDING_ADJUDICATION.value,
-                        RxStatus.ADJUDICATION_REJECTED.value,
-                        RxStatus.READY_TO_FILL.value,
-                        RxStatus.FILLING.value,
-                        RxStatus.FILLED.value,
-                        RxStatus.WILL_CALL.value,
-                    ]),
-                    Prescription.is_deleted == False,  # noqa: E712
-                ).order_by(Prescription.created_at).limit(100)
-            )
-            rxs = result.scalars().all()
-            await websocket.send_json({
-                "event": "queue_update",
-                "count": len(rxs),
-                "items": [rx_to_dict(r) for r in rxs],
-            })
     except WebSocketDisconnect:
         pass

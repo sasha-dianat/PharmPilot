@@ -4,6 +4,7 @@ Submits claims to PBM switches, parses responses, handles rejects.
 Sub-200ms SLA target with circuit breaker and retry logic.
 """
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -113,8 +114,9 @@ class AdjudicationEngine:
     Main adjudication engine — submits NCPDP D.0 claims to PBM switches.
     """
 
-    def __init__(self, db=None):
+    def __init__(self, db=None, integrations_sandbox: bool = True):
         self.db = db
+        self.integrations_sandbox = integrations_sandbox
 
     async def submit_claim(
         self,
@@ -191,6 +193,7 @@ class AdjudicationEngine:
         result = AdjudicationResult(
             claim_id=claim_id,
             fill_id=fill_id,
+            status="pending",
             response_time_ms=response_time_ms,
             raw_request=raw_request,
             raw_response=raw_response,
@@ -278,6 +281,9 @@ class AdjudicationEngine:
     )
     async def _submit_to_switch(self, bin_number: str, raw_claim: str) -> str:
         """Submit raw NCPDP string to the appropriate PBM switch."""
+        if self.integrations_sandbox:
+            return self._submit_to_sandbox_switch(bin_number, raw_claim)
+
         routing = BIN_ROUTING_TABLE.get(bin_number, BIN_ROUTING_TABLE["default"])
         url = routing["url"]
         timeout_ms = routing.get("timeout_ms", 200)
@@ -293,3 +299,98 @@ class AdjudicationEngine:
             )
             response.raise_for_status()
             return response.text
+
+    def _submit_to_sandbox_switch(self, bin_number: str, raw_claim: str) -> str:
+        """Return a deterministic NCPDP D.0 response without network access."""
+        fields = self._parse_ncpdp_fields(raw_claim)
+        transaction_code = raw_claim[8:10].strip() or "B1"
+        pcn = raw_claim[10:20] if len(raw_claim) >= 20 else ""
+        header = f"{bin_number.ljust(6)[:6]}D0{transaction_code}{pcn}"
+        fs = NCPDPBuilder.FIELD_SEPARATOR
+        gs = NCPDPBuilder.GROUP_SEPARATOR
+        seed_source = "|".join([
+            bin_number,
+            transaction_code,
+            fields.get("C2", ""),
+            fields.get("D2", "").strip(),
+            fields.get("D7", ""),
+            fields.get("BZ", ""),
+            fields.get("E7", ""),
+        ])
+        digest = hashlib.sha256(seed_source.encode("utf-8")).hexdigest()
+        seed = int(digest, 16)
+
+        if transaction_code == "B2":
+            auth = f"SBXREV{digest[:8].upper()}"
+            logger.info(
+                "NCPDP sandbox reversal for BIN %s rx=%s auth=%s",
+                bin_number,
+                fields.get("D2", "").strip(),
+                auth,
+            )
+            return (
+                f"{header}{gs}AM21{fs}ANA{fs}F3{auth}"
+                f"{gs}AM22{fs}FQSANDBOX reversal accepted"
+            )
+
+        if seed % 5 == 0:
+            logger.info(
+                "NCPDP sandbox reject for BIN %s rx=%s code=75",
+                bin_number,
+                fields.get("D2", "").strip(),
+            )
+            return (
+                f"{header}{gs}AM21{fs}ANR"
+                f"{gs}AM23{fs}FA75{fs}FBPrior Authorization Required"
+                f"{gs}AM22{fs}FQSANDBOX deterministic reject"
+            )
+
+        ingredient_submitted = self._ncpdp_amount_to_float(fields.get("D9", "0"))
+        dispensing_fee_submitted = self._ncpdp_amount_to_float(fields.get("DC", "0"))
+        if ingredient_submitted <= 0:
+            ingredient_submitted = 25.00 + (seed % 7500) / 100
+        if dispensing_fee_submitted <= 0:
+            dispensing_fee_submitted = 1.50 + ((seed >> 8) % 450) / 100
+
+        ingredient_paid = round(ingredient_submitted * (0.72 + ((seed >> 4) % 16) / 100), 2)
+        dispensing_fee_paid = round(min(dispensing_fee_submitted, 1.00 + ((seed >> 12) % 500) / 100), 2)
+        patient_pay = round(5.00 + ((seed >> 20) % 2000) / 100, 2)
+        total_paid = round(max(0.01, ingredient_paid + dispensing_fee_paid - patient_pay), 2)
+        auth = f"SBX{digest[:10].upper()}"
+
+        logger.info(
+            "NCPDP sandbox approval for BIN %s rx=%s auth=%s patient_pay=%.2f",
+            bin_number,
+            fields.get("D2", "").strip(),
+            auth,
+            patient_pay,
+        )
+        return (
+            f"{header}{gs}AM21{fs}ANA{fs}F3{auth}"
+            f"{gs}AM25"
+            f"{fs}D9{self._format_ncpdp_cents(ingredient_paid)}"
+            f"{fs}DC{self._format_ncpdp_cents(dispensing_fee_paid)}"
+            f"{fs}DX{self._format_ncpdp_cents(total_paid)}"
+            f"{fs}DY{self._format_ncpdp_cents(patient_pay)}"
+            f"{gs}AM22{fs}FQSANDBOX deterministic approval"
+        )
+
+    @staticmethod
+    def _parse_ncpdp_fields(raw_claim: str) -> dict[str, str]:
+        fields: dict[str, str] = {}
+        for group in raw_claim.split(NCPDPBuilder.GROUP_SEPARATOR):
+            for field in group.split(NCPDPBuilder.FIELD_SEPARATOR)[1:]:
+                if len(field) >= 2:
+                    fields[field[:2]] = field[2:]
+        return fields
+
+    @staticmethod
+    def _ncpdp_amount_to_float(value: str) -> float:
+        try:
+            return int(value or "0") / 100
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _format_ncpdp_cents(amount: float) -> str:
+        return str(int(round(amount * 100))).zfill(10)

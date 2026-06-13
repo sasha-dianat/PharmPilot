@@ -11,5 +11,8 @@
       "Bash(PYTHONPATH=. alembic -c alembic.ini revision --autogenerate -m \"initial_schema\" --rev-id 0001)",
       "Bash(PYTHONPATH=. DATABASE_URL=\"sqlite+aiosqlite:///./test.db\" alembic -c alembic.ini revision --autogenerate -m \"initial_schema\")"
     ]
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true
   }
 }

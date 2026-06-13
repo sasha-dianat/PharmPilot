@@ -7,8 +7,10 @@ Unit tests for the Iranian identity layer:
   - Insurance registry family aggregation + person-linking
 """
 import asyncio
+import json
 from datetime import date
 
+import httpx
 import pytest
 
 from services.core.localization.jalali import (
@@ -138,6 +140,104 @@ def test_insurance_family_aggregation_links_persons():
         assert validate_national_code(m.national_code)
     # principal's own code excluded from linked_national_codes
     assert "0499370899" not in agg.linked_national_codes
+
+
+def test_salamat_live_family_lookup_maps_response(monkeypatch):
+    from services.integrations.iranian_insurance import adapters
+    from services.integrations.iranian_insurance.adapters import SalamatAdapter
+    from services.integrations.iranian_insurance.base import EligibilityStatus, InsuranceOrg
+
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={
+            "principalNationalCode": "0499370899",
+            "members": [
+                {
+                    "nationalCode": "0499370899",
+                    "isActive": True,
+                    "firstName": "رضا",
+                    "lastName": "محمدی",
+                    "fatherName": "علی",
+                    "birthDateShamsi": "1365/03/15",
+                    "gender": "M",
+                    "policyNo": "SAL-123",
+                    "province": "تهران",
+                    "patientSharePercent": 10.0,
+                    "relationshipToPrincipal": "principal",
+                },
+                {
+                    "nationalCode": "0012345679",
+                    "isActive": False,
+                    "firstName": "مریم",
+                    "lastName": "محمدی",
+                    "birthDateShamsi": "1368/01/01",
+                    "gender": "F",
+                    "policyNo": "SAL-123",
+                    "province": "تهران",
+                    "patientSharePercent": 20.0,
+                    "relationshipToPrincipal": "spouse",
+                    "principalNationalCode": "0499370899",
+                },
+            ],
+        })
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(*args, **kwargs):
+        return real_async_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(adapters.httpx, "AsyncClient", client_factory)
+
+    adapter = SalamatAdapter(base_url="https://salamat.example.test", api_key="secret")
+    family = asyncio.run(adapter.get_family_coverage("0499370899"))
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://salamat.example.test/family"
+    assert requests[0].headers["Authorization"] == "Bearer secret"
+    assert json.loads(requests[0].content) == {"nationalCode": "0499370899"}
+    assert family.principal_national_code == "0499370899"
+    assert family.org == InsuranceOrg.SALAMAT
+    assert len(family.members) == 2
+    principal, spouse = family.members
+    assert principal.national_code == "0499370899"
+    assert principal.status == EligibilityStatus.ACTIVE
+    assert principal.date_of_birth == date(1986, 6, 5)
+    assert principal.date_of_birth_jalali == "1365/03/15"
+    assert principal.relationship_to_principal == "principal"
+    assert principal.raw["policyNo"] == "SAL-123"
+    assert spouse.national_code == "0012345679"
+    assert spouse.status == EligibilityStatus.EXPIRED
+    assert spouse.relationship_to_principal == "spouse"
+    assert spouse.principal_national_code == "0499370899"
+    assert spouse.copay_percent == 20.0
+
+
+def test_salamat_live_family_failure_falls_back_to_sandbox(monkeypatch):
+    from services.integrations.iranian_insurance import adapters
+    from services.integrations.iranian_insurance.adapters import SalamatAdapter
+    from services.integrations.iranian_insurance.base import InsuranceOrg
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unavailable", request=request)
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(*args, **kwargs):
+        return real_async_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(adapters.httpx, "AsyncClient", client_factory)
+
+    adapter = SalamatAdapter(base_url="https://salamat.example.test", api_key="secret")
+    family = asyncio.run(adapter.get_family_coverage("0499370899"))
+
+    assert family.principal_national_code == "0499370899"
+    assert family.org == InsuranceOrg.SALAMAT
+    assert len(family.members) >= 2
+    assert family.members[0].raw == {"backend": "sandbox", "org": "salamat"}
 
 
 def test_american_mode_uses_ssn():

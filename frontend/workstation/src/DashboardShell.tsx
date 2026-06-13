@@ -1,12 +1,17 @@
 /**
  * PharmPilot Dashboard Shell
  * ===========================
- * Main navigation hub connecting all 8 dashboard sections.
+ * Main navigation hub connecting all dashboard sections.
  * Left sidebar with section nav. Top bar with live status + AI cost.
- * Keyboard: 1–8 switches sections. Escape returns to workstation.
+ * Keyboard: Alt+number/Alt+K switches sections. Escape returns to workstation.
  */
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import {
+  Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
+  AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, type LucideIcon,
+} from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import CommandCenter         from './dashboards/CommandCenter'
@@ -18,18 +23,37 @@ import PatientAdherence      from './dashboards/PatientAdherence'
 import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
+import ClinicalAssistant     from './dashboards/ClinicalAssistant'
+import ADRDetective          from './dashboards/ADRDetective'
+import CounsellingGenerator  from './dashboards/CounsellingGenerator'
+import PolypharmacyReview    from './dashboards/PolypharmacyReview'
+import Pharmacogenomics      from './dashboards/Pharmacogenomics'
+import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
+import SecondBrainChat       from './dashboards/SecondBrainChat'
+import DrugIntelligence      from './dashboards/DrugIntelligence'
+import LabSafetyPage         from './pages/LabSafetyPage'
+import MedReconciliationPage from './pages/MedReconciliationPage'
 
 const SECTIONS = [
-  { id:'command',    key:'1', label:'Command Center',     icon:'🏠', description:'Owner overview',      shortcut:'Alt+1' },
-  { id:'inventory',  key:'2', label:'Inventory AI',       icon:'📦', description:'ML stock brain',       shortcut:'Alt+2' },
-  { id:'clinical',   key:'3', label:'Clinical Intel',     icon:'🧠', description:'Patient safety',       shortcut:'Alt+3' },
-  { id:'security',   key:'4', label:'Surveillance',       icon:'🛡️', description:'Security & safety',   shortcut:'Alt+4' },
-  { id:'financial',  key:'5', label:'Financial Ops',      icon:'💰', description:'Revenue & claims',     shortcut:'Alt+5' },
-  { id:'adherence',  key:'6', label:'Patient Care',       icon:'👥', description:'Adherence & MTM',      shortcut:'Alt+6' },
-  { id:'audio',      key:'7', label:'Conversation AI',    icon:'🎙️', description:'Transcript review',   shortcut:'Alt+7' },
-  { id:'ai-hub',     key:'8', label:'AI Hub',             icon:'🤖', description:'Multi-AI control',     shortcut:'Alt+8' },
-  { id:'knowledge',  key:'9', label:'Knowledge Base',     icon:'📚', description:'Train clinical brain', shortcut:'Alt+9' },
-] as const
+  { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
+  { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
+  { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
+  { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
+  { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
+  { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
+  { id:'physmsg',    key:'m', label:'Physician Message',  icon:Send,        description:'Prescriber communication', shortcut:'Alt+M' },
+  { id:'second-brain', key:'r', label:'Second Brain',     icon:BookOpen,    description:'RAG clinical Q&A',       shortcut:'Alt+R' },
+  { id:'drug-intel', key:'d', label:'Drug Intelligence',  icon:Pill,        description:'Offline drug monograph', shortcut:'Alt+D' },
+  { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
+  { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
+  { id:'lab-safety', key:'l', label:'Lab Safety',         icon:FlaskConical, description:'Lab monitoring',       shortcut:'Alt+L' },
+  { id:'med-rec',    key:'i', label:'Med Reconciliation', icon:ClipboardList, description:'Medication comparison', shortcut:'Alt+I' },
+  { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
+  { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
+  { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
+  { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
+  { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
+] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
 
@@ -37,6 +61,16 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
   clinical:  ClinicalIntelligence,
+  cds:       ClinicalAssistant,
+  adr:       ADRDetective,
+  counselling: CounsellingGenerator,
+  physmsg:   PhysicianMessageComposer,
+  'second-brain': SecondBrainChat,
+  'drug-intel': DrugIntelligence,
+  poly:      PolypharmacyReview,
+  pgx:       Pharmacogenomics,
+  'lab-safety': LabSafetyPage,
+  'med-rec': MedReconciliationPage,
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
@@ -51,6 +85,8 @@ interface Props {
 
 export default function DashboardShell({ onExitDashboard }: Props) {
   const [activeSection, setActiveSection] = useState<SectionId>('command')
+  const [collapsed, setCollapsed] = useState(false)
+  const [clock, setClock] = useState(() => new Date())
   const userRole = localStorage.getItem('user_role') || ''
   const pharmacyId = localStorage.getItem('pharmacy_id') || ''
 
@@ -66,12 +102,35 @@ export default function DashboardShell({ onExitDashboard }: Props) {
     refetchInterval: 60_000,
   })
 
-  // Keyboard shortcuts: Alt+1..8, Escape
+  // Keep the top-bar clock fresh without re-rendering the whole shell every second
+  useEffect(() => {
+    const t = setInterval(() => setClock(new Date()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  // Responsive sidebar: auto-collapse to the icon rail below the `lg` breakpoint
+  // (1024px) so the fixed 224px nav doesn't crowd out content on laptops/tablets.
+  // The user's manual Alt+B toggle still works and isn't fought by this — it only
+  // adjusts the default in response to *changes* in viewport size.
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 1023px)')
+    setCollapsed(mql.matches)
+    const onChange = (e: MediaQueryListEvent) => setCollapsed(e.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+
+  // Keyboard shortcuts: Alt+1..9/0/K, Escape, Alt+B to toggle sidebar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.key >= '1' && e.key <= '9') {
-        const section = SECTIONS[parseInt(e.key) - 1]
+      const key = e.key.toLowerCase()
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r' || key === 'd' || key === 'l' || key === 'i'))) {
+        const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
+        e.preventDefault()
+      }
+      if (e.altKey && key === 'b') {
+        setCollapsed(c => !c)
         e.preventDefault()
       }
       if (e.key === 'Escape' && onExitDashboard) onExitDashboard()
@@ -81,65 +140,81 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   }, [onExitDashboard])
 
   const ActiveComponent = SECTION_COMPONENTS[activeSection]
+  const activeMeta      = SECTIONS.find(s => s.id === activeSection)!
   const criticalAlerts  = summary?.critical_unresolved || 0
   const totalAICost     = aiData?.total_cost_today || 0
 
   // Section alert badges
-  const sectionBadges: Partial<Record<SectionId, string>> = {
-    security: criticalAlerts > 0 ? String(criticalAlerts) : undefined,
-    audio:    '3',  // Pending profile updates
-    clinical: '2',  // REMS blockers
+  const sectionBadges: Partial<Record<SectionId, { value: string; tone: 'critical' | 'attention' }>> = {
+    security: criticalAlerts > 0 ? { value: String(criticalAlerts), tone: 'critical' } : undefined,
+    audio:    { value: '3', tone: 'attention' },  // Pending profile updates
+    clinical: { value: '2', tone: 'attention' },  // REMS blockers
   }
 
   return (
     <div className="flex h-screen bg-[#0f1117] text-slate-100 overflow-hidden">
 
       {/* ── Left Sidebar ──────────────────────────────────────────────── */}
-      <nav className="w-52 flex-shrink-0 bg-[#0d1117] border-r border-[#1e293b] flex flex-col">
+      <nav
+        className={`${collapsed ? 'w-[60px]' : 'w-56'} flex-shrink-0 bg-[#0f1117] border-r border-[#1e293b]
+                    flex flex-col transition-[width] duration-200 ease-out`}
+      >
         {/* Logo */}
-        <div className="px-4 py-4 border-b border-[#1e293b]">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">💊</span>
-            <div>
-              <span className="font-bold text-slate-100 text-sm">PharmPilot</span>
-              <p className="text-[10px] text-slate-500">AI Dashboard</p>
+        <div className={`flex items-center ${collapsed ? 'justify-center px-0' : 'justify-between px-4'} h-14 border-b border-[#1e293b]`}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-blue-800
+                            flex items-center justify-center shadow-sm shadow-blue-950/50 flex-shrink-0">
+              <span className="text-sm font-black text-white tracking-tight">Rx</span>
             </div>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="font-bold text-slate-100 text-sm leading-tight truncate">PharmPilot</p>
+                <p className="text-[10px] text-slate-500 leading-tight truncate">Pharmacy OS</p>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Section navigation */}
-        <div className="flex-1 overflow-y-auto py-3 px-2">
-          <p className="text-[9px] font-semibold uppercase tracking-widest text-slate-600 px-2 mb-2">Dashboards</p>
+        <div className="flex-1 overflow-y-auto py-3 px-2.5 space-y-0.5">
+          {!collapsed && (
+            <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-600">
+              Dashboards
+            </p>
+          )}
           {SECTIONS.map(section => {
             const isActive = activeSection === section.id
             const badge    = sectionBadges[section.id]
+            const Icon     = section.icon
             return (
-              <button key={section.id} onClick={() => setActiveSection(section.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg mb-0.5 text-left transition-colors group
-                  ${isActive
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-[#1a1f2e]'
-                  }`}
-                aria-label={`${section.label} (${section.shortcut})`}
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                aria-label={`${section.label} — ${section.description}${badge ? `, ${badge.value} ${badge.tone === 'critical' ? 'critical alerts' : 'pending'}` : ''} (${section.shortcut})`}
+                aria-current={isActive ? 'page' : undefined}
+                className={`group relative w-full flex items-center gap-2.5 rounded-lg text-left
+                           transition-colors duration-150
+                           ${collapsed ? 'justify-center px-0 py-2.5' : 'px-2.5 py-2'}
+                           ${isActive
+                             ? 'bg-blue-600/15 text-blue-300 ring-1 ring-inset ring-blue-500/30'
+                             : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
+                           }`}
+                title={`${section.label} — ${section.description} (${section.shortcut})`}
               >
-                <span className="text-base flex-shrink-0">{section.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium leading-tight truncate">{section.label}</p>
-                  <p className={`text-[9px] leading-tight truncate ${isActive ? 'text-blue-200' : 'text-slate-600'}`}>
-                    {section.description}
-                  </p>
-                </div>
-                {badge && (
-                  <span className={`flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full
-                    ${section.id === 'security' && criticalAlerts > 0
-                      ? 'bg-red-500 text-white'
-                      : 'bg-orange-500 text-white'}`}>
-                    {badge}
-                  </span>
+                {isActive && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-blue-400" />
                 )}
-                {!isActive && (
-                  <span className="text-[8px] text-slate-700 group-hover:text-slate-500 flex-shrink-0">
-                    ⌥{section.key}
+                <Icon size={17} strokeWidth={isActive ? 2.25 : 1.75} className="flex-shrink-0" />
+                {!collapsed && (
+                  <span className="text-[13px] font-medium leading-tight truncate flex-1">{section.label}</span>
+                )}
+                {badge && (
+                  <span
+                    className={`flex-shrink-0 text-[10px] font-bold leading-none rounded-full
+                               ${collapsed ? 'absolute top-1 right-1 w-2 h-2 p-0' : 'px-1.5 py-0.5'}
+                               ${badge.tone === 'critical' ? 'bg-red-500 text-white' : 'bg-amber-500 text-amber-950'}`}
+                  >
+                    {collapsed ? '' : badge.value}
                   </span>
                 )}
               </button>
@@ -147,43 +222,87 @@ export default function DashboardShell({ onExitDashboard }: Props) {
           })}
         </div>
 
-        {/* Footer: AI cost + role */}
-        <div className="px-3 py-3 border-t border-[#1e293b] space-y-2">
-          <div className="flex justify-between text-[10px]">
-            <span className="text-slate-500">AI cost today</span>
-            <span className="font-mono text-slate-300">${totalAICost.toFixed(3)}</span>
-          </div>
-          <div className="flex justify-between text-[10px]">
-            <span className="text-slate-500">Role</span>
-            <span className="capitalize text-slate-400">{userRole.replace(/_/g,' ')}</span>
-          </div>
+        {/* Footer */}
+        <div className={`border-t border-[#1e293b] ${collapsed ? 'px-1.5 py-2' : 'px-3 py-3'} space-y-2`}>
+          {!collapsed && (
+            <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-1.5">
+              <span className="text-[10px] font-medium text-slate-500">AI spend today</span>
+              <span className="text-[11px] font-mono font-semibold text-slate-300 tabular-nums">${totalAICost.toFixed(3)}</span>
+            </div>
+          )}
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="w-full flex items-center justify-center gap-2 rounded-lg py-1.5
+                       text-slate-500 hover:text-slate-300 hover:bg-white/[0.04] transition-colors"
+            title={collapsed ? 'Expand sidebar (Alt+B)' : 'Collapse sidebar (Alt+B)'}
+          >
+            {collapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
+            {!collapsed && <span className="text-[11px] font-medium">Collapse</span>}
+          </button>
+          {!collapsed && (
+            <p className="text-[10px] text-slate-600 capitalize truncate px-1">{userRole.replace(/_/g, ' ') || 'Staff'}</p>
+          )}
           {onExitDashboard && (
             <button onClick={onExitDashboard}
-              className="w-full text-[10px] text-slate-500 hover:text-slate-300 py-1 text-center">
-              ← Workstation (Esc)
+              className={`w-full flex items-center gap-2 text-slate-500 hover:text-slate-200
+                         hover:bg-white/[0.04] rounded-lg py-1.5 transition-colors
+                         ${collapsed ? 'justify-center' : 'px-2'}`}
+              title="Return to workstation (Esc)"
+            >
+              <ArrowLeft size={14} />
+              {!collapsed && <span className="text-[11px] font-medium">Workstation</span>}
             </button>
           )}
         </div>
       </nav>
 
       {/* ── Main content ──────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Top bar */}
-        <header className="flex-shrink-0 h-10 bg-[#0d1117] border-b border-[#1e293b]
-                           flex items-center justify-between px-6 text-xs">
-          <div className="flex items-center gap-3">
-            <span className="font-semibold text-slate-200">
-              {SECTIONS.find(s => s.id === activeSection)?.label}
-            </span>
+        <header className="flex-shrink-0 h-14 bg-[#0f1117]/80 backdrop-blur border-b border-[#1e293b]
+                           flex items-center justify-between gap-4 px-6">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="min-w-0">
+              {/* Section title — intentionally not an <h1>: each dashboard renders its own
+                  canonical <h1>, so this is a secondary/contextual label (role=heading level 2). */}
+              <p role="heading" aria-level={2} className="text-[15px] font-semibold text-slate-100 leading-tight truncate">{activeMeta.label}</p>
+              <p className="text-[11px] text-slate-500 leading-tight truncate">{activeMeta.description}</p>
+            </div>
             {criticalAlerts > 0 && (
-              <span className="bg-red-500 text-white px-2 py-0.5 rounded-full font-bold animate-pulse text-[10px]">
-                {criticalAlerts} CRITICAL
+              <span className="hidden sm:inline-flex items-center gap-1.5 bg-red-500/15 text-red-300
+                               ring-1 ring-inset ring-red-500/30 px-2.5 py-1 rounded-full text-[11px] font-semibold">
+                <AlertTriangle size={12} className="animate-pulse" />
+                {criticalAlerts} critical alert{criticalAlerts === 1 ? '' : 's'}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-4 text-[10px] text-slate-500">
-            <span>{new Date().toLocaleTimeString()}</span>
-            <span>Pharmacy: {pharmacyId?.slice(0,8)}…</span>
+
+          <div className="flex items-center gap-2">
+            {/* Search — not yet wired to a real index, so it's presented as a clearly
+                inert placeholder (no fake keyboard-shortcut hint, default cursor, reduced
+                contrast) rather than an affordance that looks live but does nothing. */}
+            <div
+              aria-hidden="true"
+              title="Search is coming soon"
+              className="hidden md:flex items-center gap-2 rounded-lg bg-white/[0.02] border border-white/[0.05]
+                         px-3 py-1.5 text-slate-600 w-56 lg:w-72 cursor-default select-none"
+            >
+              <Search size={14} className="flex-shrink-0 opacity-60" />
+              <span className="text-[12px] truncate opacity-60">Search (coming soon)</span>
+            </div>
+
+            <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-slate-500 px-2.5 py-1.5
+                            rounded-lg bg-white/[0.03] border border-white/[0.06]">
+              <Clock size={13} />
+              <span className="tabular-nums">{clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+            <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-slate-500 px-2.5 py-1.5
+                            rounded-lg bg-white/[0.03] border border-white/[0.06]">
+              <Building2 size={13} />
+              <span className="font-mono truncate max-w-[7rem]">{pharmacyId ? `${pharmacyId.slice(0, 8)}…` : 'No pharmacy'}</span>
+            </div>
           </div>
         </header>
 
@@ -196,7 +315,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
         <main className="flex-1 overflow-y-auto">
           <ErrorBoundary
             key={activeSection}
-            label={SECTIONS.find(s => s.id === activeSection)?.label}
+            label={activeMeta.label}
           >
             <ActiveComponent />
           </ErrorBoundary>

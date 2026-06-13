@@ -10,8 +10,19 @@ import {
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import MarginOptimizerPanel from '../components/MarginOptimizerPanel'
+import AnalyticsChat from '../components/AnalyticsChat'
+import { CANCELLATION_REASON_LABELS, type CancellationReason } from '../components/CancelRxModal'
 
 const formatDollar = (v: number) => v >= 1000 ? `$${(v/1000).toFixed(0)}K` : `$${v}`
+const CANCELLATION_COLORS: Record<CancellationReason, string> = {
+  customer_declined: '#ef4444',
+  prescriber_cancelled: '#f97316',
+  duplicate: '#eab308',
+  expired: '#64748b',
+  insurance_issue: '#3b82f6',
+  other: '#a855f7',
+}
 
 function RevenueWaterfall() {
   const data = [
@@ -136,6 +147,69 @@ function RejectPareto() {
   )
 }
 
+interface CancellationAnalytics {
+  period_start: string
+  period_end: string
+  pharmacy_id: string
+  cancellations: {
+    by_reason: Partial<Record<CancellationReason, number>>
+    total: number
+  }
+}
+
+function CancellationsCard() {
+  const { data } = useQuery({
+    queryKey: ['analytics-cancellations-30d'],
+    queryFn: () => apiClient.get('/analytics/cancellations').then(r => r.data as CancellationAnalytics),
+    refetchInterval: 300_000,
+  })
+  const reasons = Object.entries(CANCELLATION_REASON_LABELS) as Array<[CancellationReason, string]>
+  const counts = data?.cancellations?.by_reason ?? {}
+  const total = data?.cancellations?.total ?? 0
+  const max = Math.max(...reasons.map(([code]) => Number(counts[code] ?? 0)), 1)
+
+  return (
+    <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Cancellations (30d)</p>
+          {data?.period_start && data?.period_end && (
+            <p className="text-[10px] text-slate-600 mt-0.5">{data.period_start} to {data.period_end}</p>
+          )}
+        </div>
+        <p className="text-3xl font-bold tabular-nums text-red-400">{total}</p>
+      </div>
+
+      {total === 0 ? (
+        <div className="h-[130px] flex items-center justify-center rounded-lg border border-slate-800 text-xs text-slate-600">
+          No cancellations in period
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {reasons.map(([code, label]) => {
+            const count = Number(counts[code] ?? 0)
+            const pct = total > 0 ? count / total * 100 : 0
+            return (
+              <div key={code}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-slate-300">{label}</span>
+                  <span className="font-mono text-slate-400 tabular-nums">{count} · {pct.toFixed(0)}%</span>
+                </div>
+                <div className="h-2.5 rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${count / max * 100}%`, backgroundColor: CANCELLATION_COLORS[code] }}
+                  />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function FinancialOperations() {
   const { data: financialData } = useQuery({
     queryKey: ['financial-summary'],
@@ -165,9 +239,16 @@ export default function FinancialOperations() {
         <RevenueWaterfall />
         <AdjudicationHistogram />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <RejectPareto />
         <CMSStarGauges />
+        <CancellationsCard />
+      </div>
+
+      {/* Offline-first AI — Margin Optimization (#19) + Ask Your Data (#3) */}
+      <div className="grid grid-cols-2 gap-4">
+        <MarginOptimizerPanel />
+        <AnalyticsChat />
       </div>
     </div>
   )

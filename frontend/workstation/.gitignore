@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright e2e artifacts (not committed — specs are the deliverable)
+tests/e2e/.auth/
+tests/e2e/.artifacts/
+tests/e2e/.report/
+test-results/
+playwright-report/
+blob-report/
+.playwright-mcp/

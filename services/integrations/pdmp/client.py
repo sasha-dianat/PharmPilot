@@ -5,8 +5,9 @@ Auto-triggers query before dispensing any Schedule II–V controlled substance.
 Multi-state routing — sends to correct state PDMP based on patient address.
 """
 import logging
+import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -121,10 +122,12 @@ class PDMPClient:
         narxcare_api_key: str = "",
         state_credentials: Optional[dict] = None,
         timeout_seconds: int = 10,
+        integrations_sandbox: bool = True,
     ):
         self.narxcare_api_key = narxcare_api_key
         self.state_credentials = state_credentials or {}
         self.timeout = timeout_seconds
+        self.integrations_sandbox = integrations_sandbox
 
     def should_query(
         self,
@@ -154,15 +157,17 @@ class PDMPClient:
         Query the PDMP for a patient's controlled substance history.
         Tries NarxCare first (fastest, richest data), falls back to PMIX.
         """
-        from uuid import uuid4
-        query_id = str(uuid4())
+        sandboxed = self.integrations_sandbox or not self._has_live_credentials(patient)
+        query_id = self._sandbox_query_id(patient) if sandboxed else self._live_query_id()
         logger.info(
             "PDMP query for patient DOB=%s state=%s schedule=%s",
             patient.date_of_birth, patient.state_of_residence, dea_schedule,
         )
 
         try:
-            if self.narxcare_api_key:
+            if sandboxed:
+                result = self._query_sandbox(patient, query_id)
+            elif self.narxcare_api_key:
                 result = await self._query_narxcare(
                     patient, requesting_pharmacy_npi, requesting_pharmacist_npi, query_id
                 )
@@ -184,6 +189,133 @@ class PDMPClient:
                 query_timestamp=datetime.now(timezone.utc),
                 raw_response=f"PDMP query failed: {exc}",
             )
+
+    @staticmethod
+    def _live_query_id() -> str:
+        from uuid import uuid4
+        return str(uuid4())
+
+    def _has_live_credentials(self, patient: PDMPPatientQuery) -> bool:
+        state = (patient.state_of_residence or "").upper()
+        return bool(self.narxcare_api_key or self.state_credentials.get(state))
+
+    @staticmethod
+    def _sandbox_seed(patient: PDMPPatientQuery) -> tuple[str, int]:
+        key = "|".join([
+            patient.first_name.strip().lower(),
+            patient.last_name.strip().lower(),
+            patient.date_of_birth.strip(),
+            patient.state_of_residence.strip().upper(),
+            patient.ssn_last4 or "",
+        ])
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return digest, int(digest, 16)
+
+    def _sandbox_query_id(self, patient: PDMPPatientQuery) -> str:
+        digest, _ = self._sandbox_seed(patient)
+        return f"sandbox-pdmp-{digest[:16]}"
+
+    def _query_sandbox(self, patient: PDMPPatientQuery, query_id: str) -> PDMPQueryResult:
+        digest, seed = self._sandbox_seed(patient)
+        hot_patient = seed % 5 == 0
+        timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seed % 31_536_000)
+        state = patient.state_of_residence.upper()
+
+        if hot_patient:
+            today = date.today()
+            records = [
+                PDMPDispenseRecord(
+                    ndc="00054017613",
+                    drug_name="Oxycodone 5 MG Tablet",
+                    quantity=30,
+                    days_supply=5,
+                    dispense_date=(today - timedelta(days=3)).isoformat(),
+                    prescriber_npi="1992000001",
+                    prescriber_name="Sandbox Prescriber 1",
+                    pharmacy_name="Sandbox Pharmacy 1",
+                    pharmacy_npi="1881000001",
+                    state=state,
+                    payment_type="cash",
+                ),
+                PDMPDispenseRecord(
+                    ndc="00093083301",
+                    drug_name="Alprazolam 0.5 MG Tablet",
+                    quantity=30,
+                    days_supply=10,
+                    dispense_date=(today - timedelta(days=8)).isoformat(),
+                    prescriber_npi="1992000002",
+                    prescriber_name="Sandbox Prescriber 2",
+                    pharmacy_name="Sandbox Pharmacy 2",
+                    pharmacy_npi="1881000002",
+                    state=state,
+                    payment_type="insurance",
+                ),
+                PDMPDispenseRecord(
+                    ndc="00406035701",
+                    drug_name="Hydrocodone/APAP 5-325 MG Tablet",
+                    quantity=20,
+                    days_supply=4,
+                    dispense_date=(today - timedelta(days=13)).isoformat(),
+                    prescriber_npi="1992000003",
+                    prescriber_name="Sandbox Prescriber 3",
+                    pharmacy_name="Sandbox Pharmacy 3",
+                    pharmacy_npi="1881000003",
+                    state=state,
+                    payment_type="cash",
+                ),
+                PDMPDispenseRecord(
+                    ndc="00185064401",
+                    drug_name="Clonazepam 1 MG Tablet",
+                    quantity=20,
+                    days_supply=10,
+                    dispense_date=(today - timedelta(days=18)).isoformat(),
+                    prescriber_npi="1992000004",
+                    prescriber_name="Sandbox Prescriber 4",
+                    pharmacy_name="Sandbox Pharmacy 4",
+                    pharmacy_npi="1881000004",
+                    state=state,
+                    payment_type="insurance",
+                ),
+            ]
+            narx_score = NarxScore(
+                narcotic_score=520 + (seed % 80),
+                sedative_score=430 + ((seed >> 8) % 90),
+                stimulant_score=110 + ((seed >> 16) % 70),
+                overdose_indicator=(seed % 11 == 0),
+                doctor_shopping_indicator=True,
+                cash_pay_indicator=True,
+                risk_level="critical",
+            )
+            logger.info("PDMP sandbox hot patient generated for state=%s digest=%s", state, digest[:8])
+            return PDMPQueryResult(
+                query_id=query_id,
+                patient_found=True,
+                query_state=state,
+                query_timestamp=timestamp,
+                dispense_records=records,
+                narx_score=narx_score,
+                rx_count_30d=len(records),
+                rx_count_90d=len(records),
+                raw_response='{"backend": "sandbox", "risk_profile": "hot"}',
+            )
+
+        logger.info("PDMP sandbox clean patient generated for state=%s digest=%s", state, digest[:8])
+        return PDMPQueryResult(
+            query_id=query_id,
+            patient_found=True,
+            query_state=state,
+            query_timestamp=timestamp,
+            dispense_records=[],
+            narx_score=NarxScore(
+                narcotic_score=20 + (seed % 90),
+                sedative_score=10 + ((seed >> 8) % 70),
+                stimulant_score=5 + ((seed >> 16) % 60),
+                risk_level="low",
+            ),
+            rx_count_30d=0,
+            rx_count_90d=0,
+            raw_response='{"backend": "sandbox", "risk_profile": "clean"}',
+        )
 
     async def _query_narxcare(
         self,

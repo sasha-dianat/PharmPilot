@@ -10,10 +10,14 @@ import { useRxQueueStore } from '../stores/rxQueue'
 import type { DURAlert } from '../stores/rxQueue'
 import DURAlertPanel from './DURAlertPanel'
 import CouncilReport from './CouncilReport'
+import TrajectorySignalStrip from './TrajectorySignalStrip'
 import LabelPreview from './LabelPreview'
 import DictateNote from './DictateNote'
 import { rxApi, claimsApi, clinicalApi, apiClient } from '../lib/api'
 import { ErrorBoundary } from './ErrorBoundary'
+import RxCopilotRail from './RxCopilotRail'
+import CancelRxModal from './CancelRxModal'
+import { IntegrityBanner } from './IntelligenceWorkflowBits'
 
 // ── Step definitions ─────────────────────────────────────────────────────────
 const STEPS = ['Pending', 'Claimed', 'DUR Review', 'Adjudication', 'Fill', 'Dispense'] as const
@@ -104,6 +108,7 @@ export default function VerificationCenter() {
   const [claimLoading, setClaimLoading] = useState(false)
   const [claimError,   setClaimError]  = useState('')
   const [pdmpLoading,  setPdmpLoading] = useState(false)
+  const [showCancelRx, setShowCancelRx] = useState(false)
 
   const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
 
@@ -113,6 +118,7 @@ export default function VerificationCenter() {
     setPdmpResult(null)
     setShowLabel(false)
     setClaimError('')
+    setShowCancelRx(false)
   }, [selectedRx?.id])
 
   // Fetch DUR alerts
@@ -303,6 +309,23 @@ export default function VerificationCenter() {
       {/* ── Step indicator ────────────────────────────────────────────────── */}
       <StepIndicator currentStep={currentStep} />
 
+      {/* ── #15 Rx Workflow Copilot — per-step automation confidence ───────── */}
+      <ErrorBoundary label="Rx Copilot" inline>
+        <RxCopilotRail rxId={selectedRx.id} />
+      </ErrorBoundary>
+
+      {/* ── #6 Controlled-Substance Integrity (renders only for controlled) ── */}
+      {selectedRx.is_controlled && (
+        <IntegrityBanner
+          deaSchedule={selectedRx.dea_schedule}
+          isControlled={selectedRx.is_controlled}
+          prescriberId={(selectedRx as any).prescriber_id}
+          ndc={(selectedRx as any).ndc}
+          drugName={selectedRx.drug_name}
+          quantity={selectedRx.quantity_prescribed}
+        />
+      )}
+
       {/* ── PDMP (controlled substances only) ────────────────────────────── */}
       {selectedRx.is_controlled && (
         <PDMPPanel loading={pdmpLoading} result={pdmpResult} />
@@ -362,6 +385,26 @@ export default function VerificationCenter() {
         </div>
       )}
 
+      {/* ── Patient Intelligence — trajectory, care gaps, prescriber context ─
+           Consolidated companion to the Council: everything "what do I know
+           about this patient (and who prescribed for them)" lives HERE, next
+           to the findings, instead of scattered across dashboards the
+           pharmacist would otherwise have to leave review to go find. ──── */}
+      {selectedRx.patient_id && (
+        <ErrorBoundary label="Patient Intelligence" inline>
+          <TrajectorySignalStrip
+            patientId={selectedRx.patient_id}
+            patientName={(selectedRx as any).patient_name}
+            prescriberId={(selectedRx as any).prescriber_id}
+            prescriberName={(selectedRx as any).prescriber_name}
+            ndc={(selectedRx as any).ndc}
+            drugName={selectedRx.drug_name}
+            quantity={selectedRx.quantity_prescribed}
+            isControlled={selectedRx.is_controlled}
+          />
+        </ErrorBoundary>
+      )}
+
       {/* ── Specialist Council — precomputed (instant) or SSE (fallback) ─── */}
       {selectedRx.status === 'verification_in_progress' && selectedRx.patient_id && (
         <ErrorBoundary label="Clinical Council" inline>
@@ -413,6 +456,15 @@ export default function VerificationCenter() {
           }}
         />
       )}
+      {showCancelRx && (
+        <CancelRxModal
+          rxId={selectedRx.id}
+          rxNumber={selectedRx.rx_number}
+          drugName={selectedRx.drug_name}
+          onClose={() => setShowCancelRx(false)}
+          onCancelled={() => refreshRx(selectedRx.id)}
+        />
+      )}
 
       {/* ── Action buttons ─────────────────────────────────────────────────── */}
       <div className="bg-white border rounded-lg p-3">
@@ -424,6 +476,7 @@ export default function VerificationCenter() {
           onClaim={handleClaim}
           onAdjudicate={handleAdjudicate}
           onShowLabel={() => setShowLabel(true)}
+          onCancelRx={() => setShowCancelRx(true)}
           onTransition={handleTransition}
         />
       </div>
@@ -597,10 +650,10 @@ function ClaimResultPanel({ result, onInitiatePA }: { result: ClaimResult; onIni
 
 function ActionButtons({
   status, criticalHardStops, claimLoading, claimApproved,
-  onClaim, onAdjudicate, onShowLabel, onTransition,
+  onClaim, onAdjudicate, onShowLabel, onCancelRx, onTransition,
 }: {
   status: string; criticalHardStops: number; claimLoading: boolean; claimApproved: boolean
-  onClaim: () => void; onAdjudicate: () => void; onShowLabel: () => void
+  onClaim: () => void; onAdjudicate: () => void; onShowLabel: () => void; onCancelRx: () => void
   onTransition: (s: string) => void
 }) {
   const btn = (label: string, handler: () => void, cls: string, disabled = false) => (
@@ -627,10 +680,6 @@ function ActionButtons({
 
       {status === 'dur_hold' && (<>
         {btn('↩ Return to Verification', () => onTransition('verification_in_progress'), 'bg-blue-600 hover:bg-blue-700')}
-        <button onClick={() => onTransition('cancelled')}
-          className="px-4 py-2 bg-red-100 text-red-700 text-sm rounded-lg hover:bg-red-200 border border-red-300 font-medium">
-          Cancel Rx
-        </button>
       </>)}
 
       {status === 'pending_adjudication' && claimApproved &&
@@ -656,6 +705,17 @@ function ActionButtons({
         <button onClick={() => onTransition('on_hold')}
           className="px-3 py-2 text-gray-500 text-sm rounded-lg border border-gray-200 hover:bg-gray-50">
           ⏸ Hold
+        </button>
+      )}
+      {/* Only statuses with a legal → cancelled edge in the backend
+          RxStateMachine TRANSITIONS map (pending_adjudication, filling,
+          filled, will_call and terminals cannot cancel). */}
+      {['intake', 'pending_dur', 'dur_hold', 'pending_verification',
+        'verification_in_progress', 'adjudication_rejected', 'pending_pa',
+        'ready_to_fill', 'on_hold'].includes(status) && (
+        <button onClick={onCancelRx}
+          className="px-3 py-2 text-red-600 text-sm rounded-lg border border-red-200 hover:bg-red-50 font-medium">
+          Cancel Rx
         </button>
       )}
     </div>

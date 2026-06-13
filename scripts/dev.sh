@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  PharmPilot AI — Start all local development services
-#  API  → http://localhost:8001
-#  UI   → http://localhost:3001
+#  API  → http://localhost:8001   (8000 reserved for other project)
+#  UI   → http://localhost:3001   (3000 reserved for other project)
 #  Run:  bash scripts/dev.sh
 #  Stop: Ctrl+C
 # =============================================================================
@@ -18,7 +18,7 @@ cd "$ROOT_DIR"
 # Load .env
 [ -f "$ROOT_DIR/.env" ] && set -o allexport && source "$ROOT_DIR/.env" && set +o allexport
 
-# Port assignments — PharmPilot uses 8001/3001 to avoid conflicts
+# Port assignments — 8001/3001 to avoid conflict with other local projects on 8000/3000
 API_PORT=8001
 FRONTEND_PORT=3001
 QDRANT_PORT=6334   # 6333 may conflict; use 6334
@@ -156,6 +156,10 @@ curl -sf "http://localhost:$API_PORT/health" 2>/dev/null | grep -q "pharmpilot" 
   || { warn "API slow — check $LOG_DIR/api.log"; tail -5 "$LOG_DIR/api.log" 2>/dev/null; }
 
 # ── 6. React workstation ──────────────────────────────────────────────────
+# Always write the correct API URL so the frontend talks to the right port
+printf 'VITE_API_URL=http://localhost:%s/api/v1\nVITE_WS_URL=ws://localhost:%s\n' \
+  "$API_PORT" "$API_PORT" > "$ROOT_DIR/frontend/workstation/.env.local"
+
 log "Starting React workstation on port $FRONTEND_PORT..."
 cd "$ROOT_DIR/frontend/workstation"
 npm run dev -- --port "$FRONTEND_PORT" --host \
@@ -183,7 +187,7 @@ echo -e "  ${GREEN}API Health        ${NC}→  http://localhost:${API_PORT}/heal
 echo -e "  ${GREEN}Qdrant REST API   ${NC}→  http://localhost:${QDRANT_PORT}/collections"
 echo -e "  ${YELLOW}  Note:${NC} Qdrant web dashboard not bundled in macOS binary (API works fine)"
 echo ""
-echo -e "  ${YELLOW}Login:${NC}  admin / Admin1234!   |   pharmacist / Pharmacist1234!"
+echo -e "  ${YELLOW}Login:${NC}  admin / PharmPilot2024!   |   pharmacist / Pharmacist2024!   |   tech / Tech2024!"
 echo ""
 echo -e "  ${CYAN}Logs:${NC}  .logs/api.log  |  .logs/frontend.log  |  .logs/qdrant.log"
 echo ""

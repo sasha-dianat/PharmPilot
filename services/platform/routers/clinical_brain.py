@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.platform.config import settings
 from services.platform.database import get_db
 
@@ -62,11 +63,12 @@ async def review_prescription(
     age = (date.today() - patient.date_of_birth).days // 365
     egfr = next((float(labs[k]) for k in ("eGFR", "egfr", "GFR") if k in labs), None)
 
+    clinical_context = await load_active_medications_and_diagnoses(db, request.patient_id)
     patient_context = PatientContextSummary(
         patient_id=request.patient_id, age=age, gender=patient.gender,
         weight_kg=None, egfr=egfr, hepatic_function=None,
-        active_medications=[], allergies=allergies,
-        diagnoses=[], recent_labs=labs,
+        active_medications=clinical_context["active_medications"], allergies=allergies,
+        diagnoses=clinical_context["diagnoses"], recent_labs=labs,
         pregnancy_status=None, pharmacogenomics=None,
     )
 

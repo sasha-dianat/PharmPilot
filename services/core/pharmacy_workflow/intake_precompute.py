@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.ai.clinical_brain.council.specialist_council import SpecialistCouncil
+from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.core.pharmacy_workflow.triage import ReviewTriageEngine, TriageInput
 
 logger = logging.getLogger(__name__)
@@ -144,34 +145,13 @@ class IntakePrecomputeService:
             "labs": {},
             "pharmacogenomics": None,
         }
-        # active meds (derived from non-terminal prescriptions)
-        try:
-            rows = (await self.db.execute(
-                text("""SELECT DISTINCT drug_name FROM prescriptions
-                        WHERE patient_id=:id AND status NOT IN ('cancelled','dispensed')"""),
-                {"id": patient_id})).mappings().all()
-            ctx["active_medications"] = [{"drug_name": r["drug_name"]} for r in rows if r["drug_name"]]
-        except Exception:
-            pass
+        ctx.update(await load_active_medications_and_diagnoses(self.db, patient_id))
         # allergies
         try:
             rows = (await self.db.execute(
                 text("SELECT allergen_name FROM patient_allergies WHERE patient_id=:id"),
                 {"id": patient_id})).mappings().all()
             ctx["allergies"] = [r["allergen_name"] for r in rows]
-        except Exception:
-            pass
-        # diagnoses + inherited conditions from clinical_notes
-        try:
-            rows = (await self.db.execute(
-                text("""SELECT note_type, content FROM clinical_notes
-                        WHERE patient_id=:id AND note_type IN ('condition','diagnosis','inherited_condition')"""),
-                {"id": patient_id})).mappings().all()
-            for r in rows:
-                if r["note_type"] == "inherited_condition":
-                    ctx["inherited_conditions"].append(r["content"])
-                else:
-                    ctx["diagnoses"].append(r["content"])
         except Exception:
             pass
         # labs (eGFR, G6PD, etc.)

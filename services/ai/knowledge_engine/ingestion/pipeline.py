@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID, uuid4
 
 from services.ai.knowledge_engine.parsers.document_parser import (
@@ -169,13 +169,43 @@ class KnowledgeIngestionPipeline:
         title: Optional[str] = None,
         evidence_level: Optional[str] = None,
         specialty_tags: Optional[list] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> dict:
         """Ingest a PDF file (guideline, package insert, textbook chapter)."""
         path = Path(pdf_path)
         title = title or path.stem.replace("_", " ").title()
 
         logger.info("Ingesting PDF: %s", title)
-        chunks = self.pdf_parser.parse(pdf_path)
+
+        try:
+            import PyPDF2
+        except ImportError:
+            logger.error("PyPDF2 not installed")
+            if progress_callback:
+                progress_callback({"pages_total": 0, "pages_done": 0})
+            chunks = []
+        else:
+            chunks = []
+            with open(pdf_path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                pages_total = len(reader.pages)
+                current_section = None
+                if progress_callback:
+                    progress_callback({"pages_total": pages_total, "pages_done": 0})
+
+                for page_num, page in enumerate(reader.pages, start=1):
+                    try:
+                        page_chunks, current_section = self.pdf_parser.parse_page(
+                            page,
+                            page_num,
+                            current_section,
+                        )
+                        chunks.extend(page_chunks)
+                    except Exception as exc:
+                        logger.warning("Skipping PDF page %d from %s: %s", page_num, pdf_path, exc)
+                    finally:
+                        if progress_callback:
+                            progress_callback({"pages_done": page_num})
 
         source_id = str(uuid4())
         return await self._process_chunks(

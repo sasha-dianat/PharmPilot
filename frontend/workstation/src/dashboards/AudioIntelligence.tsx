@@ -8,6 +8,7 @@ import { useState, useEffect, useRef } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import { CounselingScorecard } from '../components/IntelligenceWorkflowBits'
 
 // ── Entity colors for transcript highlighting ─────────────────────────────
 const ENTITY_STYLE: Record<string, string> = {
@@ -208,6 +209,11 @@ export default function AudioIntelligence() {
       <div className="grid grid-cols-2 gap-4">
         <ZoneActivityHeatmap />
         <UrgencyEventLog />
+      </div>
+
+      {/* #11 Counseling Quality — demo transcript scorecard (offline-first) */}
+      <div className="grid grid-cols-2 gap-4">
+        <CounselingScorecard transcriptText="Pharmacist: This is lisinopril for your blood pressure. Take one tablet once a day with food. You might feel dizzy at first — watch for that. Store it at room temperature. If you miss a dose, take it when you remember unless it's nearly time for the next one. Call us with any questions. Patient: Okay, got it. Thank you, that's clear." />
       </div>
     </div>
   )

@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import DURConsistencyCard from '../components/DURConsistencyCard'
 
 const SEVERITY_ICON: Record<string, string> = {
   allergy:'⚠️', interaction:'⚡', beers:'👴', renal:'🫘', opioid:'💊', duplicate:'🔄'
@@ -336,6 +337,20 @@ export default function ClinicalIntelligence() {
       <div className="grid grid-cols-2 gap-4">
         <AdherenceCohortChart />
         <ClinicalQueryBox />
+      </div>
+
+      {/* Row 4: Offline-first AI — DUR Override Consistency QA (#5)
+          NOTE: Patient Lifetime Health Trajectory (#16) used to be duplicated
+          here as a standalone per-patient lookup. It now lives consolidated
+          inside the "Patient Intelligence" strip in the dispensing workstation
+          (next to the Specialist Council, alongside prescriber context) — the
+          moment a pharmacist is actually reviewing that patient's Rx, rather
+          than a separate destination they'd have to navigate to and re-select
+          a patient for. This is a QA/operator-pattern view (override rates
+          across pharmacists), which is genuinely dashboard-shaped — it has no
+          single "patient" to be centered on, so it stays here. */}
+      <div className="grid grid-cols-1">
+        <DURConsistencyCard />
       </div>
     </div>
   )

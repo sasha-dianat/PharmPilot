@@ -173,14 +173,26 @@ class ClinicalVectorStore:
 
         query_filter = Filter(must=must_conditions) if must_conditions else None
 
-        results = client.search(
-            collection_name=self.collection,
-            query_vector=query_vector,
-            query_filter=query_filter,
-            limit=top_k,
-            score_threshold=score_threshold,
-            with_payload=True,
-        )
+        # qdrant-client >= 1.12 removed Client.search in favor of query_points;
+        # fall back to the legacy search() on older clients.
+        if hasattr(client, "query_points"):
+            results = client.query_points(
+                collection_name=self.collection,
+                query=query_vector,
+                query_filter=query_filter,
+                limit=top_k,
+                score_threshold=score_threshold,
+                with_payload=True,
+            ).points
+        else:
+            results = client.search(
+                collection_name=self.collection,
+                query_vector=query_vector,
+                query_filter=query_filter,
+                limit=top_k,
+                score_threshold=score_threshold,
+                with_payload=True,
+            )
 
         return [
             RetrievedChunk(

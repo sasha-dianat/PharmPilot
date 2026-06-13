@@ -13,7 +13,7 @@
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { patientApi, apiClient } from '../lib/api'
+import { patientApi, rxApi } from '../lib/api'
 import { formatJalali, ageFromDob, dateDisplay } from '../lib/jalali'
 import DictateNote from './DictateNote'
 
@@ -30,39 +30,25 @@ interface LabResult {
   is_critical: boolean
 }
 
-interface FillRecord {
+// Both "active meds" and "recent fills" are derived from the patient's Rx
+// history (GET /prescriptions?patient_id=…), which already returns this shape
+// per row — see rx_to_dict_from_row in services/platform/routers/prescriptions.py.
+interface PatientRx {
+  id: string
   rx_number: string
   drug_name: string
-  fill_date: string
-  copay_amount?: number
-  days_supply: number
-}
-
-interface ActiveMed {
-  drug_name: string
-  strength?: string
+  drug_strength?: string | null
   sig_text: string
-  prescriber_name?: string
-  last_fill_date?: string
+  status: string
+  fill_date?: string | null
+  days_supply: number
   is_controlled: boolean
-  dea_schedule?: string
+  dea_schedule?: string | null
+  prescriber_name?: string | null
+  created_at?: string
 }
 
-interface AdherenceScore {
-  score: number          // 0-100
-  risk_tier: 'low' | 'moderate' | 'high' | 'critical'
-  pdc_diabetes?: number
-  pdc_hypertension?: number
-  pdc_cholesterol?: number
-}
-
-// ── Adherence tier styling ────────────────────────────────────────────────────
-const RISK_STYLE = {
-  low:      { bar: 'bg-green-500',  text: 'text-green-700',  bg: 'bg-green-50',  label: 'Low Risk' },
-  moderate: { bar: 'bg-yellow-500', text: 'text-yellow-700', bg: 'bg-yellow-50', label: 'Moderate Risk' },
-  high:     { bar: 'bg-orange-500', text: 'text-orange-700', bg: 'bg-orange-50', label: 'High Risk' },
-  critical: { bar: 'bg-red-500',    text: 'text-red-700',    bg: 'bg-red-50',    label: 'Critical — Intervene' },
-}
+const DISPENSE_TERMINAL_STATUSES = new Set(['dispensed', 'cancelled', 'returned_to_stock', 'transferred_out'])
 
 // ── Lab flag for eGFR (renal dosing) ─────────────────────────────────────────
 function getEGFRFlag(value: string): string | null {
@@ -78,7 +64,7 @@ function getEGFRFlag(value: string): string | null {
 export default function PatientPanel({ patientId }: Props) {
   const [activeTab, setActiveTab] = useState<'overview' | 'meds' | 'labs' | 'fills'>('overview')
 
-  const { data: patient, isLoading: loadingPatient } = useQuery({
+  const { data: patient, isLoading: loadingPatient, isError: patientError } = useQuery({
     queryKey: ['patient', patientId],
     queryFn: () => patientApi.get(patientId).then(r => r.data),
     enabled: !!patientId,
@@ -106,32 +92,28 @@ export default function PatientPanel({ patientId }: Props) {
     staleTime: 300_000,
   })
 
-  // Active medications — GET /patients/{id}/medications (if endpoint exists)
-  const { data: activeMeds = [] } = useQuery<ActiveMed[]>({
-    queryKey: ['active-meds', patientId],
-    queryFn: () =>
-      apiClient.get(`/patients/${patientId}/medications`).then(r => r.data ?? []).catch(() => []),
-    enabled: !!patientId,
-    staleTime: 120_000,
-  })
-
-  // Recent fills
-  const { data: recentFills = [] } = useQuery<FillRecord[]>({
-    queryKey: ['recent-fills', patientId],
-    queryFn: () =>
-      apiClient.get(`/patients/${patientId}/fills`, { params: { limit: 5 } }).then(r => r.data ?? []).catch(() => []),
+  // Active meds + recent fills both derive from the patient's Rx history —
+  // GET /prescriptions?patient_id=… (see rxApi.byPatient). That endpoint
+  // already returns drug_name/sig_text/status/fill_date/etc. per row, so we
+  // fetch it once and split it client-side rather than standing up two
+  // parallel per-patient endpoints.
+  const { data: rxHistory = [], isLoading: loadingHistory } = useQuery<PatientRx[]>({
+    queryKey: ['rx-history', patientId],
+    queryFn: () => rxApi.byPatient(patientId, 25).then(r => r.data ?? []),
     enabled: !!patientId,
     staleTime: 60_000,
   })
 
-  // Adherence score
-  const { data: adherence } = useQuery<AdherenceScore>({
-    queryKey: ['adherence', patientId],
-    queryFn: () =>
-      apiClient.get(`/patients/${patientId}/adherence-score`).then(r => r.data).catch(() => null),
-    enabled: !!patientId,
-    staleTime: 300_000,
-  })
+  const activeMeds = rxHistory.filter(rx => !DISPENSE_TERMINAL_STATUSES.has(rx.status?.toLowerCase()))
+  const recentFills = rxHistory
+    .filter(rx => !!rx.fill_date)
+    .sort((a, b) => (b.fill_date || '').localeCompare(a.fill_date || ''))
+    .slice(0, 5)
+
+  // NOTE: there is no per-patient adherence-score endpoint on the backend
+  // (only an aggregate /analytics/adherence/risk-summary exists). Rather than
+  // fabricate a score client-side, the adherence risk bar/badge is omitted
+  // until a real per-patient endpoint ships.
 
   if (!patientId) {
     return (
@@ -153,13 +135,26 @@ export default function PatientPanel({ patientId }: Props) {
     )
   }
 
+  // Distinguish "fetch failed / connectivity blip — will retry" from a true
+  // "this patient_id genuinely doesn't resolve" — these were previously
+  // conflated into one "Patient not found" message, which is misleading
+  // during transient network issues (e.g. WS reconnect windows) and reads as
+  // a data-integrity problem when it's really just a retry-in-progress state.
+  if (patientError) {
+    return (
+      <div className="p-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded m-3 flex items-start gap-2">
+        <span>⚠️</span>
+        <span>Couldn't load patient profile — retrying… (check connection)</span>
+      </div>
+    )
+  }
+
   if (!patient) {
     return <div className="p-4 text-sm text-red-500">Patient not found</div>
   }
 
   const age = ageFromDob(patient.date_of_birth)
   const dobJalali = patient.date_of_birth_jalali || formatJalali(patient.date_of_birth, { short: true })
-  const riskStyle = adherence ? RISK_STYLE[adherence.risk_tier] : null
 
   return (
     <div className="flex flex-col h-full text-sm">
@@ -175,6 +170,12 @@ export default function PatientPanel({ patientId }: Props) {
               {/* Jalali primary, Gregorian secondary */}
               ت.ت: {dobJalali}{patient.date_of_birth && ` (${patient.date_of_birth})`} · {age !== null ? `${age}y` : ''} · {patient.gender}
             </div>
+            {/* کد ملی — shown for Iranian identity; masked to last 4 digits for display */}
+            {patient.national_id && (
+              <div className="text-[10px] text-blue-600 font-mono mt-0.5">
+                کد ملی: ●●●●●●{patient.national_id.slice(-4)}
+              </div>
+            )}
             {patient.phone_primary && (
               <div className="text-xs text-gray-400">{patient.phone_primary}</div>
             )}
@@ -183,11 +184,6 @@ export default function PatientPanel({ patientId }: Props) {
             {patient.biometric_enrolled && (
               <span className="text-[10px] bg-green-100 text-green-700 border border-green-300 px-1.5 py-0.5 rounded">
                 ✓ Biometric
-              </span>
-            )}
-            {adherence && riskStyle && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${riskStyle.bg} ${riskStyle.text}`}>
-                {riskStyle.label}
               </span>
             )}
             {/* Dictate patient note */}
@@ -215,29 +211,6 @@ export default function PatientPanel({ patientId }: Props) {
           <div className="mt-1 text-[10px] text-green-600">✓ NKDA</div>
         )}
       </div>
-
-      {/* ── Adherence risk bar ─────────────────────────────────────────── */}
-      {adherence && riskStyle && (
-        <div className={`px-3 py-2 border-b ${riskStyle.bg}`}>
-          <div className="flex items-center justify-between text-[10px] mb-1">
-            <span className={`font-semibold ${riskStyle.text}`}>Adherence Risk</span>
-            <span className={riskStyle.text}>{adherence.score}/100</span>
-          </div>
-          <div className="h-1.5 bg-white/60 rounded-full overflow-hidden">
-            <div
-              className={`h-full ${riskStyle.bar} rounded-full transition-all`}
-              style={{ width: `${adherence.score}%` }}
-            />
-          </div>
-          {(adherence.pdc_diabetes || adherence.pdc_hypertension || adherence.pdc_cholesterol) && (
-            <div className="mt-1 flex gap-3 text-[9px] text-gray-500">
-              {adherence.pdc_diabetes    && <span>DM: {(adherence.pdc_diabetes * 100).toFixed(0)}%</span>}
-              {adherence.pdc_hypertension && <span>HTN: {(adherence.pdc_hypertension * 100).toFixed(0)}%</span>}
-              {adherence.pdc_cholesterol  && <span>Statin: {(adherence.pdc_cholesterol * 100).toFixed(0)}%</span>}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ── Tab nav ────────────────────────────────────────────────────── */}
       <div className="flex border-b text-[10px] font-medium bg-gray-50">
@@ -322,29 +295,35 @@ export default function PatientPanel({ patientId }: Props) {
         {/* MEDS TAB */}
         {activeTab === 'meds' && (
           <div>
-            {activeMeds.length === 0 ? (
+            {loadingHistory ? (
+              <div className="space-y-1.5">
+                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-gray-100 rounded animate-pulse" />)}
+              </div>
+            ) : activeMeds.length === 0 ? (
               <div className="text-xs text-gray-400 italic text-center py-4">
                 No active medications on record
               </div>
             ) : (
               <div className="space-y-1.5">
-                {activeMeds.map((med: ActiveMed, i: number) => (
-                  <div key={i} className="border rounded-lg p-2 text-[10px]">
+                {activeMeds.map((med) => (
+                  <div key={med.id} className="border rounded-lg p-2 text-[10px]">
                     <div className="flex items-start justify-between gap-1">
                       <div>
                         <span className="font-semibold font-mono text-gray-900">{med.drug_name}</span>
-                        {med.strength && <span className="text-gray-500 ml-1">{med.strength}</span>}
+                        {med.drug_strength && <span className="text-gray-500 ml-1">{med.drug_strength}</span>}
                         {med.is_controlled && (
                           <span className="ml-1 bg-orange-100 text-orange-700 border border-orange-200 px-1 rounded text-[9px]">
                             {med.dea_schedule}
                           </span>
                         )}
                       </div>
+                      <span className="text-gray-400 uppercase">{med.status}</span>
                     </div>
                     <div className="text-gray-500 mt-0.5 italic">{med.sig_text}</div>
-                    {med.last_fill_date && (
-                      <div className="text-gray-400 mt-0.5">Last fill: {med.last_fill_date}</div>
-                    )}
+                    <div className="text-gray-400 mt-0.5 flex justify-between">
+                      {med.prescriber_name && <span>{med.prescriber_name}</span>}
+                      {med.fill_date && <span>Last fill: {dateDisplay(med.fill_date)}</span>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -385,21 +364,23 @@ export default function PatientPanel({ patientId }: Props) {
         {/* FILLS TAB */}
         {activeTab === 'fills' && (
           <div>
-            {recentFills.length === 0 ? (
+            {loadingHistory ? (
+              <div className="space-y-1.5">
+                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-gray-100 rounded animate-pulse" />)}
+              </div>
+            ) : recentFills.length === 0 ? (
               <div className="text-xs text-gray-400 italic text-center py-4">No fill history</div>
             ) : (
               <div className="space-y-1.5">
-                {recentFills.map((fill: FillRecord, i: number) => (
-                  <div key={i} className="border rounded-lg p-2 text-[10px] bg-gray-50">
+                {recentFills.map((fill) => (
+                  <div key={fill.id} className="border rounded-lg p-2 text-[10px] bg-gray-50">
                     <div className="flex justify-between">
                       <span className="font-semibold font-mono text-gray-800">{fill.drug_name}</span>
-                      {fill.copay_amount !== undefined && (
-                        <span className="text-green-700 font-medium">${fill.copay_amount.toFixed(2)}</span>
-                      )}
+                      <span className="text-gray-400 uppercase">{fill.status}</span>
                     </div>
                     <div className="flex justify-between text-gray-400 mt-0.5">
                       <span>Rx #{fill.rx_number}</span>
-                      <span>{formatJalali(fill.fill_date, { short: true, persianDigits: false })}</span>
+                      {fill.fill_date && <span>{formatJalali(fill.fill_date, { short: true, persianDigits: false })}</span>}
                     </div>
                     <div className="text-gray-400">{fill.days_supply}d supply</div>
                   </div>

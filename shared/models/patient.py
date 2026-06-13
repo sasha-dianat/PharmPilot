@@ -35,6 +35,20 @@ class Patient(AuditedBase):
     gender: Mapped[Gender] = mapped_column(String(1), nullable=False)
     ssn_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
 
+    # ── Iranian identity (migration 0003) ───────────────────────────────
+    # کد ملی — 10-digit national ID (Luhn-validated at intake)
+    national_id: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    # Jalali (Shamsi) date of birth for display, e.g. "1357/06/31"
+    date_of_birth_jalali: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # "iranian" | "american"  (set by onboarding; controls which fields appear)
+    identity_system: Mapped[str] = mapped_column(String(20), default="american")
+    # Father's name — used in many Iranian ID documents
+    father_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Whether this patient record was auto-created from OCR/voice rather than manual entry
+    auto_created: Mapped[bool] = mapped_column(default=False)
+    # JSON blob: {"source": "voice", "confidence": 0.97, "matched_insurer": "salamat"}
+    identity_provenance: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Contact
     phone_primary: Mapped[str | None] = mapped_column(String(20), nullable=True)
     phone_secondary: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -55,6 +69,11 @@ class Patient(AuditedBase):
     primary_patient_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("patients.id"), nullable=True
     )
+    weight_kg: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    pregnancy_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    renal_function: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    hepatic_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    conditions: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
     # Biometric linkage
     biometric_identity_id: Mapped[UUID | None] = mapped_column(nullable=True, index=True)
@@ -68,6 +87,8 @@ class Patient(AuditedBase):
 
     # Relationships
     allergies: Mapped[list["PatientAllergy"]] = relationship(back_populates="patient")
+    medications: Mapped[list["Medication"]] = relationship(back_populates="patient")
+    genotype_results: Mapped[list["GenotypeResult"]] = relationship(back_populates="patient")
     prescriptions: Mapped[list["Prescription"]] = relationship(back_populates="patient")
     insurance_plans: Mapped[list["PatientInsurance"]] = relationship(back_populates="patient")
     lab_results: Mapped[list["LabResult"]] = relationship(back_populates="patient")

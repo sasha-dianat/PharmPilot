@@ -25,6 +25,8 @@ from uuid import UUID
 
 import httpx
 
+from services.platform.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,10 +114,18 @@ class PushNotificationService:
 
     FCM_API_URL = "https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
-    def __init__(self, fcm_project_id: str = "", fcm_service_account_key: dict = None):
+    def __init__(
+        self,
+        fcm_project_id: str = "",
+        fcm_service_account_key: dict = None,
+        integrations_sandbox: Optional[bool] = None,
+    ):
         self.fcm_project_id = fcm_project_id
         self.fcm_key = fcm_service_account_key
         self._access_token: Optional[str] = None
+        self.integrations_sandbox = (
+            settings.INTEGRATIONS_SANDBOX if integrations_sandbox is None else integrations_sandbox
+        )
 
     async def send(self, request: PushNotificationRequest) -> PushNotificationResult:
         """Send a PHI-safe push notification."""
@@ -135,17 +145,16 @@ class PushNotificationService:
             closing_time=request.closing_time or "closing time",
         )
 
-        if not self.fcm_project_id:
-            # Log-only in development
+        if self.integrations_sandbox or not self.fcm_project_id:
             logger.info(
-                "PUSH [%s] → patient=%s: %s — %s",
+                "PUSH [SANDBOX] platform=%s patient=%s title=%s body=%s",
                 request.platform, str(request.patient_id)[:8], title, body
             )
             return PushNotificationResult(
                 patient_id=request.patient_id,
                 notification_type=request.notification_type,
                 success=True,
-                message_id=f"dev-{request.patient_id!s:.8}",
+                message_id=f"sandbox-push-{str(request.patient_id)[:8]}",
             )
 
         return await self._send_fcm(request, title, body)
