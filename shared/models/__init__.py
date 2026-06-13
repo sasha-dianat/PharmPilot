@@ -42,6 +42,7 @@ from . import audio       # noqa: F401  (AudioTranscript, ProfileEnrichmentActio
 from . import auth        # noqa: F401  (Staff, StaffSession, ...)
 from . import biometric   # noqa: F401  (BiometricIdentity, PharmacyVisit, SecurityEvent, ...)
 from . import claims      # noqa: F401  (ClaimTransaction, ERA835Record, DIRFeeAdjustment, ...)
+from . import clinical    # noqa: F401  (Medication, ClinicalAlert, ClinicalAuditLog, ...)
 from . import insurance   # noqa: F401  (InsurancePlan, PatientInsurance, ...)
 from . import inventory   # noqa: F401  (DrugProduct, InventoryLot, StockLevel, PurchaseOrder, ...)
 from . import patient     # noqa: F401  (Patient, PatientAllergy, LabResult, ClinicalNote, ...)

@@ -1,16 +1,16 @@
 /**
  * PharmPilot Dashboard Shell
  * ===========================
- * Main navigation hub connecting all 9 dashboard sections.
+ * Main navigation hub connecting all dashboard sections.
  * Left sidebar with section nav. Top bar with live status + AI cost.
- * Keyboard: 1–9 switches sections. Escape returns to workstation.
+ * Keyboard: Alt+number/Alt+K switches sections. Escape returns to workstation.
  */
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -23,17 +23,36 @@ import PatientAdherence      from './dashboards/PatientAdherence'
 import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
+import ClinicalAssistant     from './dashboards/ClinicalAssistant'
+import ADRDetective          from './dashboards/ADRDetective'
+import CounsellingGenerator  from './dashboards/CounsellingGenerator'
+import PolypharmacyReview    from './dashboards/PolypharmacyReview'
+import Pharmacogenomics      from './dashboards/Pharmacogenomics'
+import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
+import SecondBrainChat       from './dashboards/SecondBrainChat'
+import DrugIntelligence      from './dashboards/DrugIntelligence'
+import LabSafetyPage         from './pages/LabSafetyPage'
+import MedReconciliationPage from './pages/MedReconciliationPage'
 
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
-  { id:'security',   key:'4', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+4' },
-  { id:'financial',  key:'5', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+5' },
-  { id:'adherence',  key:'6', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+6' },
-  { id:'audio',      key:'7', label:'Conversation AI',    icon:Mic,         description:'Transcript review',    shortcut:'Alt+7' },
-  { id:'ai-hub',     key:'8', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+8' },
-  { id:'knowledge',  key:'9', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+9' },
+  { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
+  { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
+  { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
+  { id:'physmsg',    key:'m', label:'Physician Message',  icon:Send,        description:'Prescriber communication', shortcut:'Alt+M' },
+  { id:'second-brain', key:'r', label:'Second Brain',     icon:BookOpen,    description:'RAG clinical Q&A',       shortcut:'Alt+R' },
+  { id:'drug-intel', key:'d', label:'Drug Intelligence',  icon:Pill,        description:'Offline drug monograph', shortcut:'Alt+D' },
+  { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
+  { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
+  { id:'lab-safety', key:'l', label:'Lab Safety',         icon:FlaskConical, description:'Lab monitoring',       shortcut:'Alt+L' },
+  { id:'med-rec',    key:'i', label:'Med Reconciliation', icon:ClipboardList, description:'Medication comparison', shortcut:'Alt+I' },
+  { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
+  { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
+  { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
+  { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
+  { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -42,6 +61,16 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
   clinical:  ClinicalIntelligence,
+  cds:       ClinicalAssistant,
+  adr:       ADRDetective,
+  counselling: CounsellingGenerator,
+  physmsg:   PhysicianMessageComposer,
+  'second-brain': SecondBrainChat,
+  'drug-intel': DrugIntelligence,
+  poly:      PolypharmacyReview,
+  pgx:       Pharmacogenomics,
+  'lab-safety': LabSafetyPage,
+  'med-rec': MedReconciliationPage,
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
@@ -91,15 +120,16 @@ export default function DashboardShell({ onExitDashboard }: Props) {
     return () => mql.removeEventListener('change', onChange)
   }, [])
 
-  // Keyboard shortcuts: Alt+1..9, Escape, Alt+B to toggle sidebar
+  // Keyboard shortcuts: Alt+1..9/0/K, Escape, Alt+B to toggle sidebar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.key >= '1' && e.key <= '9') {
-        const section = SECTIONS[parseInt(e.key) - 1]
+      const key = e.key.toLowerCase()
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r' || key === 'd' || key === 'l' || key === 'i'))) {
+        const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()
       }
-      if (e.altKey && e.key.toLowerCase() === 'b') {
+      if (e.altKey && key === 'b') {
         setCollapsed(c => !c)
         e.preventDefault()
       }

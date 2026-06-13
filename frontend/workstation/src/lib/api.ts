@@ -2,14 +2,21 @@
  * PharmPilot API client — typed wrappers for all backend endpoints.
  */
 import axios from 'axios'
-import type { AxiosInstance } from 'axios'
+import type { AxiosInstance, AxiosResponse } from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001/api/v1'
 
-export const apiClient: AxiosInstance = axios.create({
+interface PharmPilotApiClient extends AxiosInstance {
+  medReconcile: (payload: MedReconcilePayload) => Promise<AxiosResponse<MedReconcileResponse>>
+}
+
+export const apiClient = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
-})
+}) as PharmPilotApiClient
+
+apiClient.medReconcile = (payload: MedReconcilePayload) =>
+  apiClient.post('/med-reconciliation/reconcile', payload)
 
 // Inject auth token on every request
 apiClient.interceptors.request.use((config) => {
@@ -108,8 +115,45 @@ export const inventoryApi = {
 export const clinicalApi = {
   reviewRx: (prescriptionId: string, patientId: string, pharmacyId: string) =>
     apiClient.post('/clinical/rx-review', { prescription_id: prescriptionId, patient_id: patientId, pharmacy_id: pharmacyId }),
+  evaluateCDS: (patientId: string, medications?: CDSMedicationInput[]) =>
+    apiClient.post('/cds/evaluate', { patient_id: patientId, ...(medications ? { medications } : {}) }),
+  assessADR: (patientId: string, complaint: string, onsetDate?: string, medications?: ADRMedicationInput[]) =>
+    apiClient.post('/adr/assess', {
+      patient_id: patientId,
+      complaint,
+      ...(onsetDate ? { onset_date: onsetDate } : {}),
+      ...(medications ? { medications } : {}),
+    }),
+  generateCounselling: (params: CounsellingGenerateParams) =>
+    apiClient.post('/counselling/generate', params),
+  generatePhysicianMessage: (params: PhysicianMessageGenerateParams) =>
+    apiClient.post('/physician-message/generate', params),
+  reviewPolypharmacy: (patientId: string, medications?: PolyMedicationInput[], messageFormat: 'sbar' | 'concise' = 'sbar') =>
+    apiClient.post('/polypharmacy/review', {
+      patient_id: patientId,
+      message_format: messageFormat,
+      ...(medications ? { medications } : {}),
+    }),
+  interpretPGx: (patientId: string, drugs?: string[], genotypes?: PGxGenotypeInput[]) =>
+    apiClient.post('/pgx/interpret', {
+      patient_id: patientId,
+      ...(drugs?.length ? { drugs } : {}),
+      ...(genotypes?.length ? { genotypes } : {}),
+    }),
+  labSafetyAssess: (patientId: string) =>
+    apiClient.post('/lab-safety/assess', { patient_id: patientId }),
+  medReconcile: (payload: MedReconcilePayload) =>
+    apiClient.medReconcile(payload),
   queryKnowledge: (question: string, patientId?: string) =>
     apiClient.post('/knowledge/query', { question, patient_id: patientId }),
+  querySecondBrain: (question: string, patientId?: string, topK = 8) =>
+    apiClient.post('/second-brain/query', {
+      question,
+      ...(patientId ? { patient_id: patientId } : {}),
+      top_k: topK,
+    }),
+  getDrugMonograph: (params: DrugMonographParams) =>
+    apiClient.post('/drug-intelligence/monograph', params),
   queryDrugInteraction: (drugA: string, drugB: string) =>
     apiClient.post('/knowledge/query/drug-interaction', null, { params: { drug_a: drugA, drug_b: drugB } }),
 }
@@ -154,4 +198,145 @@ export interface ClaimSubmitData {
 }
 export interface PurchaseOrderData {
   wholesaler: string; lines: Array<{ ndc11: string; quantity_ordered: number }>
+}
+export interface CDSMedicationInput {
+  drug_name: string
+  strength?: string
+  dose?: string
+  route?: string
+  frequency?: string
+  source?: string
+}
+export interface ADRMedicationInput extends CDSMedicationInput {
+  start_date?: string
+  stop_date?: string
+  recent_dose_increase?: boolean
+}
+export interface CounsellingGenerateParams {
+  drug_name?: string
+  rx_id?: string
+  patient_id?: string
+  level?: 'professional' | 'standard' | 'low_literacy' | 'elderly' | 'caregiver'
+  language?: 'en' | 'fr' | 'fa' | 'ar' | 'es'
+}
+export interface PhysicianMessageGenerateParams {
+  patient_id?: string
+  prescriber_name?: string
+  patient_context?: string
+  medication_issue: string
+  clinical_rationale?: string
+  recommendation_or_question: string
+  urgency?: 'routine' | 'urgent' | 'emergent'
+  supporting_data?: string[]
+  pharmacist_name?: string
+  format?: 'sbar' | 'soap' | 'concise' | 'letter'
+  language?: 'en' | 'fr' | 'fa' | 'ar' | 'es'
+}
+export interface PolyMedicationInput {
+  drug_name: string
+  indication?: string
+  status?: string
+  source?: string
+}
+export interface MedReconcileMedicationInput {
+  drug_name: string
+  normalized_name?: string
+  strength?: string
+  dose?: string
+  route?: string
+  frequency?: string
+  indication?: string
+  status?: string
+  source?: string
+  patient_id?: string
+  id?: string
+}
+export interface MedReconcilePayload {
+  patient_id: string
+  source_a_label?: string
+  source_b_label?: string
+  source_a?: string
+  source_b?: string
+  source_a_meds?: MedReconcileMedicationInput[]
+  source_b_meds?: MedReconcileMedicationInput[]
+}
+export interface MedReconcileDiscrepancy {
+  discrepancy_id: string
+  discrepancy_type: string
+  severity: 'high' | 'moderate' | 'low'
+  source_a_label: string
+  source_b_label: string
+  drug_name: string
+  drugs_involved: string[]
+  source_a_entry: MedReconcileMedicationInput | null
+  source_b_entry: MedReconcileMedicationInput | null
+  explanation: string
+  suggested_pharmacist_action: string
+  confidence: number
+  pharmacist_verification_notice: string
+}
+export interface MedReconcileResponse {
+  patient_id: string
+  source_a_label: string
+  source_b_label: string
+  discrepancies: MedReconcileDiscrepancy[]
+  drugs_in_source_a: number
+  drugs_in_source_b: number
+  reconciled_count: number
+  assessment_date: string
+  pharmacist_verification_notice: string
+}
+export interface SecondBrainSource {
+  source_id: string
+  source_title: string
+  source_type: string
+  snippet: string
+  similarity_score: number
+  evidence_grade?: string | null
+  url?: string | null
+}
+export interface SecondBrainResponse {
+  question: string
+  answer: string
+  sources: SecondBrainSource[]
+  patient_context?: string | null
+  confidence: 'high' | 'moderate' | 'low' | 'none'
+  refused: boolean
+  unsupported: boolean
+  llm_used: boolean
+  degraded: boolean
+  pharmacist_verification_notice: string
+}
+export interface DrugMonographParams {
+  drug_name?: string
+  rx_id?: string
+  sections?: string[]
+  top_k?: number
+}
+export interface DrugMonographSection {
+  key: string
+  label: string
+  answer: string
+  sources: SecondBrainSource[]
+  confidence: 'high' | 'moderate' | 'low' | 'none'
+  refused: boolean
+  unsupported: boolean
+  llm_used: boolean
+}
+export interface DrugMonographResponse {
+  drug_name: string
+  normalized_name: string
+  model_version: string
+  sections: DrugMonographSection[]
+  any_evidence: boolean
+  llm_used: boolean
+  degraded: boolean
+  pharmacist_verification_notice: string
+  trainable_note: string
+}
+export interface PGxGenotypeInput {
+  gene: string
+  diplotype?: string
+  phenotype?: string
+  source?: string
 }

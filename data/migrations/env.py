@@ -18,6 +18,7 @@ from shared.models.pharmacy import Pharmacy  # noqa
 from shared.models.prescriber import Prescriber  # noqa
 from shared.models.auth import Staff, StaffSession  # noqa
 from shared.models.patient import Patient, PatientAllergy, LabResult, ClinicalNote  # noqa
+from shared.models.clinical import Medication, GenotypeResult, ClinicalAlert, ClinicalAuditLog  # noqa
 from shared.models.insurance import PatientInsurance, InsurancePlan  # noqa
 from shared.models.prescription import Prescription, PrescriptionFill, DURAlert, RxStateEvent  # noqa
 from shared.models.claims import ClaimTransaction, ERA835Record, DIRFeeAdjustment  # noqa
