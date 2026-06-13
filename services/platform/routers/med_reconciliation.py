@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -132,7 +133,27 @@ async def _load_source_meds(
             Medication.is_deleted == False,  # noqa: E712
         )
     )
-    return [_entry_from_model(row) for row in result.scalars().all()]
+    # Inactive/discontinued rows are loaded (so cross-source STATUS_CONFLICT is
+    # reachable), but collapsed status-aware per drug: when a drug has any active
+    # row, drop its inactive duplicates so a historical discontinued entry of the
+    # same drug does not surface as a within-source DUPLICATE or as OMITTED noise.
+    return _collapse_by_status([_entry_from_model(row) for row in result.scalars().all()])
+
+
+def _is_active_status(status: str | None) -> bool:
+    # NULL status is treated as active, matching the prior query semantics.
+    return status is None or status.strip().lower() == "active"
+
+
+def _collapse_by_status(entries: list[MedEntry]) -> list[MedEntry]:
+    groups: dict[str, list[MedEntry]] = defaultdict(list)
+    for entry in entries:
+        groups[entry.normalized_name].append(entry)
+    collapsed: list[MedEntry] = []
+    for group in groups.values():
+        active = [entry for entry in group if _is_active_status(entry.status)]
+        collapsed.extend(active if active else group)
+    return collapsed
 
 
 def _empty_result(context: ReconciliationContext) -> ReconciliationResult:

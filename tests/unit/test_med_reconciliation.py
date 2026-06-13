@@ -229,3 +229,37 @@ async def test_endpoint_invalid_patient():
 
     assert exc.value.status_code == 404
     assert db.added == []
+
+
+def test_collapse_by_status_drops_inactive_duplicate_of_active_drug():
+    # A drug with both an active and a historical discontinued row in one source
+    # must collapse to the active row only, so it is not flagged as a within-source
+    # DUPLICATE or surfaced as OMITTED noise.
+    entries = [
+        med("warfarin", strength="5mg", status="active"),
+        med("warfarin", strength="2mg", status="discontinued"),
+    ]
+    collapsed = med_reconciliation._collapse_by_status(entries)
+    assert len(collapsed) == 1
+    assert collapsed[0].strength == "5mg"
+    assert collapsed[0].status == "active"
+
+
+def test_collapse_by_status_keeps_genuine_active_duplicates():
+    # Two ACTIVE rows of the same drug are a real duplicate and must be preserved
+    # so the engine can still flag DUPLICATE.
+    entries = [
+        med("warfarin", strength="5mg", status="active"),
+        med("warfarin", strength="5mg", status="active"),
+    ]
+    collapsed = med_reconciliation._collapse_by_status(entries)
+    assert len(collapsed) == 2
+
+
+def test_collapse_by_status_keeps_discontinued_only_drug():
+    # A drug present only as discontinued in this source is kept, so a cross-source
+    # STATUS_CONFLICT against an active row in the other source remains reachable.
+    entries = [med("warfarin", status="discontinued")]
+    collapsed = med_reconciliation._collapse_by_status(entries)
+    assert len(collapsed) == 1
+    assert collapsed[0].status == "discontinued"
