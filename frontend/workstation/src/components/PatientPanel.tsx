@@ -1,15 +1,11 @@
 /**
  * PatientPanel — Full patient profile in the right sidebar.
  * =========================================================
- * Replaces the basic PatientPanel in App.tsx with a rich profile:
- *   • Demographics + biometric status
- *   • Allergies (red badges — prominent)
- *   • Insurance cards (BIN/PCN)
- *   • Active medications list
- *   • Recent fills (last 5)
- *   • Lab values (eGFR highlighted for renal dosing)
- *   • Adherence risk score
- *   • Pending audio enrichment actions
+ * Rich profile: demographics, allergies, insurance, active meds, recent fills,
+ * labs (eGFR renal flag), + a dedicated prescriber card and a family/relations
+ * footer. "Clinical Daylight" UI upgrade — visual only; every query and derived
+ * value is unchanged. Prescriber contact + family tree show honest "pending"
+ * states where no backend feed exists yet (per agreed stub policy).
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -30,9 +26,6 @@ interface LabResult {
   is_critical: boolean
 }
 
-// Both "active meds" and "recent fills" are derived from the patient's Rx
-// history (GET /prescriptions?patient_id=…), which already returns this shape
-// per row — see rx_to_dict_from_row in services/platform/routers/prescriptions.py.
 interface PatientRx {
   id: string
   rx_number: string
@@ -92,11 +85,6 @@ export default function PatientPanel({ patientId }: Props) {
     staleTime: 300_000,
   })
 
-  // Active meds + recent fills both derive from the patient's Rx history —
-  // GET /prescriptions?patient_id=… (see rxApi.byPatient). That endpoint
-  // already returns drug_name/sig_text/status/fill_date/etc. per row, so we
-  // fetch it once and split it client-side rather than standing up two
-  // parallel per-patient endpoints.
   const { data: rxHistory = [], isLoading: loadingHistory } = useQuery<PatientRx[]>({
     queryKey: ['rx-history', patientId],
     queryFn: () => rxApi.byPatient(patientId, 25).then(r => r.data ?? []),
@@ -110,14 +98,13 @@ export default function PatientPanel({ patientId }: Props) {
     .sort((a, b) => (b.fill_date || '').localeCompare(a.fill_date || ''))
     .slice(0, 5)
 
-  // NOTE: there is no per-patient adherence-score endpoint on the backend
-  // (only an aggregate /analytics/adherence/risk-summary exists). Rather than
-  // fabricate a score client-side, the adherence risk bar/badge is omitted
-  // until a real per-patient endpoint ships.
+  // Most recent prescriber on record (real name from Rx history; contact
+  // details require a provider-registry lookup not yet wired → shown pending).
+  const prescriberName = rxHistory.find(rx => rx.prescriber_name)?.prescriber_name ?? null
 
   if (!patientId) {
     return (
-      <div className="p-4 text-center text-gray-400 text-sm space-y-2 pt-8">
+      <div className="cd-scope p-4 text-center text-ink3 text-sm space-y-2 pt-8 h-full">
         <div className="text-3xl">👤</div>
         <div>Patient profile appears here when an Rx is selected</div>
       </div>
@@ -126,67 +113,61 @@ export default function PatientPanel({ patientId }: Props) {
 
   if (loadingPatient) {
     return (
-      <div className="p-3 space-y-3 animate-pulse">
-        <div className="h-14 bg-gray-100 rounded" />
-        <div className="h-8 bg-gray-100 rounded" />
-        <div className="h-24 bg-gray-100 rounded" />
-        <div className="h-16 bg-gray-100 rounded" />
+      <div className="cd-scope p-3 space-y-3 animate-pulse h-full">
+        <div className="h-14 bg-surface2 rounded-lg" />
+        <div className="h-8 bg-surface2 rounded-lg" />
+        <div className="h-24 bg-surface2 rounded-lg" />
+        <div className="h-16 bg-surface2 rounded-lg" />
       </div>
     )
   }
 
-  // Distinguish "fetch failed / connectivity blip — will retry" from a true
-  // "this patient_id genuinely doesn't resolve" — these were previously
-  // conflated into one "Patient not found" message, which is misleading
-  // during transient network issues (e.g. WS reconnect windows) and reads as
-  // a data-integrity problem when it's really just a retry-in-progress state.
   if (patientError) {
     return (
-      <div className="p-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded m-3 flex items-start gap-2">
-        <span>⚠️</span>
-        <span>Couldn't load patient profile — retrying… (check connection)</span>
+      <div className="cd-scope h-full p-3">
+        <div className="p-4 text-sm text-warning bg-warning-soft border border-warning/30 rounded-lg flex items-start gap-2">
+          <span>⚠️</span>
+          <span>Couldn't load patient profile — retrying… (check connection)</span>
+        </div>
       </div>
     )
   }
 
   if (!patient) {
-    return <div className="p-4 text-sm text-red-500">Patient not found</div>
+    return <div className="cd-scope p-4 text-sm text-blocker h-full">Patient not found</div>
   }
 
   const age = ageFromDob(patient.date_of_birth)
   const dobJalali = patient.date_of_birth_jalali || formatJalali(patient.date_of_birth, { short: true })
 
   return (
-    <div className="flex flex-col h-full text-sm">
+    <div className="cd-scope flex flex-col h-full text-sm bg-canvas">
 
       {/* ── Patient header ─────────────────────────────────────────────── */}
-      <div className="px-3 py-3 border-b bg-white">
+      <div className="px-3 py-3 border-b border-line bg-surface">
         <div className="flex items-start justify-between gap-2">
-          <div>
-            <div className="font-bold text-base text-gray-900">
+          <div className="min-w-0">
+            <div className="cd-ui font-semibold text-base text-ink">
               {patient.last_name?.toUpperCase()}, {patient.first_name}
             </div>
-            <div className="text-xs text-gray-500 mt-0.5">
-              {/* Jalali primary, Gregorian secondary */}
+            <div className="text-xs text-ink3 mt-0.5">
               ت.ت: {dobJalali}{patient.date_of_birth && ` (${patient.date_of_birth})`} · {age !== null ? `${age}y` : ''} · {patient.gender}
             </div>
-            {/* کد ملی — shown for Iranian identity; masked to last 4 digits for display */}
             {patient.national_id && (
-              <div className="text-[10px] text-blue-600 font-mono mt-0.5">
+              <div className="cd-data text-[10px] text-intel mt-0.5">
                 کد ملی: ●●●●●●{patient.national_id.slice(-4)}
               </div>
             )}
             {patient.phone_primary && (
-              <div className="text-xs text-gray-400">{patient.phone_primary}</div>
+              <div className="cd-data text-xs text-ink3">{patient.phone_primary}</div>
             )}
           </div>
           <div className="flex flex-col items-end gap-1 flex-shrink-0">
             {patient.biometric_enrolled && (
-              <span className="text-[10px] bg-green-100 text-green-700 border border-green-300 px-1.5 py-0.5 rounded">
+              <span className="cd-data text-[10px] bg-safe-soft text-safe border border-safe/30 px-1.5 py-0.5 rounded">
                 ✓ Biometric
               </span>
             )}
-            {/* Dictate patient note */}
             <DictateNote
               context="note"
               compact
@@ -200,7 +181,7 @@ export default function PatientPanel({ patientId }: Props) {
           <div className="mt-2 flex flex-wrap gap-1">
             {allergies.map((a: { allergen_name: string; severity?: string; reaction?: string }, i: number) => (
               <span key={i}
-                className="text-[10px] bg-red-100 text-red-800 border border-red-300 rounded px-1.5 py-0.5 font-semibold"
+                className="cd-data text-[10px] bg-blocker-soft text-blocker border border-blocker/30 rounded px-1.5 py-0.5 font-semibold"
                 title={a.reaction ? `Reaction: ${a.reaction}` : undefined}
               >
                 ⚠ {a.allergen_name}
@@ -208,12 +189,12 @@ export default function PatientPanel({ patientId }: Props) {
             ))}
           </div>
         ) : (
-          <div className="mt-1 text-[10px] text-green-600">✓ NKDA</div>
+          <div className="mt-1 text-[10px] text-safe">✓ NKDA</div>
         )}
       </div>
 
       {/* ── Tab nav ────────────────────────────────────────────────────── */}
-      <div className="flex border-b text-[10px] font-medium bg-gray-50">
+      <div className="flex border-b border-line text-[11px] font-medium bg-surface">
         {([
           { id: 'overview', label: 'Overview' },
           { id: 'meds',     label: `Meds (${activeMeds.length})` },
@@ -223,11 +204,8 @@ export default function PatientPanel({ patientId }: Props) {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 py-1.5 transition-colors ${
-              activeTab === tab.id
-                ? 'text-blue-700 border-b-2 border-blue-600 bg-white'
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+            data-active={activeTab === tab.id}
+            className={`cd-tab cd-ui flex-1 py-2 ${activeTab === tab.id ? 'text-intel' : 'text-ink3 hover:text-ink2'}`}
           >
             {tab.label}
           </button>
@@ -237,24 +215,23 @@ export default function PatientPanel({ patientId }: Props) {
       {/* ── Tab content ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
 
-        {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
-          <>
-            {/* Insurance cards */}
+          <div className="space-y-3 cd-section">
+            {/* Insurance */}
             <div>
-              <div className="text-xs font-semibold text-gray-600 mb-1.5">Insurance</div>
+              <div className="cd-ui text-[11px] font-semibold text-ink2 mb-1.5">Insurance</div>
               {insurance.length === 0 ? (
-                <div className="text-xs text-gray-400 italic">Cash pay — no insurance on file</div>
+                <div className="text-xs text-ink3 italic">Cash pay — no insurance on file</div>
               ) : (
                 <div className="space-y-1.5">
                   {[...insurance].sort((a: { priority: number }, b: { priority: number }) => a.priority - b.priority)
                     .map((ins: { priority: number; plan_name?: string; bin_number: string; pcn?: string; member_id: string; group_number?: string }, i: number) => (
-                      <div key={i} className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-2 text-[10px]">
+                      <div key={i} className="cd-inset p-2 text-[10px]">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-blue-800">{ins.plan_name || `Insurance #${ins.priority}`}</span>
-                          <span className="bg-blue-100 text-blue-700 px-1 rounded">{ins.priority}° Priority</span>
+                          <span className="cd-ui font-semibold text-intel">{ins.plan_name || `Insurance #${ins.priority}`}</span>
+                          <span className="bg-intel-soft text-intel px-1 rounded">{ins.priority}° priority</span>
                         </div>
-                        <div className="text-gray-600 mt-0.5 flex gap-2 flex-wrap">
+                        <div className="cd-data text-ink2 mt-0.5 flex gap-2 flex-wrap">
                           <span>BIN: <strong>{ins.bin_number}</strong></span>
                           {ins.pcn && <span>PCN: <strong>{ins.pcn}</strong></span>}
                           <span>ID: <strong>{ins.member_id}</strong></span>
@@ -266,61 +243,89 @@ export default function PatientPanel({ patientId }: Props) {
               )}
             </div>
 
+            {/* Dedicated prescriber card */}
+            <div>
+              <div className="cd-ui text-[11px] font-semibold text-ink2 mb-1.5 flex items-center gap-1">Prescriber</div>
+              <div className="cd-card p-2.5">
+                {prescriberName ? (
+                  <>
+                    <div className="cd-ui text-sm font-semibold text-ink flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-md bg-counsel-soft text-counsel flex items-center justify-center text-[11px]">⚕</span>
+                      {prescriberName}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mt-2 text-[10px]">
+                      <div>
+                        <div className="text-ink3">NPI</div>
+                        <div className="cd-data text-ink3 italic">pending</div>
+                      </div>
+                      <div>
+                        <div className="text-ink3">Phone</div>
+                        <div className="cd-data text-ink3 italic">pending</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex gap-3 text-[11px]">
+                      <span className="text-intel">📞 Call</span>
+                      <span className="text-intel">📠 Fax PA</span>
+                      <span className="text-intel">🗂 Record</span>
+                    </div>
+                    <div className="text-[9px] text-ink3 mt-1.5 italic">Contact details &amp; prescribing history wire from the provider registry.</div>
+                  </>
+                ) : (
+                  <div className="text-xs text-ink3 italic">No prescriber on recent Rx history.</div>
+                )}
+              </div>
+            </div>
+
             {/* Critical lab flags (eGFR) */}
             {labs.some((l: LabResult) => l.test_name?.toLowerCase().includes('egfr') || l.test_name?.toLowerCase().includes('creatinine')) && (
               <div>
-                <div className="text-xs font-semibold text-gray-600 mb-1">Key Labs (Renal)</div>
+                <div className="cd-ui text-[11px] font-semibold text-ink2 mb-1">Key labs (renal)</div>
                 {labs
                   .filter((l: LabResult) => l.test_name?.toLowerCase().includes('egfr') || l.test_name?.toLowerCase().includes('creatinine'))
                   .slice(0, 3)
                   .map((lab: LabResult, i: number) => {
                     const flag = lab.test_name?.toLowerCase().includes('egfr') ? getEGFRFlag(lab.value) : null
                     return (
-                      <div key={i} className={`flex items-center justify-between text-[10px] px-2 py-1.5 rounded border mb-1 ${flag ? 'bg-orange-50 border-orange-300' : 'bg-gray-50 border-gray-200'}`}>
-                        <span className="text-gray-600">{lab.test_name}</span>
+                      <div key={i} className={`flex items-center justify-between text-[10px] px-2 py-1.5 rounded-lg border mb-1 ${flag ? 'bg-caution-soft border-caution/30' : 'cd-inset'}`}>
+                        <span className="text-ink2">{lab.test_name}</span>
                         <div className="text-right">
-                          <span className={`font-bold ${flag ? 'text-orange-700' : 'text-gray-900'}`}>
+                          <span className={`cd-data font-bold ${flag ? 'text-caution' : 'text-ink'}`}>
                             {lab.value} {lab.unit}
                           </span>
-                          {flag && <div className="text-orange-600 text-[9px]">{flag}</div>}
+                          {flag && <div className="text-caution text-[9px]">{flag}</div>}
                         </div>
                       </div>
                     )
                   })}
               </div>
             )}
-          </>
+          </div>
         )}
 
-        {/* MEDS TAB */}
         {activeTab === 'meds' && (
-          <div>
+          <div className="cd-section">
             {loadingHistory ? (
               <div className="space-y-1.5">
-                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-gray-100 rounded animate-pulse" />)}
+                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-surface2 rounded-lg animate-pulse" />)}
               </div>
             ) : activeMeds.length === 0 ? (
-              <div className="text-xs text-gray-400 italic text-center py-4">
-                No active medications on record
-              </div>
+              <div className="text-xs text-ink3 italic text-center py-4">No active medications on record</div>
             ) : (
               <div className="space-y-1.5">
                 {activeMeds.map((med) => (
-                  <div key={med.id} className="border rounded-lg p-2 text-[10px]">
+                  <div key={med.id} className="cd-card p-2 text-[10px]">
                     <div className="flex items-start justify-between gap-1">
                       <div>
-                        <span className="font-semibold font-mono text-gray-900">{med.drug_name}</span>
-                        {med.drug_strength && <span className="text-gray-500 ml-1">{med.drug_strength}</span>}
+                        <span className="cd-data font-semibold text-ink">{med.drug_name}</span>
+                        {med.drug_strength && <span className="text-ink3 ml-1">{med.drug_strength}</span>}
                         {med.is_controlled && (
-                          <span className="ml-1 bg-orange-100 text-orange-700 border border-orange-200 px-1 rounded text-[9px]">
-                            {med.dea_schedule}
-                          </span>
+                          <span className="cd-data ml-1 bg-caution-soft text-caution border border-caution/20 px-1 rounded text-[9px]">{med.dea_schedule}</span>
                         )}
                       </div>
-                      <span className="text-gray-400 uppercase">{med.status}</span>
+                      <span className="text-ink3 uppercase">{med.status}</span>
                     </div>
-                    <div className="text-gray-500 mt-0.5 italic">{med.sig_text}</div>
-                    <div className="text-gray-400 mt-0.5 flex justify-between">
+                    <div className="text-ink2 mt-0.5 italic">{med.sig_text}</div>
+                    <div className="text-ink3 mt-0.5 flex justify-between">
                       {med.prescriber_name && <span>{med.prescriber_name}</span>}
                       {med.fill_date && <span>Last fill: {dateDisplay(med.fill_date)}</span>}
                     </div>
@@ -331,27 +336,26 @@ export default function PatientPanel({ patientId }: Props) {
           </div>
         )}
 
-        {/* LABS TAB */}
         {activeTab === 'labs' && (
-          <div>
+          <div className="cd-section">
             {labs.length === 0 ? (
-              <div className="text-xs text-gray-400 italic text-center py-4">No lab results on file</div>
+              <div className="text-xs text-ink3 italic text-center py-4">No lab results on file</div>
             ) : (
               <div className="space-y-1">
                 {labs.map((lab: LabResult, i: number) => {
                   const eGFRFlag = lab.test_name?.toLowerCase().includes('egfr') ? getEGFRFlag(lab.value) : null
                   return (
-                    <div key={i} className={`flex items-center justify-between text-[10px] px-2 py-1.5 rounded border ${lab.is_critical ? 'bg-red-50 border-red-300' : eGFRFlag ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
+                    <div key={i} className={`flex items-center justify-between text-[10px] px-2 py-1.5 rounded-lg border ${lab.is_critical ? 'bg-blocker-soft border-blocker/30' : eGFRFlag ? 'bg-caution-soft border-caution/20' : 'cd-inset'}`}>
                       <div>
-                        <div className="font-medium text-gray-800">{lab.test_name}</div>
-                        <div className="text-gray-400">{lab.collected_at?.slice(0, 10)}</div>
+                        <div className="font-medium text-ink">{lab.test_name}</div>
+                        <div className="cd-data text-ink3">{lab.collected_at?.slice(0, 10)}</div>
                       </div>
                       <div className="text-right">
-                        <div className={`font-bold ${lab.is_critical ? 'text-red-700' : eGFRFlag ? 'text-orange-700' : 'text-gray-900'}`}>
+                        <div className={`cd-data font-bold ${lab.is_critical ? 'text-blocker' : eGFRFlag ? 'text-caution' : 'text-ink'}`}>
                           {lab.value} {lab.unit}
                         </div>
-                        {lab.reference_range && <div className="text-gray-400">{lab.reference_range}</div>}
-                        {eGFRFlag && <div className="text-orange-600 text-[9px] max-w-[100px] text-right">{eGFRFlag}</div>}
+                        {lab.reference_range && <div className="cd-data text-ink3">{lab.reference_range}</div>}
+                        {eGFRFlag && <div className="text-caution text-[9px] max-w-[100px] text-right">{eGFRFlag}</div>}
                       </div>
                     </div>
                   )
@@ -361,34 +365,49 @@ export default function PatientPanel({ patientId }: Props) {
           </div>
         )}
 
-        {/* FILLS TAB */}
         {activeTab === 'fills' && (
-          <div>
+          <div className="cd-section">
             {loadingHistory ? (
               <div className="space-y-1.5">
-                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-gray-100 rounded animate-pulse" />)}
+                {[...Array(3)].map((_, i) => <div key={i} className="h-12 bg-surface2 rounded-lg animate-pulse" />)}
               </div>
             ) : recentFills.length === 0 ? (
-              <div className="text-xs text-gray-400 italic text-center py-4">No fill history</div>
+              <div className="text-xs text-ink3 italic text-center py-4">No fill history</div>
             ) : (
               <div className="space-y-1.5">
                 {recentFills.map((fill) => (
-                  <div key={fill.id} className="border rounded-lg p-2 text-[10px] bg-gray-50">
+                  <div key={fill.id} className="cd-inset p-2 text-[10px]">
                     <div className="flex justify-between">
-                      <span className="font-semibold font-mono text-gray-800">{fill.drug_name}</span>
-                      <span className="text-gray-400 uppercase">{fill.status}</span>
+                      <span className="cd-data font-semibold text-ink">{fill.drug_name}</span>
+                      <span className="text-ink3 uppercase">{fill.status}</span>
                     </div>
-                    <div className="flex justify-between text-gray-400 mt-0.5">
-                      <span>Rx #{fill.rx_number}</span>
+                    <div className="flex justify-between text-ink3 mt-0.5">
+                      <span className="cd-data">Rx #{fill.rx_number?.slice(-4)}</span>
                       {fill.fill_date && <span>{formatJalali(fill.fill_date, { short: true, persianDigits: false })}</span>}
                     </div>
-                    <div className="text-gray-400">{fill.days_supply}d supply</div>
+                    <div className="text-ink3">{fill.days_supply}d supply</div>
                   </div>
                 ))}
               </div>
             )}
           </div>
         )}
+      </div>
+
+      {/* ── Family / relations footer (read-only, medical use) ─────────────── */}
+      <div className="border-t border-line bg-surface px-3 py-2.5">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <span className="cd-ui text-[11px] font-semibold text-ink2">Family / relations</span>
+          <span className="text-[9px] text-ink3 ml-auto flex items-center gap-1">🔒 read-only · medical</span>
+        </div>
+        <div className="cd-inset p-2.5 text-[10px] text-ink3 italic flex items-start gap-2">
+          <span>👁</span>
+          <span>
+            Counter-client identity (face-match + relation tree) and the family graph
+            wire from the individuals directory — explored &amp; managed in Admin.
+            <span className="not-italic text-ink3"> Data pending.</span>
+          </span>
+        </div>
       </div>
     </div>
   )

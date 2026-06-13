@@ -2,27 +2,36 @@
  * Real-time Rx dispensing queue — the primary pharmacist workstation view.
  * Shows all active prescriptions color-coded by status and clinical risk.
  * Keyboard navigable: Arrow keys + Enter to select, C to claim, R to release.
+ *
+ * "Clinical Daylight" UI: rows lead with the short Rx token (#0196, the
+ * rx_number tail) + status + patient anchor + lane colour, never the drug name
+ * as the primary key. All store/keyboard/claim/grouping logic is unchanged.
  */
 import { useEffect, useRef } from 'react'
 import { useRxQueueStore, type Prescription, type RxStatus } from '../stores/rxQueue'
 import { rxApi } from '../lib/api'
 
-const STATUS_CONFIG: Record<RxStatus, { label: string; color: string; priority: number }> = {
-  intake:                    { label: 'Intake',          color: 'bg-gray-100 text-gray-700',   priority: 5 },
-  pending_dur:               { label: 'DUR Pending',     color: 'bg-purple-100 text-purple-700', priority: 4 },
-  dur_hold:                  { label: 'DUR Hold',        color: 'bg-red-100 text-red-700',     priority: 1 },
-  pending_verification:      { label: 'Verify',          color: 'bg-blue-100 text-blue-700',   priority: 2 },
-  verification_in_progress:  { label: 'In Progress',     color: 'bg-indigo-100 text-indigo-700', priority: 3 },
-  pending_adjudication:      { label: 'Adjudicating',    color: 'bg-yellow-100 text-yellow-700', priority: 3 },
-  adjudication_rejected:     { label: 'Rejected',        color: 'bg-red-200 text-red-800',     priority: 1 },
-  pending_pa:                { label: 'PA Required',     color: 'bg-orange-100 text-orange-700', priority: 2 },
-  ready_to_fill:             { label: 'Ready to Fill',   color: 'bg-green-100 text-green-700', priority: 2 },
-  filling:                   { label: 'Filling',         color: 'bg-teal-100 text-teal-700',   priority: 3 },
-  filled:                    { label: 'Filled',          color: 'bg-emerald-100 text-emerald-700', priority: 4 },
-  will_call:                 { label: 'Will Call',       color: 'bg-sky-100 text-sky-700',     priority: 5 },
-  dispensed:                 { label: 'Dispensed',       color: 'bg-gray-100 text-gray-500',   priority: 9 },
-  cancelled:                 { label: 'Cancelled',       color: 'bg-gray-100 text-gray-400',   priority: 9 },
-  on_hold:                   { label: 'On Hold',         color: 'bg-amber-100 text-amber-700', priority: 6 },
+const STATUS_CONFIG: Record<RxStatus, { label: string; tone: string; lane: string; priority: number }> = {
+  intake:                    { label: 'Intake',        tone: 'bg-surface2 text-ink2 border-line2',          lane: 'bg-line2',    priority: 5 },
+  pending_dur:               { label: 'DUR pending',   tone: 'bg-counsel-soft text-counsel border-counsel/25', lane: 'bg-counsel', priority: 4 },
+  dur_hold:                  { label: 'DUR hold',      tone: 'bg-blocker-soft text-blocker border-blocker/30', lane: 'bg-blocker', priority: 1 },
+  pending_verification:      { label: 'Verify',        tone: 'bg-intel-soft text-intel border-intel/25',    lane: 'bg-intel',    priority: 2 },
+  verification_in_progress:  { label: 'In progress',   tone: 'bg-intel-soft text-intel border-intel/25',    lane: 'bg-intel',    priority: 3 },
+  pending_adjudication:      { label: 'Adjudicating',  tone: 'bg-warning-soft text-warning border-warning/25', lane: 'bg-warning', priority: 3 },
+  adjudication_rejected:     { label: 'Rejected',      tone: 'bg-blocker-soft text-blocker border-blocker/30', lane: 'bg-blocker', priority: 1 },
+  pending_pa:                { label: 'PA required',   tone: 'bg-caution-soft text-caution border-caution/30', lane: 'bg-caution', priority: 2 },
+  ready_to_fill:             { label: 'Ready to fill', tone: 'bg-safe-soft text-safe border-safe/25',        lane: 'bg-safe',     priority: 2 },
+  filling:                   { label: 'Filling',       tone: 'bg-safe-soft text-safe border-safe/25',        lane: 'bg-safe',     priority: 3 },
+  filled:                    { label: 'Filled',        tone: 'bg-safe-soft text-safe border-safe/25',        lane: 'bg-safe',     priority: 4 },
+  will_call:                 { label: 'Will call',     tone: 'bg-intel-soft text-intel border-intel/25',    lane: 'bg-intel',    priority: 5 },
+  dispensed:                 { label: 'Dispensed',     tone: 'bg-surface2 text-ink3 border-line2',          lane: 'bg-line2',    priority: 9 },
+  cancelled:                 { label: 'Cancelled',     tone: 'bg-surface2 text-ink3 border-line2',          lane: 'bg-line2',    priority: 9 },
+  on_hold:                   { label: 'On hold',       tone: 'bg-warning-soft text-warning border-warning/25', lane: 'bg-warning', priority: 6 },
+}
+
+function rxToken(rxNumber: string | undefined): string {
+  const n = rxNumber ?? ''
+  return n.length > 4 ? `#${n.slice(-4)}` : (n ? `#${n}` : '#----')
 }
 
 interface RxCardProps {
@@ -38,66 +47,51 @@ function RxCard({ rx, isSelected, onSelect, onClaim }: RxCardProps) {
   const criticalAlerts = rx.dur_alerts?.filter((a) => a.severity === 'critical').length ?? 0
   const highAlerts = rx.dur_alerts?.filter((a) => a.severity === 'high').length ?? 0
   const aiRisk = rx.ai_risk_score ?? 0
+  const patientName = (rx as any).patient_name as string | undefined
 
   return (
     <div
       onClick={onSelect}
       onDoubleClick={onClaim}
       tabIndex={0}
-      className={`
-        border rounded-lg p-3 cursor-pointer transition-all select-none
-        ${isSelected
-          ? 'border-blue-500 bg-blue-50 shadow-md'
-          : 'border-gray-200 bg-white hover:border-gray-400 hover:shadow-sm'
-        }
-        ${criticalAlerts > 0 ? 'ring-2 ring-red-400' : ''}
-      `}
+      className={`cd-hover relative overflow-hidden rounded-xl pl-3 pr-3 py-2.5 cursor-pointer select-none border ${
+        isSelected ? 'border-intel bg-intel-soft' : 'border-line bg-surface hover:border-line2'
+      } ${criticalAlerts > 0 ? 'ring-1 ring-blocker/40' : ''}`}
     >
-      {/* Top row: Rx number + status badge */}
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <span className="font-mono text-sm font-semibold text-gray-900">{rx.rx_number}</span>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${status.color}`}>
+      <span className={`absolute left-0 top-0 bottom-0 w-1 ${status.lane}`} aria-hidden="true" />
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="cd-data text-sm font-semibold text-ink">{rxToken(rx.rx_number)}</span>
+        <span className={`cd-data text-[10px] px-2 py-0.5 rounded-md font-medium border ${status.tone}`}>
           {status.label}
         </span>
       </div>
 
-      {/* Drug name */}
-      <div className="text-sm font-medium text-gray-800 truncate">
+      {patientName && <div className="text-xs text-ink2 mt-0.5 truncate">{patientName}</div>}
+
+      <div className="text-[11px] text-ink3 truncate mt-0.5">
         {rx.drug_name} {rx.drug_strength}
         {rx.is_controlled && (
-          <span className="ml-1 text-xs bg-orange-100 text-orange-700 px-1 rounded">
-            {rx.dea_schedule}
-          </span>
+          <span className="cd-data ml-1 text-[10px] bg-caution-soft text-caution px-1 rounded">{rx.dea_schedule}</span>
         )}
       </div>
 
-      {/* Sig summary */}
-      <div className="text-xs text-gray-500 truncate mt-0.5">{rx.sig_text}</div>
-
-      {/* Bottom row: alerts + AI risk */}
       {(hasAlerts || aiRisk > 0.5) && (
-        <div className="flex items-center gap-2 mt-2">
+        <div className="flex items-center gap-1.5 mt-2">
           {criticalAlerts > 0 && (
-            <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">
-              🚫 {criticalAlerts} CRITICAL
-            </span>
+            <span className="cd-data text-[10px] bg-blocker-soft text-blocker px-1.5 py-0.5 rounded font-medium">🚫 {criticalAlerts}</span>
           )}
           {highAlerts > 0 && (
-            <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">
-              ⚠️ {highAlerts} high
-            </span>
+            <span className="cd-data text-[10px] bg-caution-soft text-caution px-1.5 py-0.5 rounded">⚠ {highAlerts}</span>
           )}
           {aiRisk > 0.7 && (
-            <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded ml-auto">
-              AI Risk: {(aiRisk * 100).toFixed(0)}%
-            </span>
+            <span className="cd-data text-[10px] bg-counsel-soft text-counsel px-1.5 py-0.5 rounded ml-auto">Risk {(aiRisk * 100).toFixed(0)}%</span>
           )}
         </div>
       )}
 
-      {/* Claimed indicator */}
       {rx.status === 'verification_in_progress' && rx.claimed_by_staff_id && (
-        <div className="mt-1 text-xs text-indigo-600">● In verification</div>
+        <div className="mt-1 text-[10px] text-intel flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-intel" /> In verification</div>
       )}
     </div>
   )
@@ -163,10 +157,10 @@ export default function RxQueue() {
   const renderGroup = (title: string, rxs: Prescription[], dot: string) => {
     if (!rxs.length) return null
     return (
-      <div>
+      <div className="cd-section">
         <div className="flex items-center gap-2 mb-2 px-1">
           <span className={`w-2 h-2 rounded-full ${dot}`} />
-          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          <span className="cd-ui text-[10px] font-semibold text-ink3 uppercase tracking-wider">
             {title} ({rxs.length})
           </span>
         </div>
@@ -188,24 +182,24 @@ export default function RxQueue() {
   return (
     <div
       ref={containerRef}
-      className="h-full overflow-y-auto focus:outline-none"
+      className="cd-scope h-full overflow-y-auto focus:outline-none"
       tabIndex={-1}
     >
       <div className="p-3 space-y-4">
         {/* Queue header */}
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold text-gray-900">Rx Queue</h2>
-          <span className="text-sm text-gray-500">{activeRxs.length} active</span>
+          <h2 className="cd-ui font-semibold text-ink">Rx queue</h2>
+          <span className="cd-data text-xs text-ink3">{activeRxs.length} active</span>
         </div>
 
         {activeRxs.length === 0 ? (
-          <div className="text-center py-8 text-gray-400 text-sm">Queue is empty</div>
+          <div className="text-center py-8 text-ink3 text-sm">Queue is empty</div>
         ) : (
           <>
-            {renderGroup('Needs Attention', urgentRxs, 'bg-red-500')}
-            {renderGroup('In Verification', workingRxs, 'bg-blue-500')}
-            {renderGroup('Ready / Filling', readyRxs, 'bg-green-500')}
-            {renderGroup('Other', otherRxs, 'bg-gray-400')}
+            {renderGroup('Needs attention', urgentRxs, 'bg-blocker')}
+            {renderGroup('In verification', workingRxs, 'bg-intel')}
+            {renderGroup('Ready / filling', readyRxs, 'bg-safe')}
+            {renderGroup('Other', otherRxs, 'bg-line2')}
           </>
         )}
       </div>
