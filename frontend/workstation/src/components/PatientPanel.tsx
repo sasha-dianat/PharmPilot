@@ -38,6 +38,7 @@ interface PatientRx {
   is_controlled: boolean
   dea_schedule?: string | null
   prescriber_name?: string | null
+  prescriber_medical_council_id?: string | null
   created_at?: string
 }
 
@@ -98,9 +99,11 @@ export default function PatientPanel({ patientId }: Props) {
     .sort((a, b) => (b.fill_date || '').localeCompare(a.fill_date || ''))
     .slice(0, 5)
 
-  // Most recent prescriber on record (real name from Rx history; contact
-  // details require a provider-registry lookup not yet wired → shown pending).
-  const prescriberName = rxHistory.find(rx => rx.prescriber_name)?.prescriber_name ?? null
+  // Most recent prescriber on record (real name + medical council ID from Rx
+  // history; phone/contact still require a fuller provider-registry lookup).
+  const prescriberRx = rxHistory.find(rx => rx.prescriber_name) ?? null
+  const prescriberName = prescriberRx?.prescriber_name ?? null
+  const councilId = prescriberRx?.prescriber_medical_council_id ?? null
 
   if (!patientId) {
     return (
@@ -255,8 +258,19 @@ export default function PatientPanel({ patientId }: Props) {
                     </div>
                     <div className="grid grid-cols-2 gap-2 mt-2 text-[10px]">
                       <div>
-                        <div className="text-ink3">NPI</div>
-                        <div className="cd-data text-ink3 italic">pending</div>
+                        <div className="text-ink3">Medical council ID</div>
+                        {councilId ? (
+                          <a
+                            href={`https://www.google.com/search?q=${encodeURIComponent(`نظام پزشکی ${councilId} پزشک`)}`}
+                            target="_blank" rel="noopener noreferrer"
+                            title="Look up physician on the web"
+                            className="cd-data font-bold text-intel hover:underline inline-flex items-center gap-0.5"
+                          >
+                            {councilId} <span className="text-[8px]">↗</span>
+                          </a>
+                        ) : (
+                          <div className="cd-data font-bold text-ink3 italic">pending</div>
+                        )}
                       </div>
                       <div>
                         <div className="text-ink3">Phone</div>

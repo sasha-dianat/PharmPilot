@@ -8,6 +8,10 @@ class Prescriber(AuditedBase):
     __tablename__ = "prescribers"
 
     npi: Mapped[str] = mapped_column(String(10), unique=True, nullable=False, index=True)
+    # Medical Council ID (e.g. Iran نظام پزشکی registration) — the elemental
+    # identifier by which a physician is looked up in public registries and the
+    # insurance system. Locale-agnostic prescriber license number.
+    medical_council_id: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     dea_number: Mapped[str | None] = mapped_column(String(15), nullable=True, index=True)
     dea_schedule_auth: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # e.g. "II,III,IV,V" — schedules this prescriber is authorized to prescribe
