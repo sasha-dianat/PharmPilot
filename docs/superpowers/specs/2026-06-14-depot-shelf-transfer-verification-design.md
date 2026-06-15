@@ -53,6 +53,11 @@ of truth for the same physical pills).
 - `shift_handover_reports`: `id, pharmacy_id, shift_start, shift_end, performed_by,
   transfers_completed (JSONB), fefo_overrides (JSONB), anomaly_signals (JSONB),
   open_split_packs (JSONB), cold_chain_events (JSONB), created_at`.
+- `surveillance_events` (security/behavioral layer): `id, pharmacy_id, camera_id,
+  session_id (NULL→replenishment_sessions), event_type (ENUM ANOMALY|WRONG_BIN|
+  EXTRA_ITEM|BEHAVIOR|UNSCANNED_PICK|AFTER_HOURS), severity (low|medium|high),
+  detected_at, clip_ref (TEXT NULL), ai_result (JSONB §1.2 envelope), reviewed_by
+  (UUID NULL→staff), reviewed_at (TIMESTAMPTZ NULL), owner_notified (BOOL DEFAULT false)`.
 
 **Additive columns**
 - `inventory_lots`: `split_pack_open BOOL DEFAULT false`, `split_pack_remaining_blisters INT NULL`,
@@ -98,6 +103,22 @@ No existing columns modified. Migration `0012` chains `0011`.
      (surfaced to dispensing in PatientPanel/VerificationCenter).
    - Shift handover: session accrues into `shift_handover_reports` at shift close.
 
+## 4b. Cameras & count-source (hardware reality)
+
+Two distinct camera roles — never conflated:
+- **Count source (precision):** a **scan-station camera + barcode** is the authoritative
+  identity+count signal (posed, controlled, lit; reads count/expiry/lot/form per scan).
+  Optional **load-cell shelves** give hands-free continuous count. These plug in behind a
+  single `count_source` interface (`manual | scan_station | load_cell`) so hardware tiers
+  swap without reworking the workflow. Phase 1 ships `manual` + `scan_station` (enveloped).
+- **Surveillance (security/behavior):** **10 wall-mounted cameras** do anomaly / wrong-bin /
+  extra-item / behavior / unscanned-pick / after-hours detection → write `surveillance_events`
+  → surface in an **owner surveillance panel** + notify owner on high severity. These are
+  **advisory/forensic only — they NEVER block a transfer or act as the counter**; they flag
+  for human (owner) review. Real multi-camera ML inference is Phase 3 (GPU/edge); Phase 1
+  ships the `surveillance_events` model + create/list endpoints + owner-report inclusion so
+  the layer slots in without schema churn.
+
 ## 5. API (Phase 1 — deterministic core)
 
 All routes `require_permission("inventory:write" | "inventory:admin")`.
@@ -118,8 +139,10 @@ bounding_boxes, advisory_notes }, tier_used, confidence, degraded, options_offli
   machine, two-checkpoint deterministic verification, all §3 safety enforcement,
   `shelf-verify` enveloped degraded stub, reconciliation, shift handover. Verified: `pytest`, `tsc`.
 - **Phase 2:** multi-step frontend flow + 7 Playwright specs (`tests/e2e/shelf-transfer-verification.spec.ts`).
-- **Phase 3 (GPU-deferred):** real YOLOv8 / PaddleOCR / MobileNet inference + continuous
-  depot surveillance feed. (This box cannot train/run these — established hardware limit.)
+- **Phase 3 (GPU-deferred):** real YOLOv8 / PaddleOCR / MobileNet inference for the
+  scan-station count + the **10 wall-camera surveillance ML** (anomaly / wrong-bin /
+  extra-item / behavior) feeding the owner panel. (This box cannot train/run these —
+  established hardware limit; Phase 1 ships the deterministic spine + envelopes + event model.)
 
 ## 7. Constraints
 
