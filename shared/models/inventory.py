@@ -46,6 +46,14 @@ class DrugProduct(AuditedBase):
     discontinued: Mapped[bool] = mapped_column(Boolean, default=False)
     drug_db_metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
 
+    # Depot→shelf verification (migration 0012, additive)
+    storage_condition: Mapped[str | None] = mapped_column(String(20), nullable=True)  # ROOM_TEMP|REFRIGERATED|FROZEN|LIGHT_PROTECTED
+    high_risk_flag: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    lasa_group: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    primary_shelf_id: Mapped[UUID | None] = mapped_column(ForeignKey("pharmacy_shelves.id"), nullable=True)
+    blisters_per_box: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_per_blister: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
 
 class InventoryLot(AuditedBase):
     """A specific lot of a drug product — tracks expiry and quantity per lot."""
@@ -77,6 +85,12 @@ class InventoryLot(AuditedBase):
     # DSCSA serialization
     serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     transaction_history: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Depot→shelf verification (migration 0012, additive)
+    split_pack_open: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    split_pack_remaining_blisters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cold_chain_breach: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    cold_chain_breach_log: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     drug: Mapped["DrugProduct"] = relationship()
 

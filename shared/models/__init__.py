@@ -45,6 +45,7 @@ from . import claims      # noqa: F401  (ClaimTransaction, ERA835Record, DIRFeeA
 from . import clinical    # noqa: F401  (Medication, ClinicalAlert, ClinicalAuditLog, ...)
 from . import insurance   # noqa: F401  (InsurancePlan, PatientInsurance, ...)
 from . import inventory   # noqa: F401  (DrugProduct, InventoryLot, StockLevel, PurchaseOrder, ...)
+from . import depot       # noqa: F401  (PharmacyShelf, ShelfPlacement, ReplenishmentSession, ShelfTransferEvent, SurveillanceEvent, ShiftHandoverReport)
 from . import patient     # noqa: F401  (Patient, PatientAllergy, LabResult, ClinicalNote, ...)
 from . import pharmacy    # noqa: F401  (Pharmacy, ...)
 from . import prescriber  # noqa: F401  (Prescriber, ...)

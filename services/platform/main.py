@@ -28,6 +28,10 @@ from shared.models.claims import ClaimTransaction, ERA835Record, DIRFeeAdjustmen
 from shared.models.inventory import (  # noqa: F401
     DrugProduct, InventoryLot, StockLevel, PurchaseOrder, PurchaseOrderLine, ReceivingRecord
 )
+from shared.models.depot import (  # noqa: F401
+    PharmacyShelf, ShelfPlacement, ReplenishmentSession,
+    ShelfTransferEvent, SurveillanceEvent, ShiftHandoverReport,
+)
 from shared.models.biometric import BiometricIdentity, PharmacyVisit, SecurityEvent  # noqa: F401
 from shared.models.audio import AudioTranscript, ProfileEnrichmentAction  # noqa: F401
 
