@@ -15,7 +15,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { DrugPricingTable, RecallAlertBanner, PatientSavingsPanel } from '../components/PricingIntelligence'
 import PackageVerificationDashboard from '../components/PackageVerification'
-import { ExpiryRiskPanel, SupplyRiskPanel } from '../components/IntelligenceInventoryPanels'
+import { ExpiryRiskPanel, SupplyRiskPanel, TurnoverPanel, MovementsPanel } from '../components/IntelligenceInventoryPanels'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface StockItem {
@@ -354,6 +354,12 @@ export default function InventoryIntelligence() {
       <div className="grid grid-cols-2 gap-4">
         <ExpiryRiskPanel />
         <SupplyRiskPanel />
+      </div>
+
+      {/* Row 3.6: Capital efficiency — Turnover/Dead-Stock scores + Movements audit trail */}
+      <div className="grid grid-cols-2 gap-4">
+        <TurnoverPanel />
+        <MovementsPanel />
       </div>
 
       {/* Row 4: Pricing Intelligence — AWP/WAC/AAC margin table + Recall alerts + Patient savings */}
