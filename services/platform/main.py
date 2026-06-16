@@ -69,6 +69,9 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_ORIGINS,
+        # Dev convenience: accept any localhost port (Vite/preview servers bind
+        # dynamic ports). Production stays restricted to ALLOWED_ORIGINS.
+        allow_origin_regex=(r"http://localhost:\d+" if settings.ENVIRONMENT != "production" else None),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

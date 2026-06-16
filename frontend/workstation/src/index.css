@@ -1,6 +1,35 @@
 /* Tailwind v4 */
 @import "tailwindcss";
 
+/* ════════════════════════════════════════════════════════════════════════════
+   "Clinical Daylight" — light design system for the Pharmacist Workstation.
+   Scoped via .cd-scope so the existing dark dashboards are untouched.
+   No external font fetch (offline-safe, console-clean) — preferred face first,
+   system fallback second.
+   ════════════════════════════════════════════════════════════════════════════ */
+@theme {
+  --color-canvas:    #eef2f7;   /* page behind cards */
+  --color-surface:   #ffffff;   /* card */
+  --color-surface2:  #f7f9fc;   /* inset / strip */
+  --color-line:      #e4e9f0;   /* hairline */
+  --color-line2:     #d4dbe6;   /* emphasis hairline */
+  --color-ink:       #16202e;   /* primary text */
+  --color-ink2:      #56627a;   /* secondary */
+  --color-ink3:      #8a95a8;   /* tertiary */
+
+  --color-blocker: #dc2626; --color-blocker-soft: #fef2f2;
+  --color-caution: #ea580c; --color-caution-soft: #fff7ed;
+  --color-warning: #d97706; --color-warning-soft: #fffbeb;
+  --color-intel:   #2563eb; --color-intel-soft:   #eff6ff;
+  --color-safe:    #059669; --color-safe-soft:    #ecfdf5;
+  --color-counsel: #7c3aed; --color-counsel-soft: #f5f3ff;
+  --color-dur:     #e11d48; --color-dur-soft:     #fff1f2;
+
+  --font-data:      'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+  --font-ui:        'Outfit', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-narrative: 'Newsreader', ui-serif, Georgia, serif;
+}
+
 /* ── Reset ─────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -142,4 +171,56 @@ mark.pp-abbr:last-child::after  { left: auto; right: 0; transform: none; }
 .pp-change-display {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Clinical Daylight — components + motion (scoped under .cd-scope)
+   ════════════════════════════════════════════════════════════════════════════ */
+.cd-scope { font-family: var(--font-ui); color: var(--color-ink); background: var(--color-canvas); }
+.cd-scope .cd-data { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.cd-scope .cd-narr { font-family: var(--font-narrative); }
+
+/* Card with soft daylight elevation (shadows are fine in the real app) */
+.cd-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgb(16 32 46 / 0.04), 0 1px 3px rgb(16 32 46 / 0.03);
+}
+.cd-inset { background: var(--color-surface2); border: 1px solid var(--color-line); border-radius: 10px; }
+
+/* Fluid hover lift */
+.cd-hover { transition: transform .16s cubic-bezier(.22,1,.36,1), box-shadow .16s ease, border-color .16s ease; }
+.cd-hover:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgb(16 32 46 / 0.08); border-color: var(--color-line2); }
+
+/* Section enter */
+@keyframes cd-section { from { opacity:0; transform: translateY(6px);} to { opacity:1; transform: translateY(0);} }
+.cd-section { animation: cd-section .18s ease both; }
+
+/* Staggered stream-in (set --i inline) */
+@keyframes cd-stream { from { opacity:0; transform: translateX(-10px);} to { opacity:1; transform: translateX(0);} }
+.cd-stream { animation: cd-stream .3s cubic-bezier(.22,1,.36,1) both; animation-delay: calc(var(--i,0) * 55ms); }
+
+/* One-shot danger pulse */
+@keyframes cd-danger { 0%{box-shadow:0 0 0 0 rgb(220 38 38 /.5);} 70%{box-shadow:0 0 0 7px rgb(220 38 38 /0);} 100%{box-shadow:0 0 0 0 rgb(220 38 38 /0);} }
+.cd-danger { animation: cd-danger .6s ease-out 1; }
+
+/* Pipeline rail */
+.cd-rail { transition: color .2s ease, background .2s ease; }
+
+/* Keyboard hint */
+.cd-kbd { font-family: var(--font-data); font-size: 10px; line-height:1; padding:2px 5px; border-radius:5px;
+  color: var(--color-ink2); background: var(--color-surface2); border:1px solid var(--color-line2);
+  box-shadow: inset 0 -1px 0 rgb(16 32 46 / .06); }
+
+/* Focus ring */
+.cd-scope input:focus-visible, .cd-scope button:focus-visible { outline: 2px solid var(--color-intel); outline-offset: 1px; }
+
+/* Tab underline */
+.cd-tab { position: relative; transition: color .15s ease; }
+.cd-tab[data-active="true"]::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:2px; background: var(--color-intel); border-radius:2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cd-section,.cd-stream,.cd-danger,.cd-hover { animation:none !important; transition:none !important; }
+  .cd-hover:hover { transform:none; }
 }

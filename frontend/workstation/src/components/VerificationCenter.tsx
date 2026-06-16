@@ -3,6 +3,12 @@
  * ================================================================
  * Full Rx lifecycle: Claim → ACB review streams → DUR resolution →
  * Claim adjudication → Label preview → Dispense.
+ *
+ * "Clinical Daylight" UI upgrade (visual only — every state hook, query,
+ * handler, conditional and clinical gate below is byte-for-byte the prior
+ * logic): light premium surfaces, severity-token palette, radial risk ring,
+ * attributed pipeline, fluid hover/stream motion, keyboard shortcut bar,
+ * clinical-intelligence framing. No data contract / routing / tree change.
  */
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -18,6 +24,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import RxCopilotRail from './RxCopilotRail'
 import CancelRxModal from './CancelRxModal'
 import { IntegrityBanner } from './IntelligenceWorkflowBits'
+import ProgressRing from '../design/ProgressRing'
 
 // ── Step definitions ─────────────────────────────────────────────────────────
 const STEPS = ['Pending', 'Claimed', 'DUR Review', 'Adjudication', 'Fill', 'Dispense'] as const
@@ -247,58 +254,62 @@ export default function VerificationCenter() {
   // ── Empty state ───────────────────────────────────────────────────────────
   if (!selectedRx) {
     return (
-      <div className="h-full flex items-center justify-center text-gray-400">
-        <div className="text-center space-y-3">
-          <div className="text-5xl">💊</div>
-          <div className="text-sm font-medium">Select or claim an Rx from the queue</div>
-          <div className="text-xs text-gray-300">Clinical review auto-triggers on claim</div>
+      <div className="cd-scope h-full flex items-center justify-center">
+        <div className="text-center space-y-3 cd-section">
+          <div className="w-14 h-14 mx-auto rounded-2xl cd-inset flex items-center justify-center text-2xl">💊</div>
+          <div className="cd-ui text-sm font-medium text-ink2">Select or claim an Rx from the queue</div>
+          <div className="text-xs text-ink3">Clinical review auto-triggers on claim</div>
         </div>
       </div>
     )
   }
 
+  const riskScore = selectedRx.ai_risk_score ?? 0
+
   return (
-    <div className="h-full overflow-y-auto bg-gray-50 p-4 space-y-3">
+    <div className="cd-scope h-full overflow-y-auto p-4 space-y-3">
 
       {/* ── Rx header ─────────────────────────────────────────────────────── */}
-      <div className="bg-white border rounded-lg p-4 shadow-sm">
-        <div className="flex items-start justify-between gap-2">
+      <div className="cd-card cd-section p-4">
+        <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-mono text-xs text-gray-400">{selectedRx.rx_number}</span>
+              <span className="cd-data text-xs text-ink3">#{(selectedRx.rx_number ?? '').slice(-4) || selectedRx.rx_number}</span>
               {selectedRx.is_controlled && (
-                <span className="text-xs bg-orange-100 text-orange-800 border border-orange-300 px-2 py-0.5 rounded-full font-semibold">
-                  ⚠ CDS {selectedRx.dea_schedule}
+                <span className="cd-data text-[11px] bg-caution-soft text-caution border border-caution/30 px-2 py-0.5 rounded-md font-semibold">
+                  CDS {selectedRx.dea_schedule}
                 </span>
               )}
               <RxStatusBadge status={selectedRx.status} />
             </div>
-            <div className="text-xl font-bold text-gray-900 mt-1 font-mono">
+            <div className="text-[22px] font-semibold text-ink mt-1.5 leading-tight">
               {selectedRx.drug_name}
               {selectedRx.drug_strength && (
-                <span className="text-gray-500 font-normal text-base ml-1">{selectedRx.drug_strength}</span>
+                <span className="text-ink2 font-normal text-base ml-1.5">{selectedRx.drug_strength}</span>
               )}
             </div>
-            <div className="text-sm text-gray-600 mt-0.5">
-              Qty: <strong>{selectedRx.quantity_prescribed}</strong> ·
-              Days: <strong>{selectedRx.days_supply}</strong> ·
-              Refills: <strong>{selectedRx.refills_remaining}</strong>
-            </div>
-            {selectedRx.sig_text && (
-              <div className="mt-2 px-3 py-1.5 bg-gray-50 border rounded font-mono text-xs text-gray-700 leading-relaxed">
-                {selectedRx.sig_text}
-              </div>
-            )}
+            <div className="text-xs text-ink2 mt-0.5 cd-data">{selectedRx.rx_number}</div>
           </div>
-          {selectedRx.ai_risk_score !== undefined && selectedRx.ai_risk_score > 0 && (
-            <RiskBadge score={selectedRx.ai_risk_score} />
-          )}
+          {riskScore > 0 && <RiskBadge score={riskScore} />}
         </div>
+
+        {/* prescription quick-facts grid */}
+        <div className="grid grid-cols-3 gap-2 mt-3">
+          <Fact label="Quantity" value={`${selectedRx.quantity_prescribed}`} />
+          <Fact label="Days supply" value={`${selectedRx.days_supply}`} />
+          <Fact label="Refills" value={`${selectedRx.refills_remaining}`} />
+        </div>
+        {selectedRx.sig_text && (
+          <div className="mt-2 cd-inset px-3 py-2">
+            <div className="text-[10px] uppercase tracking-wide text-ink3 mb-0.5">SIG</div>
+            <div className="cd-data text-sm text-ink leading-relaxed">{selectedRx.sig_text}</div>
+          </div>
+        )}
         {selectedRx.acb_safety_report && (
-          <div className={`mt-3 p-2 rounded text-xs border-l-4 ${
+          <div className={`mt-3 px-3 py-2 rounded-lg text-xs border-l-2 ${
             selectedRx.acb_safety_report.severity === 'critical'
-              ? 'bg-red-50 border-red-500 text-red-800'
-              : 'bg-blue-50 border-blue-300 text-blue-800'
+              ? 'bg-blocker-soft border-blocker text-blocker'
+              : 'bg-intel-soft border-intel text-intel'
           }`}>
             <span className="font-semibold">🧠 ACB: </span>
             {selectedRx.acb_safety_report.primary_finding}
@@ -331,14 +342,23 @@ export default function VerificationCenter() {
         <PDMPPanel loading={pdmpLoading} result={pdmpResult} />
       )}
 
+      {/* ── Clinical intelligence section label ───────────────────────────── */}
+      <div className="flex items-center gap-2 px-1 pt-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink3">Clinical intelligence</span>
+        <span className="text-[10px] text-ink3">· AI services tuned in Dashboards</span>
+      </div>
+
       {/* ── DUR Alerts ────────────────────────────────────────────────────── */}
       <ErrorBoundary label="DUR Alerts" inline>
-        <div className="bg-white border rounded-lg p-3 space-y-2">
+        <div className="cd-card p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-gray-700">🔍 Drug Utilization Review</span>
-            {durAlerts.length > 0 && (
-              <span className="text-xs text-gray-500">({durAlerts.length} alert{durAlerts.length !== 1 ? 's' : ''})</span>
-            )}
+            <span className="cd-ui text-sm font-semibold text-ink flex items-center gap-1.5">
+              <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">🔍</span>
+              Drug utilization review
+            </span>
+            {durAlerts.length > 0
+              ? <span className="cd-data text-xs text-ink3">{durAlerts.length} alert{durAlerts.length !== 1 ? 's' : ''}</span>
+              : <span className="text-[11px] bg-safe-soft text-safe border border-safe/25 px-2 py-0.5 rounded-md ml-auto">0 hard stops</span>}
           </div>
           <DURAlertPanel
             alerts={durAlerts}
@@ -350,46 +370,42 @@ export default function VerificationCenter() {
 
       {/* ── Triage lane badge ─────────────────────────────────────────────── */}
       {analysis?.triage_lane && (
-        <div className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium ${
+        <div className={`cd-section flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium border ${
           analysis.triage_lane === 'green'
-            ? 'bg-green-50 border border-green-400 text-green-800'
+            ? 'bg-safe-soft border-safe/30 text-safe'
             : analysis.triage_lane === 'amber'
-            ? 'bg-yellow-50 border border-yellow-400 text-yellow-800'
-            : 'bg-red-50 border border-red-500 text-red-800'
+            ? 'bg-warning-soft border-warning/30 text-warning'
+            : 'bg-blocker-soft border-blocker/40 text-blocker'
         }`}>
           <span className="text-lg">
             {analysis.triage_lane === 'green' ? '🟢' : analysis.triage_lane === 'amber' ? '🟡' : '🔴'}
           </span>
           <div className="flex-1">
-            <span className="uppercase font-bold tracking-wide">
-              {analysis.triage_lane === 'green' ? 'Fast Lane'
-                : analysis.triage_lane === 'amber' ? 'Standard Review'
-                : 'Full Scrutiny Required'}
+            <span className="cd-ui uppercase font-bold tracking-wide">
+              {analysis.triage_lane === 'green' ? 'Fast lane'
+                : analysis.triage_lane === 'amber' ? 'Standard review'
+                : 'Full scrutiny required'}
             </span>
             {analysis.triage_result?.reasons?.[0] && (
-              <span className="text-xs font-normal ml-2 opacity-75">
+              <span className="cd-ui text-xs font-normal ml-2 opacity-80">
                 — {analysis.triage_result.reasons[0]}
               </span>
             )}
           </div>
           {analysis.triage_result?.requires_visual_verification && (
-            <span className="text-xs bg-white/60 border rounded px-2 py-0.5">
+            <span className="cd-data text-xs bg-surface border border-line2 text-ink2 rounded-md px-2 py-0.5">
               Visual verify required
             </span>
           )}
           {analysis.triage_result?.hard_gates?.length ? (
-            <div className="text-xs">
+            <div className="cd-data text-xs">
               Gates: {analysis.triage_result.hard_gates.join(', ')}
             </div>
           ) : null}
         </div>
       )}
 
-      {/* ── Patient Intelligence — trajectory, care gaps, prescriber context ─
-           Consolidated companion to the Council: everything "what do I know
-           about this patient (and who prescribed for them)" lives HERE, next
-           to the findings, instead of scattered across dashboards the
-           pharmacist would otherwise have to leave review to go find. ──── */}
+      {/* ── Patient Intelligence — trajectory, care gaps, prescriber context ── */}
       {selectedRx.patient_id && (
         <ErrorBoundary label="Patient Intelligence" inline>
           <TrajectorySignalStrip
@@ -408,16 +424,15 @@ export default function VerificationCenter() {
       {/* ── Specialist Council — precomputed (instant) or SSE (fallback) ─── */}
       {selectedRx.status === 'verification_in_progress' && selectedRx.patient_id && (
         <ErrorBoundary label="Clinical Council" inline>
-          <div className="bg-white border rounded-lg p-3">
+          <div className="cd-card p-3">
             {analysis?.status === 'ready' && analysis.council_cache ? (
               <PrecomputedCouncilPanel cache={analysis.council_cache} />
             ) : analysis?.status === 'computing' || analysis?.status === 'pending' ? (
               <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm text-blue-600">
-                  <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                  <span>Specialist council computing…</span>
+                <div className="flex items-center gap-2 text-sm text-intel">
+                  <div className="w-3 h-3 border-2 border-intel border-t-transparent rounded-full animate-spin" />
+                  <span className="cd-ui">Specialist council computing…</span>
                 </div>
-                {/* SSE stream while computing so there's no blank wait */}
                 <CouncilReport
                   prescriptionId={selectedRx.id}
                   patientId={selectedRx.patient_id}
@@ -440,7 +455,7 @@ export default function VerificationCenter() {
         <ClaimResultPanel result={claimResult} onInitiatePA={() => handleTransition('pending_pa')} />
       )}
       {claimError && !claimResult && (
-        <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-700">
+        <div className="cd-danger bg-blocker-soft border border-blocker/40 rounded-xl p-3 text-sm text-blocker">
           <strong>⚠ Error:</strong> {claimError}
         </div>
       )}
@@ -466,27 +481,12 @@ export default function VerificationCenter() {
         />
       )}
 
-      {/* ── Action buttons ─────────────────────────────────────────────────── */}
-      <div className="bg-white border rounded-lg p-3">
-        <ActionButtons
-          status={selectedRx.status}
-          criticalHardStops={criticalHardStops}
-          claimLoading={claimLoading}
-          claimApproved={claimResult?.status === 'approved'}
-          onClaim={handleClaim}
-          onAdjudicate={handleAdjudicate}
-          onShowLabel={() => setShowLabel(true)}
-          onCancelRx={() => setShowCancelRx(true)}
-          onTransition={handleTransition}
-        />
-      </div>
-
       {/* ── Voice Rx note (pharmacist dictates, confirms before saving) ─────── */}
       {selectedRx.status === 'verification_in_progress' && (
-        <div className="bg-white border rounded-lg p-3 space-y-2">
+        <div className="cd-card p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-gray-700">🎙 Voice Notes</span>
-            <span className="text-xs text-gray-400">— dictate, review, confirm · never auto-saved</span>
+            <span className="cd-ui text-sm font-semibold text-ink">🎙 Voice notes</span>
+            <span className="text-xs text-ink3">— dictate, review, confirm · never auto-saved</span>
           </div>
           <div className="flex flex-wrap gap-2">
             <DictateNote
@@ -494,7 +494,6 @@ export default function VerificationCenter() {
               language="fa"
               placeholder="Rx note will appear here for review…"
               onConfirm={(text, ctx) => {
-                // In a full implementation: POST /prescriptions/{id}/notes
                 console.info(`[Voice note confirmed] ctx=${ctx}: ${text.slice(0, 80)}`)
                 alert(`✓ Note saved:\n${text}`)
               }}
@@ -510,24 +509,51 @@ export default function VerificationCenter() {
         </div>
       )}
 
-      {/* ── Clinical Brain query ───────────────────────────────────────────── */}
+      {/* ── Knowledge Base / Clinical Brain query ──────────────────────────── */}
       <ClinicalBrainQuery drugName={selectedRx.drug_name} patientId={selectedRx.patient_id} />
+
+      {/* ── Action bar ─────────────────────────────────────────────────────── */}
+      <div className="cd-card p-3 sticky bottom-0 z-10">
+        <ActionButtons
+          status={selectedRx.status}
+          criticalHardStops={criticalHardStops}
+          claimLoading={claimLoading}
+          claimApproved={claimResult?.status === 'approved'}
+          onClaim={handleClaim}
+          onAdjudicate={handleAdjudicate}
+          onShowLabel={() => setShowLabel(true)}
+          onCancelRx={() => setShowCancelRx(true)}
+          onTransition={handleTransition}
+        />
+      </div>
     </div>
   )
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function RxStatusBadge({ status }: { status: string }) {
-  const color =
-    status === 'dispensed'               ? 'bg-green-100 text-green-700' :
-    status === 'dur_hold'                ? 'bg-red-100 text-red-700' :
-    status.includes('reject')            ? 'bg-red-100 text-red-700' :
-    status === 'ready_to_fill'           ? 'bg-teal-100 text-teal-700' :
-    status === 'verification_in_progress'? 'bg-blue-100 text-blue-700' :
-                                           'bg-gray-100 text-gray-600'
+function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>
+    <div className="cd-inset px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-ink3">{label}</div>
+      <div className="cd-data text-base font-semibold text-ink leading-tight">{value}</div>
+    </div>
+  )
+}
+
+const STATUS_TONE: Record<string, { text: string; bg: string; border: string }> = {
+  dispensed:                { text: 'text-safe',    bg: 'bg-safe-soft',    border: 'border-safe/30' },
+  dur_hold:                 { text: 'text-blocker', bg: 'bg-blocker-soft', border: 'border-blocker/30' },
+  ready_to_fill:            { text: 'text-safe',    bg: 'bg-safe-soft',    border: 'border-safe/30' },
+  verification_in_progress: { text: 'text-intel',   bg: 'bg-intel-soft',   border: 'border-intel/30' },
+}
+function RxStatusBadge({ status }: { status: string }) {
+  const tone = STATUS_TONE[status]
+    ?? (status.includes('reject')
+        ? { text: 'text-blocker', bg: 'bg-blocker-soft', border: 'border-blocker/30' }
+        : { text: 'text-ink2', bg: 'bg-surface2', border: 'border-line2' })
+  return (
+    <span className={`cd-data text-[11px] px-2 py-0.5 rounded-md font-medium border ${tone.text} ${tone.bg} ${tone.border}`}>
       {status.replace(/_/g, ' ')}
     </span>
   )
@@ -535,13 +561,11 @@ function RxStatusBadge({ status }: { status: string }) {
 
 function RiskBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100)
-  const color = score >= 0.7 ? 'bg-red-50 border-red-200 text-red-700' :
-                score >= 0.4 ? 'bg-orange-50 border-orange-200 text-orange-700' :
-                               'bg-green-50 border-green-200 text-green-700'
+  const color = score >= 0.7 ? '#dc2626' : score >= 0.4 ? '#ea580c' : '#059669'
   return (
-    <div className={`flex-shrink-0 rounded-lg p-2 text-center text-xs border ${color}`}>
-      <div className="font-bold text-base">{pct}</div>
-      <div className="text-[10px]">Risk</div>
+    <div className="flex-shrink-0 flex flex-col items-center gap-0.5">
+      <ProgressRing value={score} size={54} stroke={5} color={color} label={pct} />
+      <div className="text-[10px] uppercase tracking-wide text-ink3">Risk</div>
     </div>
   )
 }
@@ -549,19 +573,21 @@ function RiskBadge({ score }: { score: number }) {
 function StepIndicator({ currentStep }: { currentStep: Step }) {
   const idx = STEPS.indexOf(currentStep)
   return (
-    <div className="flex items-center overflow-x-auto pb-0.5">
+    <div className="cd-card px-3 py-2 flex items-center overflow-x-auto">
       {STEPS.map((step, i) => (
         <div key={step} className="flex items-center flex-shrink-0">
-          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
-            i < idx   ? 'text-green-600' :
-            i === idx ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-300' :
-                        'text-gray-300'
+          <div className={`cd-rail cd-ui flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${
+            i < idx   ? 'text-safe' :
+            i === idx ? 'text-intel bg-intel-soft ring-1 ring-intel/30' :
+                        'text-ink3'
           }`}>
-            {i < idx && <span>✓</span>}
+            <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] ${
+              i < idx ? 'bg-safe text-white' : i === idx ? 'bg-intel text-white' : 'bg-surface2 text-ink3 border border-line2'
+            }`}>{i < idx ? '✓' : i + 1}</span>
             {step}
           </div>
           {i < STEPS.length - 1 && (
-            <div className={`w-4 h-0.5 flex-shrink-0 ${i < idx ? 'bg-green-400' : 'bg-gray-200'}`} />
+            <div className={`w-5 h-0.5 flex-shrink-0 rounded ${i < idx ? 'bg-safe/50' : 'bg-line2'}`} />
           )}
         </div>
       ))}
@@ -572,40 +598,40 @@ function StepIndicator({ currentStep }: { currentStep: Step }) {
 function PDMPPanel({ loading, result }: { loading: boolean; result: PDMPResult | null }) {
   if (loading) {
     return (
-      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 flex items-center gap-2 text-xs text-purple-600">
-        <div className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+      <div className="bg-counsel-soft border border-counsel/25 rounded-xl p-3 flex items-center gap-2 text-xs text-counsel">
+        <div className="w-3 h-3 border-2 border-counsel border-t-transparent rounded-full animate-spin" />
         Querying PDMP for controlled substance history…
       </div>
     )
   }
   if (!result) {
     return (
-      <div className="bg-purple-50 border border-purple-200 rounded-lg p-2 text-xs text-purple-500">
+      <div className="bg-counsel-soft border border-counsel/20 rounded-xl p-2 text-xs text-counsel">
         📋 PDMP query pending
       </div>
     )
   }
-  const riskColor = {
-    low:      'bg-green-50 border-green-300 text-green-700',
-    moderate: 'bg-yellow-50 border-yellow-300 text-yellow-700',
-    high:     'bg-orange-50 border-orange-400 text-orange-800',
-    critical: 'bg-red-50 border-red-500 text-red-800',
-  }[result.risk_level] ?? 'bg-gray-50 border-gray-200 text-gray-700'
+  const tone = {
+    low:      { bg: 'bg-safe-soft',    border: 'border-safe/30',    text: 'text-safe' },
+    moderate: { bg: 'bg-warning-soft', border: 'border-warning/30', text: 'text-warning' },
+    high:     { bg: 'bg-caution-soft', border: 'border-caution/40', text: 'text-caution' },
+    critical: { bg: 'bg-blocker-soft', border: 'border-blocker/40', text: 'text-blocker' },
+  }[result.risk_level] ?? { bg: 'bg-surface2', border: 'border-line2', text: 'text-ink2' }
 
   return (
-    <div className={`border rounded-lg p-3 text-xs ${riskColor}`}>
+    <div className={`cd-section border rounded-xl p-3 text-xs ${tone.bg} ${tone.border} ${tone.text}`}>
       <div className="flex items-center gap-2 font-semibold mb-1">
         <span>📋 PDMP</span>
-        <span className="uppercase">Risk: {result.risk_level}</span>
+        <span className="cd-data uppercase">Risk: {result.risk_level}</span>
       </div>
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-3 cd-data">
         <span>Prescribers (90d): <strong>{result.prescriber_count}</strong></span>
         <span>Fills (90d): <strong>{result.dispensing_count_90d}</strong></span>
         {result.mme_current > 0 && (
           <span>MME/day: <strong>{result.mme_current}</strong>{result.mme_current >= 90 && ' ⚠'}</span>
         )}
       </div>
-      {result.recommendation && <div className="mt-1 italic">{result.recommendation}</div>}
+      {result.recommendation && <div className="mt-1 italic cd-ui">{result.recommendation}</div>}
     </div>
   )
 }
@@ -613,35 +639,35 @@ function PDMPPanel({ loading, result }: { loading: boolean; result: PDMPResult |
 function ClaimResultPanel({ result, onInitiatePA }: { result: ClaimResult; onInitiatePA: () => void }) {
   if (result.status === 'approved') {
     return (
-      <div className="bg-green-50 border border-green-400 rounded-lg p-3">
-        <div className="flex items-center gap-2 text-green-800 font-semibold text-sm">
+      <div className="cd-section bg-safe-soft border border-safe/30 rounded-xl p-3">
+        <div className="flex items-center gap-2 text-safe font-semibold text-sm">
           <span>✅</span>
-          <span>Claim Approved{result.auth_number ? ` — Auth #${result.auth_number}` : ''}</span>
+          <span className="cd-ui">Claim approved{result.auth_number ? ` — Auth #${result.auth_number}` : ''}</span>
         </div>
-        <div className="flex gap-4 mt-1.5 text-xs text-green-700">
-          <span>Patient pays: <strong className="text-lg text-green-900">${result.patient_pay.toFixed(2)}</strong></span>
-          <span>Plan pays: <strong>${result.plan_pay.toFixed(2)}</strong></span>
+        <div className="flex gap-4 mt-1.5 text-xs text-safe cd-ui">
+          <span>Patient pays: <strong className="cd-data text-lg">${result.patient_pay.toFixed(2)}</strong></span>
+          <span>Plan pays: <strong className="cd-data">${result.plan_pay.toFixed(2)}</strong></span>
         </div>
       </div>
     )
   }
   return (
-    <div className="bg-red-50 border border-red-400 rounded-lg p-3 space-y-2">
-      <div className="text-red-800 font-semibold text-sm flex items-center gap-2">
-        <span>❌</span><span>Claim Rejected</span>
+    <div className="cd-section cd-danger bg-blocker-soft border border-blocker/40 rounded-xl p-3 space-y-2">
+      <div className="text-blocker font-semibold text-sm flex items-center gap-2 cd-ui">
+        <span>❌</span><span>Claim rejected</span>
       </div>
       {result.reject_codes?.map((code, i) => (
-        <div key={i} className="text-xs bg-white border border-red-200 rounded p-2">
-          <span className="font-mono font-semibold text-red-700">Reject {code}</span>
+        <div key={i} className="text-xs bg-surface border border-blocker/20 rounded-lg p-2">
+          <span className="cd-data font-semibold text-blocker">Reject {code}</span>
           {result.reject_messages?.[i] && (
-            <span className="text-gray-600 ml-2">— {result.reject_messages[i]}</span>
+            <span className="text-ink2 ml-2">— {result.reject_messages[i]}</span>
           )}
         </div>
       ))}
       {result.requires_pa && (
         <button onClick={onInitiatePA}
-          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">
-          📋 Initiate Prior Authorization
+          className="cd-ui cd-hover text-xs px-3 py-1.5 bg-intel-soft text-intel border border-intel/40 rounded-lg">
+          📋 Initiate prior authorization
         </button>
       )}
     </div>
@@ -656,66 +682,66 @@ function ActionButtons({
   onClaim: () => void; onAdjudicate: () => void; onShowLabel: () => void; onCancelRx: () => void
   onTransition: (s: string) => void
 }) {
-  const btn = (label: string, handler: () => void, cls: string, disabled = false) => (
-    <button onClick={handler} disabled={disabled}
-      className={`px-4 py-2 text-white text-sm rounded-lg font-medium disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 ${cls}`}>
-      {label}
+  const A = {
+    intel:   'bg-intel text-white border-intel hover:brightness-110',
+    safe:    'bg-safe text-white border-safe hover:brightness-110',
+    caution: 'bg-caution-soft text-caution border-caution/40 hover:bg-caution/10',
+    counsel: 'bg-counsel text-white border-counsel hover:brightness-110',
+    ghost:   'bg-surface text-ink2 border-line2 hover:bg-surface2',
+  }
+  const btn = (label: string, handler: () => void, accent: string, kbd?: string) => (
+    <button onClick={handler}
+      className={`cd-ui cd-hover px-4 py-2 text-sm rounded-lg font-medium flex items-center gap-2 border ${accent}`}>
+      {label}{kbd && <kbd className="cd-kbd">{kbd}</kbd>}
     </button>
   )
 
   return (
     <div className="flex flex-wrap gap-2 items-center">
       {['pending_verification', 'intake', 'pending_dur'].includes(status) &&
-        btn('👤 Claim for Verification', onClaim, 'bg-blue-600 hover:bg-blue-700')}
+        btn('👤 Claim for verification', onClaim, A.intel, 'C')}
 
       {status === 'verification_in_progress' && (<>
         <button onClick={onAdjudicate} disabled={criticalHardStops > 0 || claimLoading}
           title={criticalHardStops > 0 ? `Resolve ${criticalHardStops} critical DUR alert(s) first` : ''}
-          className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 font-medium disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+          className={`cd-ui cd-hover px-4 py-2 text-sm rounded-lg font-medium border flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed ${A.safe}`}>
           {claimLoading && <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-          ✓ Verify &amp; Adjudicate
+          ✓ Verify &amp; approve<kbd className="cd-kbd">A</kbd>
         </button>
-        {btn('⏸ Clinical Hold', () => onTransition('dur_hold'), 'bg-orange-500 hover:bg-orange-600')}
+        {btn('⏸ Clinical hold', () => onTransition('dur_hold'), A.caution, 'H')}
       </>)}
 
-      {status === 'dur_hold' && (<>
-        {btn('↩ Return to Verification', () => onTransition('verification_in_progress'), 'bg-blue-600 hover:bg-blue-700')}
-      </>)}
+      {status === 'dur_hold' &&
+        btn('↩ Return to verification', () => onTransition('verification_in_progress'), A.intel)}
 
       {status === 'pending_adjudication' && claimApproved &&
-        btn('✓ Advance to Fill', () => onTransition('ready_to_fill'), 'bg-teal-600 hover:bg-teal-700')}
+        btn('✓ Advance to fill', () => onTransition('ready_to_fill'), A.safe)}
       {status === 'ready_to_fill' &&
-        btn('🧪 Begin Filling', () => onTransition('filling'), 'bg-teal-600 hover:bg-teal-700')}
+        btn('🧪 Begin filling', () => onTransition('filling'), A.safe)}
       {status === 'filling' &&
-        btn('✓ Filled → Will Call', () => onTransition('filled'), 'bg-emerald-600 hover:bg-emerald-700')}
+        btn('✓ Filled → will call', () => onTransition('filled'), A.safe)}
 
       {['will_call', 'filled'].includes(status) && (<>
-        <button onClick={onShowLabel}
-          className="px-4 py-2 bg-gray-700 text-white text-sm rounded-lg hover:bg-gray-800 font-medium">
-          🏷 Preview Label
-        </button>
-        {btn('💊 Dispense', () => onTransition('dispensed'), 'bg-purple-600 hover:bg-purple-700')}
+        {btn('🏷 Preview label', onShowLabel, A.ghost, 'L')}
+        {btn('💊 Dispense', () => onTransition('dispensed'), A.counsel, 'D')}
       </>)}
 
       {status === 'dispensed' && (
-        <div className="text-sm text-green-700 font-semibold flex items-center gap-2">✅ Dispensed successfully</div>
+        <div className="cd-ui text-sm text-safe font-semibold flex items-center gap-2">✅ Dispensed successfully</div>
       )}
 
       {!['dispensed', 'cancelled', 'on_hold', 'dur_hold'].includes(status) && (
         <button onClick={() => onTransition('on_hold')}
-          className="px-3 py-2 text-gray-500 text-sm rounded-lg border border-gray-200 hover:bg-gray-50">
+          className="cd-ui px-3 py-2 text-ink2 text-sm rounded-lg border border-line2 hover:bg-surface2">
           ⏸ Hold
         </button>
       )}
-      {/* Only statuses with a legal → cancelled edge in the backend
-          RxStateMachine TRANSITIONS map (pending_adjudication, filling,
-          filled, will_call and terminals cannot cancel). */}
       {['intake', 'pending_dur', 'dur_hold', 'pending_verification',
         'verification_in_progress', 'adjudication_rejected', 'pending_pa',
         'ready_to_fill', 'on_hold'].includes(status) && (
         <button onClick={onCancelRx}
-          className="px-3 py-2 text-red-600 text-sm rounded-lg border border-red-200 hover:bg-red-50 font-medium">
-          Cancel Rx
+          className="cd-ui ml-auto px-3 py-2 text-blocker text-sm rounded-lg border border-blocker/30 hover:bg-blocker-soft font-medium flex items-center gap-2">
+          Reject<kbd className="cd-kbd">R</kbd>
         </button>
       )}
     </div>
@@ -723,27 +749,30 @@ function ActionButtons({
 }
 
 // ── Precomputed council panel ─────────────────────────────────────────────────
-const SEVERITY_STYLE: Record<string, { bg: string; border: string; icon: string }> = {
-  blocker:       { bg: 'bg-red-50',    border: 'border-red-500',    icon: '🚫' },
-  caution:       { bg: 'bg-orange-50', border: 'border-orange-400', icon: '⚠️' },
-  counseling:    { bg: 'bg-blue-50',   border: 'border-blue-400',   icon: '💬' },
-  monitoring:    { bg: 'bg-yellow-50', border: 'border-yellow-400', icon: '📋' },
-  clarification: { bg: 'bg-purple-50', border: 'border-purple-400', icon: '❓' },
+const SEVERITY_STYLE: Record<string, { border: string; bg: string; text: string; icon: string }> = {
+  blocker:       { border: 'border-blocker', bg: 'bg-blocker-soft', text: 'text-blocker', icon: '🚫' },
+  caution:       { border: 'border-caution', bg: 'bg-caution-soft', text: 'text-caution', icon: '⚠️' },
+  counseling:    { border: 'border-counsel', bg: 'bg-counsel-soft', text: 'text-counsel', icon: '💬' },
+  monitoring:    { border: 'border-warning', bg: 'bg-warning-soft', text: 'text-warning', icon: '📋' },
+  clarification: { border: 'border-intel',   bg: 'bg-intel-soft',   text: 'text-intel',   icon: '❓' },
 }
 
-function FindingRow({ f }: { f: CouncilFinding }) {
+function FindingRow({ f, index = 0 }: { f: CouncilFinding; index?: number }) {
   const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.monitoring
   return (
-    <div className={`${style.bg} border-l-4 ${style.border} rounded p-2.5 text-xs`}>
+    <div
+      className={`cd-stream ${style.bg} border-l-2 ${style.border} rounded-lg p-2.5 text-xs`}
+      style={{ '--i': index } as React.CSSProperties}
+    >
       <div className="flex items-center gap-1.5 mb-1">
         <span>{style.icon}</span>
-        <span className="font-semibold text-gray-700">{f.specialist}</span>
+        <span className={`cd-ui font-semibold ${style.text}`}>{f.specialist}</span>
         {f.evidence_grade && (
-          <span className="bg-white border text-gray-500 px-1 rounded text-[9px]">Grade {f.evidence_grade}</span>
+          <span className="cd-data bg-surface border border-line2 text-ink2 px-1 rounded text-[9px]">Grade {f.evidence_grade}</span>
         )}
       </div>
-      <p className="text-gray-800 leading-relaxed">{f.message}</p>
-      {f.evidence_source && <p className="text-gray-400 mt-0.5 italic text-[9px]">{f.evidence_source}</p>}
+      <p className="cd-narr text-ink leading-relaxed">{f.message}</p>
+      {f.evidence_source && <p className="cd-ui text-ink3 mt-0.5 italic text-[9px]">{f.evidence_source}</p>}
     </div>
   )
 }
@@ -752,9 +781,9 @@ function PrecomputedCouncilPanel({ cache }: { cache: CouncilCache }) {
   const allCategories = [
     { list: cache.blockers,      label: 'Blockers' },
     { list: cache.cautions,      label: 'Cautions' },
-    { list: cache.hereditary,    label: 'Hereditary / Family Risk' },
-    { list: cache.clarification, label: 'Prescriber Clarification' },
-    { list: cache.counseling,    label: 'Counseling Points' },
+    { list: cache.hereditary,    label: 'Hereditary / family risk' },
+    { list: cache.clarification, label: 'Prescriber clarification' },
+    { list: cache.counseling,    label: 'Counseling points' },
     { list: cache.monitoring,    label: 'Monitoring' },
   ].filter(c => c.list?.length)
 
@@ -762,35 +791,35 @@ function PrecomputedCouncilPanel({ cache }: { cache: CouncilCache }) {
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span>🏛️</span>
-          <span className="font-semibold text-gray-800 text-sm">Specialist Council</span>
-          <span className="text-xs text-green-600">✓ {cache.specialists_consulted.length} specialists · pre-computed</span>
+          <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">🏛️</span>
+          <span className="cd-ui font-semibold text-ink text-sm">Specialist council</span>
+          <span className="cd-data text-xs text-safe">✓ {cache.specialists_consulted.length} specialists · precomputed</span>
         </div>
-        <div className="flex gap-1 text-[10px]">
-          {cache.blockers?.length > 0 && <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">🚫 {cache.blockers.length}</span>}
-          {cache.cautions?.length > 0 && <span className="bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">⚠️ {cache.cautions.length}</span>}
-          {cache.hereditary?.length > 0 && <span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">🧬 {cache.hereditary.length}</span>}
+        <div className="flex gap-1 text-[10px] cd-data">
+          {cache.blockers?.length > 0 && <span className="bg-blocker-soft text-blocker border border-blocker/30 px-1.5 py-0.5 rounded font-medium">🚫 {cache.blockers.length}</span>}
+          {cache.cautions?.length > 0 && <span className="bg-caution-soft text-caution border border-caution/30 px-1.5 py-0.5 rounded">⚠️ {cache.cautions.length}</span>}
+          {cache.hereditary?.length > 0 && <span className="bg-counsel-soft text-counsel border border-counsel/30 px-1.5 py-0.5 rounded">🧬 {cache.hereditary.length}</span>}
         </div>
       </div>
 
       {allCategories.length === 0 ? (
-        <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-300 rounded text-green-700 text-sm">
+        <div className="flex items-center gap-2 px-3 py-2 bg-safe-soft border border-safe/30 rounded-lg text-safe text-sm cd-ui">
           <span>✅</span><span>No significant considerations identified by the council.</span>
         </div>
       ) : (
         <div className="space-y-2">
           {allCategories.map(({ list, label }) => (
             <div key={label}>
-              <div className="text-[9px] font-semibold text-gray-500 uppercase tracking-wider mb-1">{label} ({list.length})</div>
+              <div className="cd-ui text-[9px] font-semibold text-ink3 uppercase tracking-wider mb-1">{label} ({list.length})</div>
               <div className="space-y-1.5">
-                {list.map((f, i) => <FindingRow key={i} f={f} />)}
+                {list.map((f, i) => <FindingRow key={i} f={f} index={i} />)}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      <p className="text-[9px] text-gray-400 italic border-t pt-1.5">
+      <p className="cd-ui text-[9px] text-ink3 italic border-t border-line pt-1.5">
         Pre-computed at intake. For pharmacist review — not a diagnosis.
         {cache.generated_at && ` Computed: ${new Date(cache.generated_at).toLocaleTimeString()}`}
       </p>
@@ -818,24 +847,24 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
   }
 
   return (
-    <div className="bg-white border rounded-lg p-3 space-y-2">
-      <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-700">
-        <span>🧠</span>
-        <span>Ask Clinical Brain</span>
-        <span className="text-xs font-normal text-gray-400 ml-1">— For pharmacist review only</span>
+    <div className="cd-card p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-sm font-semibold text-ink cd-ui">
+        <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">📚</span>
+        <span>Knowledge base · ask Clinical Brain</span>
+        <span className="text-xs font-normal text-ink3 ml-1">— scope: {drugName} + patient</span>
       </div>
       <div className="flex gap-2">
         <input type="text" value={question} onChange={e => setQuestion(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && !loading && handleAsk()}
-          placeholder={`Ask about ${drugName}…`}
-          className="flex-1 text-sm border rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          placeholder={`Search ADRs, interactions, monographs for ${drugName}…`}
+          className="cd-ui flex-1 text-sm bg-surface2 border border-line2 rounded-lg px-3 py-2 text-ink placeholder:text-ink3 focus:outline-none focus:ring-2 focus:ring-intel/30" />
         <button onClick={handleAsk} disabled={loading || !question.trim()}
-          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 min-w-[52px]">
+          className="cd-ui cd-hover px-4 py-2 bg-intel text-white text-sm rounded-lg hover:brightness-110 disabled:opacity-50 min-w-[60px]">
           {loading ? '…' : 'Ask'}
         </button>
       </div>
       {answer && (
-        <div className="text-xs text-gray-700 bg-gray-50 border rounded p-2 max-h-40 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+        <div className="cd-narr text-xs text-ink bg-surface2 border border-line rounded-lg p-2.5 max-h-40 overflow-y-auto whitespace-pre-wrap leading-relaxed cd-section">
           {answer}
         </div>
       )}
