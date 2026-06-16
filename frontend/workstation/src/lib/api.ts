@@ -111,6 +111,23 @@ export const inventoryApi = {
   createOrder: (data: PurchaseOrderData) => apiClient.post('/inventory/orders', data),
 }
 
+// ── Depot → shelf dual-verification replenishment ─────────────────────────
+export const depotApi = {
+  listShelves: () => apiClient.get('/inventory/shelves'),
+  createSession: (data: { shelf_id: string; ndc11s: string[] }) =>
+    apiClient.post('/inventory/replenishment/session', data),
+  getSession: (sid: string) => apiClient.get(`/inventory/replenishment/${sid}`),
+  depotCollect: (sid: string, data: Record<string, unknown>) =>
+    apiClient.post(`/inventory/replenishment/${sid}/depot-collect`, data),
+  shelfVerify: (data: Record<string, unknown>) =>
+    apiClient.post('/inventory/ai/shelf-verify', data),
+  shelfPlace: (sid: string, data: Record<string, unknown>) =>
+    apiClient.post(`/inventory/replenishment/${sid}/shelf-place`, data),
+  listSurveillance: () => apiClient.get('/inventory/surveillance/events'),
+  createSurveillance: (data: Record<string, unknown>) =>
+    apiClient.post('/inventory/surveillance/events', data),
+}
+
 // ── Clinical ──────────────────────────────────────────────────────────────
 export const clinicalApi = {
   reviewRx: (prescriptionId: string, patientId: string, pharmacyId: string) =>
