@@ -23,6 +23,7 @@ import PatientAdherence      from './dashboards/PatientAdherence'
 import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
+import DepotRestocking       from './dashboards/DepotRestocking'
 import ClinicalAssistant     from './dashboards/ClinicalAssistant'
 import ADRDetective          from './dashboards/ADRDetective'
 import CounsellingGenerator  from './dashboards/CounsellingGenerator'
@@ -53,6 +54,7 @@ const SECTIONS = [
   { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
   { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
   { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
+  { id:'depot',      key:'t', label:'Depot Restocking',   icon:Package,     description:'Dual-verify transfer', shortcut:'Alt+T' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -77,6 +79,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   audio:     AudioIntelligence,
   'ai-hub':  AIIntelligenceHub,
   knowledge: KnowledgeManager,
+  depot:     DepotRestocking,
 }
 
 interface Props {

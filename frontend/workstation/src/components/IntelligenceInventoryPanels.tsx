@@ -259,3 +259,167 @@ export function SupplyRiskPanel() {
     </div>
   )
 }
+
+// ─── Turnover / Dead-Stock types ────────────────────────────────────────────
+
+interface TurnoverItem {
+  ndc11: string; on_hand: number; unit_cost: number | null
+  turnover: number; movement_class: string; value: number
+}
+interface TurnoverResult {
+  health_score: number; total_value: number; dead_stock_value: number
+  by_class: Record<string, { count: number; value: number }>
+  dead_stock: TurnoverItem[]; fast_movers: TurnoverItem[]; slow_movers: TurnoverItem[]
+}
+
+const DEMO_TURNOVER: TurnoverResult = {
+  health_score: 73, total_value: 18420.5, dead_stock_value: 2960.0,
+  by_class: { fast: { count: 22, value: 9120.0 }, normal: { count: 41, value: 5180.5 },
+              slow: { count: 14, value: 1160.0 }, dead: { count: 6, value: 2960.0 },
+              out: { count: 3, value: 0 } },
+  dead_stock: [
+    { ndc11:'00781100101', on_hand:60, unit_cost:1.95, turnover:0, movement_class:'dead', value:117.0 },
+    { ndc11:'00185064001', on_hand:90, unit_cost:0.18, turnover:0, movement_class:'dead', value:16.2 },
+    { ndc11:'00054852199', on_hand:40, unit_cost:12.4, turnover:0.3, movement_class:'dead', value:496.0 },
+  ],
+  fast_movers: [], slow_movers: [],
+}
+
+const CLASS_COLOR: Record<string, string> = {
+  fast:   'text-emerald-400 bg-emerald-950/40 border-emerald-900',
+  normal: 'text-sky-400 bg-sky-950/40 border-sky-900',
+  slow:   'text-amber-400 bg-amber-950/40 border-amber-900',
+  dead:   'text-red-400 bg-red-950/40 border-red-900',
+  out:    'text-slate-400 bg-slate-800/60 border-slate-700',
+}
+
+// ─── Turnover / Dead-Stock Panel ────────────────────────────────────────────
+
+export function TurnoverPanel() {
+  const { data } = useQuery({
+    queryKey: ['intel-turnover'],
+    queryFn:  () => apiClient.get('/intelligence/inventory/turnover')
+                    .then(r => r.data as TurnoverResult),
+    refetchInterval: 300_000,
+  })
+  const d = data ?? DEMO_TURNOVER
+  const score = d.health_score
+  const scoreColor = score >= 80 ? 'text-emerald-400' : score >= 50 ? 'text-amber-400' : 'text-red-400'
+  const order = ['fast', 'normal', 'slow', 'dead', 'out']
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-slate-200">📊 Turnover &amp; Dead Stock</h2>
+        <div className="text-right">
+          <div className={`text-2xl font-bold ${scoreColor}`}>{score}<span className="text-xs text-slate-500">/100</span></div>
+          <div className="text-[10px] text-slate-500">inventory health</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div className="rounded-lg bg-slate-800/50 px-3 py-2">
+          <div className="text-[10px] text-slate-500 uppercase tracking-wider">Capital on hand</div>
+          <div className="text-sm font-semibold text-slate-200">${d.total_value.toFixed(2)}</div>
+        </div>
+        <div className="rounded-lg bg-red-950/30 border border-red-900/50 px-3 py-2">
+          <div className="text-[10px] text-red-400/80 uppercase tracking-wider">Dead-stock capital</div>
+          <div className="text-sm font-semibold text-red-300">${d.dead_stock_value.toFixed(2)}</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {order.filter(k => d.by_class[k]).map(k => (
+          <span key={k} className={`text-[10px] px-2 py-0.5 rounded-full border ${CLASS_COLOR[k]}`}>
+            {k} · {d.by_class[k].count}
+          </span>
+        ))}
+      </div>
+
+      <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Dead stock — capital to recover</p>
+        {d.dead_stock.length === 0 && (
+          <p className="text-xs text-slate-500 py-3 text-center">No dead stock ✓</p>
+        )}
+        {d.dead_stock.map(it => (
+          <div key={it.ndc11} className="flex items-center justify-between rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-1.5">
+            <span className="font-mono text-[11px] text-slate-300">{it.ndc11}</span>
+            <span className="text-[11px] text-slate-400">{it.on_hand}u · {it.turnover.toFixed(1)} turns/yr</span>
+            <span className="text-[11px] font-semibold text-red-300">${it.value.toFixed(2)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Movements audit types ──────────────────────────────────────────────────
+
+interface Movement {
+  id: string; ndc11: string; movement_type: string; reason: string
+  quantity_before: number; quantity_after: number; quantity_delta: number
+  reference: string | null; created_at: string | null
+}
+
+const DEMO_MOVEMENTS: Movement[] = [
+  { id:'m1', ndc11:'00071015423', movement_type:'ADJUSTMENT', reason:'cycle count correction',
+    quantity_before:240, quantity_after:236, quantity_delta:-4, reference:null, created_at:'2026-06-16T09:12:00Z' },
+  { id:'m2', ndc11:'00781100101', movement_type:'DAMAGE', reason:'broken vials',
+    quantity_before:60, quantity_after:54, quantity_delta:-6, reference:null, created_at:'2026-06-15T16:40:00Z' },
+  { id:'m3', ndc11:'00185064001', movement_type:'RETURN', reason:'overstock to wholesaler',
+    quantity_before:90, quantity_after:60, quantity_delta:-30, reference:'RMA-4471', created_at:'2026-06-15T11:05:00Z' },
+  { id:'m4', ndc11:'00054852199', movement_type:'RECALL_REMOVAL', reason:'FDA recall lot pull',
+    quantity_before:40, quantity_after:0, quantity_delta:-40, reference:'RECALL-2026-118', created_at:'2026-06-14T08:30:00Z' },
+]
+
+const MOVE_COLOR: Record<string, string> = {
+  ADJUSTMENT:     'bg-slate-800 text-slate-300',
+  CORRECTION:     'bg-slate-800 text-slate-300',
+  RETURN:         'bg-blue-900/50 text-blue-300',
+  DAMAGE:         'bg-red-900/50 text-red-300',
+  EXPIRY_REMOVAL: 'bg-amber-900/50 text-amber-300',
+  RECALL_REMOVAL: 'bg-purple-900/50 text-purple-300',
+}
+
+// ─── Movements Audit Panel ──────────────────────────────────────────────────
+
+export function MovementsPanel() {
+  const { data } = useQuery({
+    queryKey: ['inventory-movements'],
+    queryFn:  () => apiClient.get('/inventory/movements?limit=20')
+                    .then(r => (r.data?.movements ?? []) as Movement[]),
+    refetchInterval: 120_000,
+  })
+  const rows = (data && data.length > 0) ? data : DEMO_MOVEMENTS
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-slate-200">📋 Movements &amp; Adjustments</h2>
+        <span className="text-[10px] text-slate-500">audit trail · last {rows.length}</span>
+      </div>
+      <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+        {rows.map(m => (
+          <div key={m.id} className="rounded-lg border border-slate-800 bg-slate-800/30 px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${MOVE_COLOR[m.movement_type] || 'bg-slate-800 text-slate-400'}`}>
+                {m.movement_type.replace('_', ' ')}
+              </span>
+              <span className="font-mono text-[11px] text-slate-400">{m.ndc11}</span>
+              <span className={`text-[11px] font-semibold ${m.quantity_delta < 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                {m.quantity_delta > 0 ? '+' : ''}{m.quantity_delta}
+              </span>
+            </div>
+            <div className="flex items-center justify-between mt-1 text-[10px] text-slate-500">
+              <span className="truncate">{m.reason}{m.reference ? ` · ${m.reference}` : ''}</span>
+              <span className="whitespace-nowrap ml-2">
+                {m.quantity_before}→{m.quantity_after}
+                {m.created_at ? ` · ${new Date(m.created_at).toLocaleDateString()}` : ''}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}

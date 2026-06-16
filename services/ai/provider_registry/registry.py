@@ -20,15 +20,25 @@ PHI ROUTING RULE:
   Maximum privacy → Ollama local (never leaves the building)
 """
 import asyncio
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 logger = logging.getLogger(__name__)
+
+# Owner-configurable AI settings persist here (preferred provider + API keys),
+# so the choice survives restarts. Single-pharmacy pilot scope; for production,
+# back this with a secrets manager / encrypted column.
+_AI_SETTINGS_PATH = Path(os.environ.get(
+    "PHARMPILOT_AI_SETTINGS",
+    str(Path.home() / ".pharmpilot" / "ai_provider_settings.json"),
+))
 
 
 class AITask(str, Enum):
@@ -234,6 +244,80 @@ class AIProviderRegistry:
         self._latency_tracker: dict[str, list[float]] = {}  # provider → recent latencies
         self._invocation_log: list[AIInvocationRecord] = []
         self._custom_routing: dict[str, dict[AITask, list[str]]] = {}  # pharmacy_id → overrides
+        # Owner-configured global preference: when set (e.g. "google" for Gemini),
+        # this provider is tried first for EVERY task (PHI-permitting).
+        self.preferred_provider: Optional[str] = None
+        self._runtime_keys: dict[str, str] = {}     # provider → api key set via admin UI
+        self._load_settings()
+
+    # ── Owner-configurable settings (preferred provider + API keys) ───────────
+
+    def _load_settings(self) -> None:
+        try:
+            if not _AI_SETTINGS_PATH.exists():
+                return
+            data = json.loads(_AI_SETTINGS_PATH.read_text())
+            pref = data.get("preferred_provider")
+            if pref in self.PROVIDERS:
+                self.preferred_provider = pref
+            for provider, key in (data.get("api_keys") or {}).items():
+                if provider in self.PROVIDERS and key:
+                    self._runtime_keys[provider] = key
+                    env = self.PROVIDERS[provider].api_key_env
+                    if env:
+                        os.environ[env] = key  # make existing env-based reads work
+        except Exception as exc:  # pragma: no cover
+            logger.warning("[registry] could not load AI settings (%s)", exc)
+
+    def _save_settings(self) -> None:
+        try:
+            _AI_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _AI_SETTINGS_PATH.write_text(json.dumps({
+                "preferred_provider": self.preferred_provider,
+                "api_keys": self._runtime_keys,
+            }, indent=2))
+            try:
+                _AI_SETTINGS_PATH.chmod(0o600)  # keys at rest — restrict perms
+            except OSError:
+                pass
+        except Exception as exc:  # pragma: no cover
+            logger.warning("[registry] could not save AI settings (%s)", exc)
+
+    def set_preferred_provider(self, provider: Optional[str]) -> None:
+        """Set the global preferred provider (None clears it). Persisted."""
+        if provider is not None and provider not in self.PROVIDERS:
+            raise ValueError(f"Unknown provider: {provider}")
+        self.preferred_provider = provider
+        self._save_settings()
+
+    def set_api_key(self, provider: str, api_key: str) -> None:
+        """Store an API key for a provider (used immediately + persisted)."""
+        if provider not in self.PROVIDERS:
+            raise ValueError(f"Unknown provider: {provider}")
+        self._runtime_keys[provider] = api_key
+        env = self.PROVIDERS[provider].api_key_env
+        if env:
+            os.environ[env] = api_key
+        self._save_settings()
+
+    def get_public_config(self) -> dict:
+        """Owner-facing config — never returns raw keys (masked presence only)."""
+        return {
+            "preferred_provider": self.preferred_provider,
+            "providers": [
+                {
+                    "provider_id": pid,
+                    "name": c.name,
+                    "default_model": c.default_model,
+                    "has_baa": c.has_baa,
+                    "has_api_key": bool(self._runtime_keys.get(pid) or (c.api_key_env and os.environ.get(c.api_key_env))),
+                    "is_active": self._is_provider_active(pid),
+                    "is_preferred": pid == self.preferred_provider,
+                    "requires_key": bool(c.api_key_env),
+                }
+                for pid, c in self.PROVIDERS.items()
+            ],
+        }
 
     def get_provider_chain(
         self,
@@ -268,6 +352,16 @@ class AIProviderRegistry:
 
         # Filter out inactive providers
         chain = [p for p in chain if self._is_provider_active(p)]
+
+        # Owner-preferred provider (e.g. Gemini) goes FIRST for every task,
+        # as long as it's active and PHI rules allow it (it must be BAA for
+        # PHI-sensitive tasks — Google/Gemini is BAA-covered, so it qualifies).
+        pref = self.preferred_provider
+        if pref and self._is_provider_active(pref):
+            pref_ok = self.PROVIDERS[pref].has_baa if phi in (
+                PHISensitivity.HIGH, PHISensitivity.MEDIUM) else True
+            if pref_ok:
+                chain = [pref] + [p for p in chain if p != pref]
 
         # Fallback to anthropic (always BAA, highest quality)
         if not chain:

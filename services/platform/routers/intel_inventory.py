@@ -11,10 +11,16 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+
 from services.platform.database import get_db
 from services.platform.auth import get_current_user
 from services.ai.intelligence_core import Tier, outbox
 from services.ai.intelligence_services import expiry_prevention, supply_warning
+from services.core.inventory import stock_intelligence
+from shared.models.inventory import StockLevel, InventoryLot
 
 router = APIRouter(tags=["intelligence: inventory"])
 
@@ -79,3 +85,41 @@ async def queue_buffer_order(
         "submitted_now":  report.succeeded > 0,
         "still_offline":  report.still_offline,
     }
+
+
+@router.get("/turnover")
+async def turnover(
+    db:      AsyncSession = Depends(get_db),
+    current: dict         = Depends(get_current_user),
+):
+    """Turnover / dead-stock / slow-fast-mover scores + inventory health.
+    Deterministic analytics over stock_levels (+ lot unit cost). Local-complete —
+    complements expiry-risk and supply-risk with the capital-efficiency view."""
+    pharmacy_id = current.get("pharmacy_id") or ""
+    rows = (await db.execute(
+        select(StockLevel).where(StockLevel.pharmacy_id == pharmacy_id)
+    )).scalars().all()
+
+    # Representative unit cost per NDC (latest non-null lot cost).
+    cost: dict[str, float] = {}
+    lot_rows = (await db.execute(
+        select(InventoryLot.ndc11, InventoryLot.unit_cost, InventoryLot.received_at)
+        .where(InventoryLot.pharmacy_id == pharmacy_id)
+        .order_by(InventoryLot.received_at.asc())
+    )).all()
+    for ndc, uc, _ in lot_rows:
+        if uc is not None:
+            cost[ndc] = float(uc)  # last write wins → most recent received
+
+    now = datetime.now(timezone.utc)
+    items = []
+    for s in rows:
+        ld = s.last_dispensed_at
+        items.append({
+            "ndc11": s.ndc11,
+            "on_hand": float(s.quantity_on_hand or 0.0),
+            "unit_cost": cost.get(s.ndc11),
+            "avg_daily_demand": float(s.avg_daily_demand or 0.0),
+            "last_dispensed_days": (now - ld).days if ld else None,
+        })
+    return stock_intelligence.summarize(items)

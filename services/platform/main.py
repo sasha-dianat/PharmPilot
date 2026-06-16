@@ -28,6 +28,10 @@ from shared.models.claims import ClaimTransaction, ERA835Record, DIRFeeAdjustmen
 from shared.models.inventory import (  # noqa: F401
     DrugProduct, InventoryLot, StockLevel, PurchaseOrder, PurchaseOrderLine, ReceivingRecord
 )
+from shared.models.depot import (  # noqa: F401
+    PharmacyShelf, ShelfPlacement, ReplenishmentSession,
+    ShelfTransferEvent, SurveillanceEvent, ShiftHandoverReport,
+)
 from shared.models.biometric import BiometricIdentity, PharmacyVisit, SecurityEvent  # noqa: F401
 from shared.models.audio import AudioTranscript, ProfileEnrichmentAction  # noqa: F401
 
@@ -90,6 +94,7 @@ def create_app() -> FastAPI:
         intel_analytics, intel_docs, intel_label,
         intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx, physician_message,
         lab_safety, med_reconciliation, second_brain, drug_intelligence,
+        depot_transfer, ai_settings, inventory_movements,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -135,6 +140,9 @@ def create_app() -> FastAPI:
     app.include_router(med_reconciliation.router, prefix="/api/v1/med-reconciliation",    tags=["medication reconciliation"])
     app.include_router(second_brain.router,    prefix="/api/v1/second-brain",             tags=["second brain"])
     app.include_router(drug_intelligence.router, prefix="/api/v1/drug-intelligence",      tags=["drug intelligence"])
+    app.include_router(depot_transfer.router,    prefix="/api/v1/inventory",              tags=["depot transfer"])
+    app.include_router(inventory_movements.router, prefix="/api/v1/inventory",            tags=["inventory movements"])
+    app.include_router(ai_settings.router,       prefix="/api/v1/ai-settings",            tags=["ai settings"])
 
     @app.get("/health")
     async def health_check():

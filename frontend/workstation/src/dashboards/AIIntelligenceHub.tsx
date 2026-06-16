@@ -11,6 +11,7 @@ import {
 } from 'recharts'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import AIProviderSettings from './AIProviderSettings'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface ProviderStatus {
@@ -389,6 +390,9 @@ export default function AIIntelligenceHub() {
           Multi-provider AI orchestration · Total today: ${(providersData?.total_cost_today || 0).toFixed(4)}
         </p>
       </div>
+
+      {/* Owner AI provider configuration (change provider / set API keys) */}
+      <AIProviderSettings />
 
       {/* Provider Grid */}
       <div>

@@ -46,6 +46,14 @@ class DrugProduct(AuditedBase):
     discontinued: Mapped[bool] = mapped_column(Boolean, default=False)
     drug_db_metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
 
+    # Depot→shelf verification (migration 0012, additive)
+    storage_condition: Mapped[str | None] = mapped_column(String(20), nullable=True)  # ROOM_TEMP|REFRIGERATED|FROZEN|LIGHT_PROTECTED
+    high_risk_flag: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    lasa_group: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    primary_shelf_id: Mapped[UUID | None] = mapped_column(ForeignKey("pharmacy_shelves.id"), nullable=True)
+    blisters_per_box: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_per_blister: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
 
 class InventoryLot(AuditedBase):
     """A specific lot of a drug product — tracks expiry and quantity per lot."""
@@ -77,6 +85,12 @@ class InventoryLot(AuditedBase):
     # DSCSA serialization
     serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     transaction_history: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Depot→shelf verification (migration 0012, additive)
+    split_pack_open: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    split_pack_remaining_blisters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cold_chain_breach: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    cold_chain_breach_log: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     drug: Mapped["DrugProduct"] = relationship()
 
@@ -157,3 +171,30 @@ class ReceivingRecord(AuditedBase):
     invoice_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     discrepancies: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # [{ndc, ordered_qty, received_qty, lot, expiry}]
+
+
+class InventoryMovement(AuditedBase):
+    """Append-only audit ledger for non-dispense stock changes — manual count
+    adjustments, wholesaler/patient returns, damage/expiry write-offs, recall
+    removals. One row per change, recording who (created_by), when (created_at),
+    where (inventory_lot_id), why (movement_type + reason), and the before/after
+    quantities. Never updated or deleted — corrections are new offsetting rows.
+    """
+    __tablename__ = "inventory_movements"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    ndc11: Mapped[str] = mapped_column(String(11), nullable=False, index=True)
+    inventory_lot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("inventory_lots.id"), nullable=True, index=True
+    )
+
+    # ADJUSTMENT | RETURN | DAMAGE | EXPIRY_REMOVAL | RECALL_REMOVAL | CORRECTION
+    movement_type: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    quantity_before: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+    quantity_after: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+    quantity_delta: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+
+    reference: Mapped[str | None] = mapped_column(String(120), nullable=True)  # RMA / PO / recall ref
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
