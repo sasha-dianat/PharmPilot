@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 QDRANT_COLLECTION = "pharmpilot_clinical_knowledge"
 EMBEDDING_DIM = 768          # PubMedBERT / BioBERT dimension
-MEDICAL_EMBEDDING_MODEL = "pritamdeka/PubMedBERT-mnli-snli-scinli-scitail-mednli-stsb"
-# Alternative: "neuml/pubmedbert-base-embeddings" (lighter, faster)
+# Must match the model used by scripts/seed_knowledge_base.py (same vector space),
+# else query embeddings won't match ingested vectors. neuml = lighter/faster, 768-dim.
+MEDICAL_EMBEDDING_MODEL = "neuml/pubmedbert-base-embeddings"
 
 
 @dataclass
@@ -41,7 +42,7 @@ class ClinicalVectorStore:
 
     def __init__(
         self,
-        qdrant_url: str = "http://localhost:6333",
+        qdrant_url: str = "http://localhost:6334",  # project standard port (see dev.sh)
         api_key: Optional[str] = None,
         collection: str = QDRANT_COLLECTION,
     ):

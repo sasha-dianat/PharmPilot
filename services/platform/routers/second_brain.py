@@ -78,7 +78,7 @@ def _get_vector_store() -> ClinicalVectorStore:
         return knowledge_vector_store()
     except Exception:
         return ClinicalVectorStore(
-            qdrant_url=getattr(settings, "QDRANT_URL", "http://localhost:6333"),
+            qdrant_url=getattr(settings, "QDRANT_URL", "http://localhost:6334"),
         )
 
 
