@@ -157,7 +157,7 @@ async def _run_ingest_job(
 
 def _get_vector_store() -> ClinicalVectorStore:
     return ClinicalVectorStore(
-        qdrant_url=getattr(settings, "QDRANT_URL", "http://localhost:6333"),
+        qdrant_url=getattr(settings, "QDRANT_URL", "http://localhost:6334"),
     )
 
 
