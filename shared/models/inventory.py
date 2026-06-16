@@ -171,3 +171,30 @@ class ReceivingRecord(AuditedBase):
     invoice_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     discrepancies: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # [{ndc, ordered_qty, received_qty, lot, expiry}]
+
+
+class InventoryMovement(AuditedBase):
+    """Append-only audit ledger for non-dispense stock changes — manual count
+    adjustments, wholesaler/patient returns, damage/expiry write-offs, recall
+    removals. One row per change, recording who (created_by), when (created_at),
+    where (inventory_lot_id), why (movement_type + reason), and the before/after
+    quantities. Never updated or deleted — corrections are new offsetting rows.
+    """
+    __tablename__ = "inventory_movements"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    ndc11: Mapped[str] = mapped_column(String(11), nullable=False, index=True)
+    inventory_lot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("inventory_lots.id"), nullable=True, index=True
+    )
+
+    # ADJUSTMENT | RETURN | DAMAGE | EXPIRY_REMOVAL | RECALL_REMOVAL | CORRECTION
+    movement_type: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    quantity_before: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+    quantity_after: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+    quantity_delta: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+
+    reference: Mapped[str | None] = mapped_column(String(120), nullable=True)  # RMA / PO / recall ref
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
