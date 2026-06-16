@@ -36,7 +36,7 @@ DB_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://pharmpilot:pharmpilot_dev@127.0.0.1:5433/pharmpilot",
 )
-PHARMACY_NAME = "PharmPilot Demo Pharmacy"
+PHARMACY_NAME = "PharmPilot Demo%"  # ILIKE — matches "PharmPilot Demo" / "… Pharmacy"
 
 # (ndc11, brand, generic, strength, form, storage, unit_cost, on_hand,
 #  avg_daily_demand, last_dispensed_days_ago, reorder_point, safety_stock,
@@ -95,7 +95,8 @@ async def seed(reset: bool = False) -> None:
 
     async with Session() as db:
         row = (await db.execute(
-            text("SELECT id FROM pharmacies WHERE name = :n LIMIT 1"), {"n": PHARMACY_NAME},
+            text("SELECT id FROM pharmacies WHERE name ILIKE :n ORDER BY created_at LIMIT 1"),
+            {"n": PHARMACY_NAME},
         )).one_or_none()
         if not row:
             print("ERROR: Demo pharmacy not found. Run scripts/onboard_pharmacy.py first.")
