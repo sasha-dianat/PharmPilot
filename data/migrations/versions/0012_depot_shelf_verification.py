@@ -1,22 +1,20 @@
 """depot shelf dual-verification
 
 Revision ID: 0012
-Revises: 0010
+Revises: 0011
 Create Date: 2026-06-14
 
-NOTE on lineage: this feature branch (feat/depot-shelf-verification) is cut from
-master, whose alembic head is 0010. The 0011 (prescriber medical_council_id)
-migration lives on a sibling branch (feat/frontend-mission-control) and is NOT
-an ancestor here, so this migration chains to 0010. When both branches land on
-master they will form two heads off 0010 — resolve with a one-line
-`alembic merge` migration at that time (standard multi-head resolution).
+LINEAGE: originally cut from master at head 0010 (on a branch where the sibling
+0011 — prescriber medical_council_id — was not an ancestor). On consolidation,
+0011 was merged into master first, so this migration is re-pointed to chain 0011,
+giving a clean linear history (0010 → 0011 → 0012 → 0013) with a single head.
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "0012"
-down_revision = "0010"
+down_revision = "0011"
 branch_labels = None
 depends_on = None
 
