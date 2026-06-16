@@ -106,11 +106,12 @@ function BiometricArrivalBanner() {
 // VerificationCenter and PatientPanel are imported from their own files above
 
 function WorkstationApp() {
-  const { selectedRx, wsConnected } = useRxQueueStore()
+  const { selectedRx, wsConnected, queue } = useRxQueueStore()
   const pharmacyId = localStorage.getItem('pharmacy_id') || 'demo-pharmacy-id'
   const userRole   = localStorage.getItem('user_role')   || ''
   const { connect } = useRxQueueWebSocket(pharmacyId)
   const [showDashboard, setShowDashboard] = useState(false)
+  const [now, setNow] = useState(() => new Date())
   useEffect(() => {
     const cleanup = connect()
     rxApi.queue().then((response) => {
@@ -122,6 +123,12 @@ function WorkstationApp() {
     })
     return cleanup
   }, [])
+  // Live clock for the workstation status bar
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const activeCount = queue.filter(rx => !['dispensed', 'cancelled', 'returned_to_stock'].includes(rx.status)).length
   // Global abbreviation tooltip scanner — runs on every render/route change
   useAbbreviationScanner()
 
@@ -135,47 +142,50 @@ function WorkstationApp() {
     return <DashboardShell onExitDashboard={() => setShowDashboard(false)} />
   }
   return (
-    <div className="h-screen bg-gray-100 flex flex-col overflow-hidden">
+    <div className="cd-scope h-screen flex flex-col overflow-hidden">
       {/* Phase 33 — offline indicator always visible when connection lost */}
       <OfflineIndicator />
-      <div className="bg-white border-b px-4 py-2 flex items-center justify-between">
+      <div className="bg-surface border-b border-line px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="font-bold text-blue-700 text-lg">💊 PharmPilot</span>
-          <span className="text-gray-300">|</span>
-          <span className="text-sm text-gray-600">Dispensing Workstation</span>
+          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-intel text-white text-sm font-semibold">℞</span>
+          <span className="cd-ui font-semibold text-ink text-base">PharmPilot</span>
+          <span className="text-line2">|</span>
+          <span className="cd-ui text-sm text-ink2">Dispensing Workstation</span>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          <span className="cd-data text-xs text-ink3 tabular-nums">{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+          <span className="cd-inset px-2 py-0.5 text-xs text-ink2"><b className="cd-data text-ink">{activeCount}</b> in queue</span>
           {userRole && (
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${ROLE_COLORS[userRole] || 'bg-gray-100 text-gray-600'}`}>
+            <span className={`text-xs px-2 py-0.5 rounded-md font-medium ${ROLE_COLORS[userRole] || 'bg-surface2 text-ink2'}`}>
               {ROLE_LABELS[userRole] || userRole}
             </span>
           )}
-          <span className={`flex items-center gap-1 ${wsConnected ? 'text-green-600' : 'text-red-500'}`}>
-            <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+          <span className={`flex items-center gap-1.5 text-xs ${wsConnected ? 'text-safe' : 'text-blocker'}`}>
+            <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-safe' : 'bg-blocker animate-pulse'}`} />
             {wsConnected ? 'Live' : 'Reconnecting…'}
           </span>
           <button
             onClick={() => setShowDashboard(true)}
-            className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-500 font-medium"
+            className="cd-hover text-xs bg-intel text-white px-3 py-1.5 rounded-lg hover:brightness-110 font-medium flex items-center gap-1.5"
           >
             📊 Dashboards
           </button>
           <button
             onClick={handleLogout}
-            className="text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded hover:bg-gray-100"
+            className="text-xs text-ink3 hover:text-blocker px-2 py-1 rounded-lg hover:bg-surface2"
           >
             Sign out
           </button>
         </div>
       </div>
       <div className="flex-1 flex overflow-hidden">
-        <div className="w-72 flex-shrink-0 bg-white border-r overflow-hidden"><RxQueue /></div>
-        <div className="flex-1 overflow-hidden bg-gray-50">
+        <div className="w-72 flex-shrink-0 bg-surface border-r border-line overflow-hidden"><RxQueue /></div>
+        <div className="flex-1 overflow-hidden bg-canvas">
           <ErrorBoundary label="Verification Center">
             <VerificationCenter />
           </ErrorBoundary>
         </div>
-        <div className="w-72 flex-shrink-0 bg-white border-l overflow-hidden">
+        <div className="w-72 flex-shrink-0 bg-surface border-l border-line overflow-hidden">
           <ErrorBoundary label="Patient Panel">
             <PatientPanel patientId={selectedRx?.patient_id || ''} />
           </ErrorBoundary>

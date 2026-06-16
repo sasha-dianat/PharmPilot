@@ -191,7 +191,8 @@ async def get_queue(
             pat.identity_system AS patient_identity_system,
             presc.first_name || ' ' || presc.last_name AS prescriber_name,
             presc.specialty AS prescriber_specialty,
-            presc.npi       AS prescriber_npi
+            presc.npi       AS prescriber_npi,
+            presc.medical_council_id AS prescriber_medical_council_id
         FROM prescriptions rx
         LEFT JOIN patients pat     ON pat.id = rx.patient_id
         LEFT JOIN prescribers presc ON presc.id = rx.prescriber_id
@@ -213,6 +214,7 @@ async def get_queue(
         d["prescriber_name"]    = r.get("prescriber_name")
         d["prescriber_specialty"] = r.get("prescriber_specialty")
         d["prescriber_npi"]     = r.get("prescriber_npi")
+        d["prescriber_medical_council_id"] = r.get("prescriber_medical_council_id")
         return d
 
     return [_row_to_dict(r) for r in rows]
