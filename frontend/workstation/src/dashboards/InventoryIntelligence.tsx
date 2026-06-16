@@ -16,6 +16,8 @@ import { apiClient } from '../lib/api'
 import { DrugPricingTable, RecallAlertBanner, PatientSavingsPanel } from '../components/PricingIntelligence'
 import PackageVerificationDashboard from '../components/PackageVerification'
 import { ExpiryRiskPanel, SupplyRiskPanel, TurnoverPanel, MovementsPanel } from '../components/IntelligenceInventoryPanels'
+import { ProcurementPanel } from '../components/ProcurementPanel'
+import MovementForm from '../components/MovementForm'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface StockItem {
@@ -360,6 +362,12 @@ export default function InventoryIntelligence() {
       <div className="grid grid-cols-2 gap-4">
         <TurnoverPanel />
         <MovementsPanel />
+      </div>
+
+      {/* Row 3.7: Procurement AI recommendations + manual stock-movement entry */}
+      <div className="grid grid-cols-2 gap-4">
+        <ProcurementPanel />
+        <MovementForm />
       </div>
 
       {/* Row 4: Pricing Intelligence — AWP/WAC/AAC margin table + Recall alerts + Patient savings */}
