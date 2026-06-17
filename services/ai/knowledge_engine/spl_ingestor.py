@@ -321,13 +321,18 @@ def _iter_bulk_records(bulk_dir: str):
 
 def ingest_bulk_dir(cfg: dict, bulk_dir: str, *, limit: int | None = None,
                     only_generics: set[str] | None = None,
+                    product_types: set[str] | None = None,
                     progress: Callable[[str], None] | None = None) -> dict:
     """Ingest the openFDA/DailyMed bulk dataset, deduped by generic name.
 
     Keeps ONE representative label per distinct generic (the catalog is full of
-    repackaged duplicates). `only_generics` optionally restricts to a formulary.
+    repackaged duplicates). `only_generics` optionally restricts to a formulary;
+    `product_types` (default from cfg) keeps only clinically-relevant labels
+    (e.g. HUMAN PRESCRIPTION DRUG) — filtering out sunscreens/homeopathics.
     Deterministic point IDs keyed by generic → idempotent + resumable.
     """
+    if product_types is None and cfg.get("product_types"):
+        product_types = {p.upper() for p in cfg["product_types"]}
     from sentence_transformers import SentenceTransformer
     from qdrant_client import QdrantClient
     from qdrant_client.models import Distance, VectorParams, PointStruct
@@ -353,6 +358,10 @@ def ingest_bulk_dir(cfg: dict, bulk_dir: str, *, limit: int | None = None,
 
     for label in _iter_bulk_records(bulk_dir):
         scanned += 1
+        if product_types is not None:
+            pt = ((label.get("openfda", {}) or {}).get("product_type") or [""])[0]
+            if (pt or "").upper() not in product_types:
+                continue
         gen = generic_of(label)
         if not gen or gen in seen:
             continue
