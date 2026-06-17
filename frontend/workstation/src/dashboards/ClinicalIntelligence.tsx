@@ -81,73 +81,92 @@ function ClinicalRiskHeatmap({ rxList }: { rxList: any[] }) {
   )
 }
 
-// ── DUR Alert Distribution ────────────────────────────────────────────────
+// ── DUR Alert Distribution (live: /analytics/clinical/dur-distribution) ─────
+const DUR_COLORS = ['#3b82f6', '#f97316', '#ef4444', '#eab308', '#a855f7', '#64748b', '#14b8a6', '#ec4899']
+const prettyType = (t: string) =>
+  (t || 'other').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
 function DURDistribution() {
-  const data = [
-    {name:'Renal dosing',  value:31, fill:'#3b82f6'},
-    {name:'Drug-Drug',     value:22, fill:'#f97316'},
-    {name:'Pain/Opioid',   value:19, fill:'#ef4444'},
-    {name:'Beers 2023',    value:15, fill:'#eab308'},
-    {name:'Allergy',       value:8,  fill:'#a855f7'},
-    {name:'Other',         value:5,  fill:'#64748b'},
-  ]
+  const pharmacyId = localStorage.getItem('pharmacy_id') || ''
+  const { data } = useQuery({
+    queryKey: ['dur-distribution', pharmacyId],
+    queryFn: () => apiClient
+      .get('/analytics/clinical/dur-distribution', { params: { pharmacy_id: pharmacyId || undefined, period_days: 30 } })
+      .then(r => r.data as { distribution: { alert_type: string; severity: string; cnt: number; overridden: number }[] }),
+    refetchInterval: 60_000,
+  })
+
+  // Aggregate raw (alert_type, severity) rows by alert_type for the pie.
+  const byType: Record<string, number> = {}
+  for (const row of data?.distribution ?? []) {
+    const k = row.alert_type || 'other'
+    byType[k] = (byType[k] || 0) + (row.cnt || 0)
+  }
+  const total = Object.values(byType).reduce((a, b) => a + b, 0)
+  const chart = Object.entries(byType)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, cnt], i) => ({
+      name: prettyType(name), count: cnt,
+      value: total ? Math.round((cnt / total) * 100) : 0,
+      fill: DUR_COLORS[i % DUR_COLORS.length],
+    }))
+
   return (
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">DUR Alert Types — Today</p>
-      <div className="flex items-center gap-3">
-        <ResponsiveContainer width={120} height={120}>
-          <PieChart>
-            <Pie data={data} dataKey="value" innerRadius={30} outerRadius={55} paddingAngle={2}>
-              {data.map((d,i) => <Cell key={i} fill={d.fill} />)}
-            </Pie>
-            <Tooltip formatter={(v: number) => [`${v}%`]} contentStyle={{ background:'#1a1f2e', border:'1px solid #334155', borderRadius:8, fontSize:11 }} />
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="flex-1 space-y-1.5">
-          {data.map(d => (
-            <div key={d.name} className="flex items-center justify-between text-xs cursor-pointer hover:bg-[#242938] rounded px-1 py-0.5">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: d.fill }} />
-                <span className="text-slate-300">{d.name}</span>
+      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">DUR Alert Types — Last 30 Days</p>
+      {total === 0 ? (
+        <div className="text-center py-8 text-slate-600 text-xs">✓ No DUR alerts in the last 30 days</div>
+      ) : (
+        <div className="flex items-center gap-3">
+          <ResponsiveContainer width={120} height={120}>
+            <PieChart>
+              <Pie data={chart} dataKey="value" innerRadius={30} outerRadius={55} paddingAngle={2}>
+                {chart.map((d, i) => <Cell key={i} fill={d.fill} />)}
+              </Pie>
+              <Tooltip formatter={(v: number, _n, p: any) => [`${v}% (${p.payload.count})`]} contentStyle={{ background: '#1a1f2e', border: '1px solid #334155', borderRadius: 8, fontSize: 11 }} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex-1 space-y-1.5">
+            {chart.map(d => (
+              <div key={d.name} className="flex items-center justify-between text-xs hover:bg-[#242938] rounded px-1 py-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full" style={{ background: d.fill }} />
+                  <span className="text-slate-300">{d.name}</span>
+                </div>
+                <span className="font-mono text-slate-400">{d.value}% · {d.count}</span>
               </div>
-              <span className="font-mono text-slate-400">{d.value}%</span>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
 
-// ── Council Findings Stream ───────────────────────────────────────────────
+// ── Council Findings Stream (live: /prescriptions/{id}/analysis council_cache) ─
+interface CouncilFinding { specialist: string; severity: string; message: string; evidence_grade?: string; drug_name?: string }
+
 function CouncilFindingsStream({ selectedRxId }: { selectedRxId?: string }) {
-  const [findings, setFindings] = useState<any[]>([])
-  const [streaming, setStreaming] = useState(false)
+  const { data: analysis } = useQuery({
+    queryKey: ['rx-analysis', selectedRxId],
+    queryFn: () => apiClient.get(`/prescriptions/${selectedRxId}/analysis`).then(r => r.data),
+    enabled: !!selectedRxId,
+    // poll while the council is still computing; stop once ready/failed
+    refetchInterval: (q: any) => {
+      const s = q.state.data?.status
+      return (s === 'ready' || s === 'failed') ? false : 2_000
+    },
+    staleTime: 60_000,
+  })
 
-  const mockFindings = [
-    { specialist:'Nephrology', severity:'blocker', message:'Metformin contraindicated at eGFR 28 (current: 28.4). Consider alternative for T2DM.', evidence_grade:'A' },
-    { specialist:'Cardiology', severity:'caution', message:'QTc prolongation risk: azithromycin combined with amiodarone. Baseline ECG recommended.', evidence_grade:'A' },
-    { specialist:'Geriatrics', severity:'caution', message:'Beers 2023: diazepam — high fall risk in patient age 71. Safer alternatives available.', evidence_grade:'A' },
-    { specialist:'Pain', severity:'blocker', message:'Estimated daily MME: 126 mg/day exceeds CDC 90 MME threshold. Naloxone co-prescribing recommended.', evidence_grade:'A' },
-    { specialist:'Nutrition', severity:'counseling', message:'Warfarin + St. John\'s Wort reported by patient in audio transcript. INR instability risk.', evidence_grade:'B' },
-  ]
-
-  useEffect(() => {
-    if (!selectedRxId) return
-    setFindings([])
-    setStreaming(true)
-    let i = 0
-    const timer = setInterval(() => {
-      if (i < mockFindings.length) {
-        setFindings(prev => [...prev, mockFindings[i]])
-        i++
-      } else {
-        setStreaming(false)
-        clearInterval(timer)
-      }
-    }, 800)
-    return () => clearInterval(timer)
-  }, [selectedRxId])
+  const cache = analysis?.council_cache
+  const findings: CouncilFinding[] = cache ? [
+    ...(cache.blockers   ?? []).map((f: any) => ({ ...f, severity: 'blocker' })),
+    ...(cache.cautions   ?? []).map((f: any) => ({ ...f, severity: 'caution' })),
+    ...(cache.monitoring ?? []).map((f: any) => ({ ...f, severity: 'caution' })),
+    ...(cache.counseling ?? []).map((f: any) => ({ ...f, severity: 'counseling' })),
+  ] : []
+  const computing = !!selectedRxId && analysis && (analysis.status === 'computing' || analysis.status === 'pending')
 
   const colors = { blocker:'border-red-500 bg-red-900/20', caution:'border-orange-500 bg-orange-900/20', counseling:'border-blue-500 bg-blue-900/20' }
 
@@ -155,8 +174,9 @@ function CouncilFindingsStream({ selectedRxId }: { selectedRxId?: string }) {
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Specialist Council</p>
-        {streaming && <span className="text-xs text-blue-400 animate-pulse">Consulting specialists…</span>}
-        {!streaming && findings.length === 0 && <span className="text-xs text-slate-600">Select an Rx to convene council</span>}
+        {computing && <span className="text-xs text-blue-400 animate-pulse">Consulting specialists…</span>}
+        {!selectedRxId && <span className="text-xs text-slate-600">Select an Rx to convene council</span>}
+        {!!selectedRxId && !computing && findings.length === 0 && <span className="text-xs text-slate-600">No council findings for this Rx ✓</span>}
       </div>
       <div className="space-y-2 max-h-64 overflow-y-auto" aria-live="polite">
         {findings.map((f, i) => (
@@ -172,7 +192,7 @@ function CouncilFindingsStream({ selectedRxId }: { selectedRxId?: string }) {
             <p className="text-slate-300 leading-relaxed">{f.message}</p>
           </div>
         ))}
-        {findings.length > 0 && !streaming && (
+        {findings.length > 0 && !computing && (
           <p className="text-[10px] text-slate-600 italic text-center pt-1">
             Council findings are prompts for pharmacist review. Pharmacist makes all clinical decisions.
           </p>
