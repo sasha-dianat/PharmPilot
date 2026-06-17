@@ -27,10 +27,12 @@ interface Config {
 
 export default function AIProviderSettings() {
   const qc = useQueryClient()
-  const { data } = useQuery<Config>({
+  const { data, isLoading, error } = useQuery<Config>({
     queryKey: ['ai-settings'],
     queryFn: () => apiClient.get('/ai-settings/providers').then(r => r.data),
+    retry: false,
   })
+  const httpStatus = (error as { response?: { status?: number } } | null)?.response?.status
 
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
   const [reveal, setReveal] = useState<Record<string, boolean>>({})
@@ -71,6 +73,15 @@ export default function AIProviderSettings() {
       </div>
 
       <div className="space-y-2">
+        {providers.length === 0 && (
+          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-3 text-xs text-amber-200/90">
+            {isLoading
+              ? 'Loading providers…'
+              : httpStatus === 403
+                ? '🔒 AI provider settings are owner-only. Sign in as an admin/owner — these key fields are hidden for pharmacist/tech roles.'
+                : '⚠️ AI settings unavailable — the API may be offline. Start the stack (bash scripts/dev.sh) and reload.'}
+          </div>
+        )}
         {providers.map(p => (
           <div key={p.provider_id} className={`rounded-lg border p-3 ${p.is_preferred ? 'border-blue-500/60 bg-blue-950/20' : 'border-[#1e293b] bg-[#1a1f2e]'}`}>
             <div className="flex items-center gap-2 flex-wrap">
