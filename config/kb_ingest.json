@@ -26,6 +26,9 @@
 
   "scope": { "mode": "top", "drugs": [], "limit": null },
 
+  "_comment_product_types": "Bulk mode only: keep labels whose openfda.product_type is in this list (clinically-relevant). Add 'HUMAN OTC DRUG' for OTC, or set null to keep everything (incl. sunscreens/homeopathics).",
+  "product_types": ["HUMAN PRESCRIPTION DRUG"],
+
   "include_curated_ddi": true,
 
   "top_drugs": [

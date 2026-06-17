@@ -42,6 +42,9 @@ def main() -> None:
     ap.add_argument("--drugs", default=None, help="comma-separated generic names (with --scope list)")
     ap.add_argument("--limit", type=int, default=None, help="cap number of drugs")
     ap.add_argument("--no-ddi", action="store_true", help="skip curated drug-interaction pairs")
+    ap.add_argument("--bulk-dir", default=None,
+                    help="ingest the openFDA/DailyMed BULK dataset from this dir of "
+                         "*.json/*.json.zip files (deduped by generic). Heavy — prefer a GPU/Colab.")
     args = ap.parse_args()
 
     cfg = S.load_config(args.config)
@@ -55,7 +58,16 @@ def main() -> None:
         cfg["include_curated_ddi"] = False
 
     print("Sections to ingest:", ", ".join(f"{s['domain']}" for s in cfg["sections"]))
-    summary = S.ingest(cfg, db_url=os.environ.get("DATABASE_URL"))
+
+    if args.bulk_dir:
+        # Optional formulary restriction when --scope formulary/list is also given.
+        only = None
+        if args.scope in ("formulary", "list"):
+            only = {g.lower() for g in S.resolve_scope(cfg, db_url=os.environ.get("DATABASE_URL"))}
+            print(f"Bulk restricted to {len(only)} formulary generics")
+        summary = S.ingest_bulk_dir(cfg, args.bulk_dir, limit=args.limit, only_generics=only)
+    else:
+        summary = S.ingest(cfg, db_url=os.environ.get("DATABASE_URL"))
     print("\n=== SUMMARY ===")
     for k, v in summary.items():
         if k == "skipped":

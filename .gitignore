@@ -23,3 +23,10 @@ dump.rdb
 
 # Qdrant local storage
 .qdrant/
+
+# Pre-embedded KB points downloaded from the Colab/GPU embed job (large, regenerable)
+KBdata/
+*.jsonl.gz
+
+# graphify knowledge graph (regenerated from code via post-commit hook)
+graphify-out/
