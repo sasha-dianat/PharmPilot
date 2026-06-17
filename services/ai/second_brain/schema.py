@@ -18,7 +18,7 @@ REFUSAL_TEXT = (
 )
 
 EXTRACTIVE_DEGRADED_NOTE = (
-    "AI synthesis was unavailable or unsupported. Review the relevant retrieved source snippets below."
+    "AI summary offline — showing the most relevant source passages below."
 )
 
 VECTOR_STORE_UNAVAILABLE_TEXT = "Knowledge base is temporarily unavailable."
