@@ -214,9 +214,9 @@ function ClinicalQueryBox() {
     setIsLoading(true)
     setResponse('')
     try {
-      const res = await apiClient.post('/knowledge/query', { question: query, top_k: 6 })
+      const res = await apiClient.post('/second-brain/query', { question: query, top_k: 6 })
       setResponse(res.data.answer || '')
-      setProvider(res.data.citations?.[0]?.source_type || '')
+      setProvider(res.data.sources?.[0]?.source_type || res.data.sources?.[0]?.source_title || '')
     } catch {
       setResponse('Knowledge base query failed. Check Qdrant connection.')
     } finally {
