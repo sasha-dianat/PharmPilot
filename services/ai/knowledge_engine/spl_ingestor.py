@@ -110,22 +110,13 @@ def _clean(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html or "")).strip()
 
 
-def fetch_label_sections(client, drug: str, cfg: dict) -> Optional[dict]:
-    """Return {'drug','brand','sections':[{domain,header,text}]} or None."""
-    params = {"search": f'openfda.generic_name:"{drug}"', "limit": 1}
-    try:
-        resp = client.get(cfg["openfda_label_url"], params=params,
-                          timeout=cfg["request_timeout_s"])
-        if resp.status_code != 200:
-            return None
-        results = resp.json().get("results", [])
-        if not results:
-            return None
-    except Exception as e:  # noqa: BLE001
-        log.debug("fetch failed for %s: %s", drug, e)
-        return None
+def extract_sections_from_label(label: dict, cfg: dict) -> list[dict]:
+    """Pull the configured clinical sections out of one openFDA label record.
 
-    label = results[0]
+    Works on any openFDA drug/label result — whether fetched live from the API
+    or read from the openFDA bulk-download JSON (same schema). Returns
+    [{domain, header, text}].
+    """
     out_sections = []
     for sec in cfg["sections"]:
         parts = []
@@ -142,11 +133,44 @@ def fetch_label_sections(client, drug: str, cfg: dict) -> Optional[dict]:
                 "header": sec.get("header", sec["domain"].upper()),
                 "text": "\n".join(parts),
             })
+    return out_sections
+
+
+def generic_of(label: dict) -> Optional[str]:
+    """Canonical dedup key for a label: its first generic (active) name, lowered."""
+    openfda = label.get("openfda", {}) or {}
+    for key in ("generic_name", "substance_name"):
+        vals = openfda.get(key) or []
+        if vals:
+            return str(vals[0]).strip().lower()
+    return None
+
+
+def brand_of(label: dict, fallback: str = "") -> str:
+    openfda = label.get("openfda", {}) or {}
+    return (openfda.get("brand_name") or [fallback])[0] or fallback
+
+
+def fetch_label_sections(client, drug: str, cfg: dict) -> Optional[dict]:
+    """Return {'drug','brand','sections':[{domain,header,text}]} or None (API mode)."""
+    params = {"search": f'openfda.generic_name:"{drug}"', "limit": 1}
+    try:
+        resp = client.get(cfg["openfda_label_url"], params=params,
+                          timeout=cfg["request_timeout_s"])
+        if resp.status_code != 200:
+            return None
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+    except Exception as e:  # noqa: BLE001
+        log.debug("fetch failed for %s: %s", drug, e)
+        return None
+
+    label = results[0]
+    out_sections = extract_sections_from_label(label, cfg)
     if not out_sections:
         return None
-    openfda = label.get("openfda", {})
-    brand = (openfda.get("brand_name") or [drug])[0]
-    return {"drug": drug, "brand": brand, "sections": out_sections}
+    return {"drug": drug, "brand": brand_of(label, drug), "sections": out_sections}
 
 
 def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list[str]:
@@ -263,6 +287,108 @@ def ingest(cfg: dict, *, db_url: str | None = None,
                "skipped": skipped, "collection": coll}
     say(f"DONE: {done} drugs, {total_vec} vectors, {len(skipped)} skipped")
     return summary
+
+
+# ── Bulk ingest (openFDA / DailyMed bulk download) ─────────────────────────────
+
+def _iter_bulk_records(bulk_dir: str):
+    """Yield openFDA label records from a dir of bulk files (.json or .json.zip).
+
+    The openFDA 'drug label' bulk download is the same data DailyMed publishes,
+    pre-parsed into JSON ({"results": [...]}) — so no HL7 XML parsing is needed.
+    Download from https://api.fda.gov/download.json (drug → label partitions).
+    """
+    import glob
+    import json as _json
+    import zipfile
+
+    files = sorted(glob.glob(os.path.join(bulk_dir, "*.json")) +
+                   glob.glob(os.path.join(bulk_dir, "*.json.zip")) +
+                   glob.glob(os.path.join(bulk_dir, "*.zip")))
+    for fp in files:
+        if fp.endswith(".zip"):
+            with zipfile.ZipFile(fp) as zf:
+                for inner in zf.namelist():
+                    if inner.endswith(".json"):
+                        with zf.open(inner) as fh:
+                            data = _json.loads(fh.read().decode("utf-8", "replace"))
+                            yield from (data.get("results") or [])
+        else:
+            with open(fp, "r", encoding="utf-8") as fh:
+                data = _json.load(fh)
+                yield from (data.get("results") or [])
+
+
+def ingest_bulk_dir(cfg: dict, bulk_dir: str, *, limit: int | None = None,
+                    only_generics: set[str] | None = None,
+                    progress: Callable[[str], None] | None = None) -> dict:
+    """Ingest the openFDA/DailyMed bulk dataset, deduped by generic name.
+
+    Keeps ONE representative label per distinct generic (the catalog is full of
+    repackaged duplicates). `only_generics` optionally restricts to a formulary.
+    Deterministic point IDs keyed by generic → idempotent + resumable.
+    """
+    from sentence_transformers import SentenceTransformer
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, VectorParams, PointStruct
+
+    def say(m: str) -> None:
+        log.info(m)
+        if progress:
+            progress(m)
+
+    say(f"loading embedder {cfg['embedding_model']} …")
+    embedder = SentenceTransformer(cfg["embedding_model"])
+    client_q = QdrantClient(url=cfg["qdrant_url"])
+    coll = cfg["collection"]
+    if coll not in [c.name for c in client_q.get_collections().collections]:
+        client_q.create_collection(
+            collection_name=coll,
+            vectors_config=VectorParams(size=cfg["embedding_dim"], distance=Distance.COSINE))
+        say(f"created collection {coll}")
+
+    size, overlap = cfg["chunk"]["size"], cfg["chunk"]["overlap"]
+    seen: set[str] = set()
+    total_vec = done = scanned = 0
+
+    for label in _iter_bulk_records(bulk_dir):
+        scanned += 1
+        gen = generic_of(label)
+        if not gen or gen in seen:
+            continue
+        if only_generics is not None and gen not in only_generics:
+            continue
+        sections = extract_sections_from_label(label, cfg)
+        if not sections:
+            continue
+        seen.add(gen)
+        brand = brand_of(label, gen)
+        drug_vec = 0
+        for sec in sections:
+            chunks = chunk_text(sec["text"], size, overlap)
+            for i in range(0, len(chunks), 32):
+                batch = chunks[i:i + 32]
+                vecs = embedder.encode(batch, normalize_embeddings=True, show_progress_bar=False)
+                pts = [PointStruct(
+                    id=_point_id(gen, sec["domain"], i + j),
+                    vector=v.tolist(),
+                    payload={"content": ch, "drug": gen, "domain": sec["domain"],
+                             "source_title": f"{brand} — {sec['header']}",
+                             "source_id": f"spl_{gen}_{sec['domain']}",
+                             "source_type": "fda_spl",
+                             "url": "https://dailymed.nlm.nih.gov/", "chunk_index": i + j})
+                    for j, (ch, v) in enumerate(zip(batch, vecs))]
+                client_q.upsert(collection_name=coll, points=pts)
+                drug_vec += len(pts)
+        total_vec += drug_vec
+        done += 1
+        if done % 50 == 0:
+            say(f"{done} drugs ingested ({total_vec} vectors), {scanned} records scanned…")
+        if limit and done >= limit:
+            break
+
+    say(f"BULK DONE: {done} distinct drugs, {total_vec} vectors ({scanned} records scanned)")
+    return {"drugs_ingested": done, "vectors": total_vec, "records_scanned": scanned, "collection": coll}
 
 
 def _ingest_curated_ddi(cfg, embedder, client_q, say) -> int:
