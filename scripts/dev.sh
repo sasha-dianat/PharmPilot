@@ -106,7 +106,7 @@ service:
 telemetry_disabled: true
 QDRANT_CONF
 
-if curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1; then
+if curl -sf "http://localhost:$QDRANT_PORT/healthz" > /dev/null 2>&1; then
   ok "Qdrant          → http://localhost:$QDRANT_PORT/dashboard"
 elif [ -f "$QDRANT_BIN" ]; then
   log "Starting Qdrant..."
@@ -114,9 +114,9 @@ elif [ -f "$QDRANT_BIN" ]; then
     > "$LOG_DIR/qdrant.log" 2>&1 &
   PIDS+=($!)
   for i in $(seq 1 10); do
-    curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1 && break || sleep 1
+    curl -sf "http://localhost:$QDRANT_PORT/healthz" > /dev/null 2>&1 && break || sleep 1
   done
-  curl -sf "http://localhost:$QDRANT_PORT/health" > /dev/null 2>&1 \
+  curl -sf "http://localhost:$QDRANT_PORT/healthz" > /dev/null 2>&1 \
     && ok "Qdrant          → http://localhost:$QDRANT_PORT/dashboard" \
     || warn "Qdrant not ready — check $LOG_DIR/qdrant.log"
 else

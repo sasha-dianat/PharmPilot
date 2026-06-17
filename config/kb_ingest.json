@@ -1,0 +1,45 @@
+{
+  "_comment": "Self-service clinical-knowledge ingestion config. Edit this file and run `python scripts/ingest_spl.py` — no code changes needed. Each 'sections' entry maps one clinical DOMAIN to one or more openFDA Structured-Product-Label fields; add/remove entries to customize what gets ingested. Sources are public-domain FDA SPLs (DailyMed/openFDA).",
+
+  "qdrant_url": "http://localhost:6334",
+  "collection": "pharmpilot_clinical_knowledge",
+  "embedding_model": "neuml/pubmedbert-base-embeddings",
+  "embedding_dim": 768,
+
+  "openfda_label_url": "https://api.fda.gov/drug/label.json",
+  "request_timeout_s": 20,
+  "chunk": { "size": 1200, "overlap": 200 },
+
+  "sections": [
+    { "domain": "interaction",      "header": "DRUG & FOOD INTERACTIONS", "fields": ["drug_interactions"] },
+    { "domain": "contraindication", "header": "CONTRAINDICATIONS",        "fields": ["contraindications"] },
+    { "domain": "precaution",       "header": "WARNINGS & PRECAUTIONS",   "fields": ["boxed_warning", "warnings_and_precautions", "warnings_and_cautions", "precautions", "warnings"] },
+    { "domain": "pharmacokinetics", "header": "PHARMACOKINETICS",         "fields": ["pharmacokinetics", "clinical_pharmacology"] }
+  ],
+
+  "_optional_sections_you_can_add": [
+    { "domain": "dosing",              "header": "DOSAGE & ADMINISTRATION", "fields": ["dosage_and_administration"] },
+    { "domain": "adverse",             "header": "ADVERSE REACTIONS",       "fields": ["adverse_reactions"] },
+    { "domain": "special_populations", "header": "USE IN SPECIFIC POPULATIONS", "fields": ["use_in_specific_populations"] },
+    { "domain": "mechanism",           "header": "MECHANISM OF ACTION",     "fields": ["mechanism_of_action"] }
+  ],
+
+  "scope": { "mode": "top", "drugs": [], "limit": null },
+
+  "include_curated_ddi": true,
+
+  "top_drugs": [
+    "metformin", "lisinopril", "atorvastatin", "amlodipine", "omeprazole",
+    "metoprolol", "sertraline", "escitalopram", "levothyroxine", "warfarin",
+    "gabapentin", "furosemide", "hydrochlorothiazide", "losartan", "albuterol",
+    "prednisone", "amoxicillin", "azithromycin", "ciprofloxacin", "tramadol",
+    "oxycodone", "morphine", "naloxone", "buprenorphine", "simvastatin",
+    "rosuvastatin", "alprazolam", "clonazepam", "zolpidem", "fluoxetine",
+    "paroxetine", "venlafaxine", "quetiapine", "aripiprazole", "methotrexate",
+    "amiodarone", "digoxin", "spironolactone", "glipizide", "insulin glargine",
+    "insulin aspart", "vancomycin", "linezolid", "fluconazole", "clarithromycin",
+    "metronidazole", "rifampin", "ibuprofen", "naproxen", "aspirin",
+    "acetaminophen", "clopidogrel", "apixaban", "rivaroxaban", "pantoprazole",
+    "duloxetine", "montelukast", "tamsulosin", "allopurinol", "carvedilol"
+  ]
+}
