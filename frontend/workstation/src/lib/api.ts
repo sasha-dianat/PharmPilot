@@ -161,8 +161,10 @@ export const clinicalApi = {
     apiClient.post('/lab-safety/assess', { patient_id: patientId }),
   medReconcile: (payload: MedReconcilePayload) =>
     apiClient.medReconcile(payload),
+  // Routes to Second Brain RAG: same clinical corpus, but degrades gracefully
+  // (returns retrieved passages) when no LLM key — unlike /knowledge/query (503).
   queryKnowledge: (question: string, patientId?: string) =>
-    apiClient.post('/knowledge/query', { question, patient_id: patientId }),
+    apiClient.post('/second-brain/query', { question, patient_id: patientId, top_k: 8 }),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
     apiClient.post('/second-brain/query', {
       question,

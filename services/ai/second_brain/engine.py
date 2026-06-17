@@ -96,10 +96,13 @@ def _extractive_result(
     unsupported: bool,
     degraded: bool,
 ) -> tuple[SecondBrainResult, LLMMeta]:
-    cited = ", ".join(f"[{source.source_id}]" for source in sources[:3] if source.source_id)
     answer_text = EXTRACTIVE_DEGRADED_NOTE
-    if cited:
-        answer_text = f"{answer_text} Relevant retrieved sources: {cited}."
+    # Inline the top retrieved passages so the answer is useful with no LLM —
+    # callers that render only `answer` still see the actual source text.
+    blocks = [f"• {s.source_title}: {s.snippet.strip()}"
+              for s in sources[:3] if getattr(s, "snippet", "")]
+    if blocks:
+        answer_text = answer_text + "\n\n" + "\n\n".join(blocks)
     return (
         SecondBrainResult(
             answer=answer_text,

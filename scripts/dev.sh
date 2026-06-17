@@ -15,6 +15,14 @@ warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Keep the Mac awake while the stack runs — idle sleep otherwise kills Postgres/
+# Qdrant/API mid-session (a recurring pilot annoyance). Tied to this script's PID,
+# so it stops when you Ctrl+C. (Closing the laptop lid still sleeps; -i covers idle.)
+if command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -i -w "$$" &
+  log "caffeinate: preventing idle sleep while services run"
+fi
+
 # Load .env
 [ -f "$ROOT_DIR/.env" ] && set -o allexport && source "$ROOT_DIR/.env" && set +o allexport
 
