@@ -112,34 +112,43 @@ async def get_stock_levels(
     db: AsyncSession = Depends(get_db),
 ):
     """Get current stock levels with optional filters."""
-    stmt = select(StockLevel).where(StockLevel.pharmacy_id == staff.pharmacy_id)
+    # Join the drug catalog so the UI has real names + controlled/schedule flags.
+    stmt = (select(StockLevel, DrugProduct)
+            .join(DrugProduct, DrugProduct.ndc11 == StockLevel.ndc11, isouter=True)
+            .where(StockLevel.pharmacy_id == staff.pharmacy_id))
 
     if below_par:
-        from sqlalchemy import and_
         stmt = stmt.where(
             StockLevel.par_level_min.isnot(None),
             StockLevel.quantity_on_hand < StockLevel.par_level_min,
         )
 
-    stmt = stmt.limit(limit)
-    result = await db.execute(stmt)
-    stocks = result.scalars().all()
+    stmt = stmt.order_by(StockLevel.quantity_on_hand.desc()).limit(limit)
+    rows = (await db.execute(stmt)).all()
 
-    return [
-        {
+    out = []
+    for s, dp in rows:
+        adq = float(s.avg_daily_demand) if s.avg_daily_demand else 0.0
+        base = (dp.brand_name or dp.generic_name) if dp else None
+        name = f"{base} {dp.strength}".strip() if (dp and base) else s.ndc11
+        out.append({
             "ndc11": s.ndc11,
+            "drug_name": name,
             "quantity_on_hand": float(s.quantity_on_hand),
             "quantity_reserved": float(s.quantity_reserved),
             "quantity_on_order": float(s.quantity_on_order),
             "par_level_min": float(s.par_level_min) if s.par_level_min else None,
             "par_level_max": float(s.par_level_max) if s.par_level_max else None,
             "reorder_point": float(s.reorder_point) if s.reorder_point else None,
-            "avg_daily_demand": float(s.avg_daily_demand) if s.avg_daily_demand else None,
+            "reorder_quantity": float(s.reorder_quantity) if s.reorder_quantity else None,
+            "avg_daily_demand": adq or None,
             "stockout_probability_7d": float(s.stockout_probability_7d) if s.stockout_probability_7d else None,
+            "days_supply": round(float(s.quantity_on_hand) / adq, 1) if adq > 0 else None,
+            "is_controlled": bool(dp.is_controlled) if dp else False,
+            "dea_schedule": dp.dea_schedule if dp else None,
             "last_dispensed_at": s.last_dispensed_at.isoformat() if s.last_dispensed_at else None,
-        }
-        for s in stocks
-    ]
+        })
+    return out
 
 
 @router.get("/stock/{ndc11}")

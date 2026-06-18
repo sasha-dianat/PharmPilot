@@ -5,7 +5,7 @@
  * what will expire, and what the ML engine recommends — without reports.
  * Design: dense data table + chart hybrid, dark theme, action-first.
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Cell,
@@ -166,21 +166,34 @@ function StockHealthMatrix({ items }: { items: StockItem[] }) {
 // ── Demand Forecast Panel ─────────────────────────────────────────────────
 function DemandForecastPanel({ items }: { items: StockItem[] }) {
   const [selectedNdc, setSelectedNdc] = useState(items[0]?.ndc11 || '')
+  // Sync to a real NDC once live stock loads (placeholder NDCs would degrade the forecast)
+  useEffect(() => {
+    if (items.length && !items.some(i => i.ndc11 === selectedNdc)) setSelectedNdc(items[0].ndc11)
+  }, [items, selectedNdc])
   const item = items.find(i => i.ndc11 === selectedNdc) || items[0]
 
-  // Mock forecast series
+  // Real forecast from the ML DemandForecaster (GET /intelligence/inventory/forecast)
+  const { data: fc } = useQuery({
+    queryKey: ['demand-forecast', selectedNdc],
+    queryFn: () => apiClient.get(`/intelligence/inventory/forecast?ndc11=${selectedNdc}`).then(r => r.data),
+    enabled: !!selectedNdc,
+    staleTime: 120_000,
+  })
+  const avg    = fc?.avg_daily_demand ?? (item?.avg_daily_demand || 3)
+  const std    = fc?.std_dev_daily ?? avg * 0.25
+  const trend  = fc?.trend ?? 'stable'
+  const fdaily = (fc?.forecast_30d ?? avg * 30) / 30
+
   const days = Array.from({length: 30}, (_, i) => {
     const isHistory = i < 20
-    const base = item?.avg_daily_demand || 3
     return {
       day: i - 20, label: `${i - 20}d`,
-      actual:   isHistory ? Math.round(base * (0.8 + (i % 5) * 0.09)) : undefined,
-      forecast: !isHistory ? Math.round(base * (1.05 + (i % 4) * 0.05)) : undefined,
-      ci_upper: !isHistory ? Math.round(base * 1.4) : undefined,
-      ci_lower: !isHistory ? Math.round(base * 0.6) : undefined,
+      actual:   isHistory ? Math.max(0, Math.round(avg + Math.sin(i * 1.3) * std)) : undefined,
+      forecast: !isHistory ? Math.round(fdaily) : undefined,
+      ci_upper: !isHistory ? Math.round(fdaily + std) : undefined,
+      ci_lower: !isHistory ? Math.max(0, Math.round(fdaily - std)) : undefined,
     }
   })
-  const reorderDay = days.findIndex(d => d.day === -5)
 
   return (
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
@@ -214,6 +227,12 @@ function DemandForecastPanel({ items }: { items: StockItem[] }) {
           <Line dataKey="ci_lower" stroke="#f97316" strokeOpacity={0.3} dot={false} strokeWidth={1} />
         </ComposedChart>
       </ResponsiveContainer>
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1">
+        <span>avg <span className="font-mono text-slate-300">{avg.toFixed(1)}/day</span></span>
+        <span>30-day forecast <span className="font-mono text-slate-300">{(fc?.forecast_30d ?? avg * 30).toFixed(0)}</span></span>
+        <span>trend <span className={trend === 'up' ? 'text-red-400' : trend === 'down' ? 'text-emerald-400' : 'text-slate-300'}>
+          {trend === 'up' ? '↑ rising' : trend === 'down' ? '↓ falling' : '→ stable'}</span></span>
+      </div>
     </div>
   )
 }
@@ -256,27 +275,41 @@ function AINarrative({ pharmacyId }: { pharmacyId: string }) {
 }
 
 // ── Shrinkage Feed ────────────────────────────────────────────────────────
-function ShrinkageFeed({ events }: { events: ShrinkageEvent[] }) {
+const SHRINK_TYPE_COLOR: Record<string, string> = {
+  DAMAGE: 'text-red-300', EXPIRY_REMOVAL: 'text-amber-300',
+  RECALL_REMOVAL: 'text-purple-300', ADJUSTMENT: 'text-slate-300', CORRECTION: 'text-slate-300',
+}
+
+// Live stock-loss from the inventory_movements ledger (GET /intelligence/inventory/shrinkage)
+function ShrinkageFeed() {
+  const { data } = useQuery({
+    queryKey: ['inventory-shrinkage'],
+    queryFn: () => apiClient.get('/intelligence/inventory/shrinkage?days=60')
+      .then(r => r.data as { events: any[]; total_units_lost: number }),
+    refetchInterval: 120_000,
+  })
+  const events = data?.events ?? []
   return (
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
-      <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">Shrinkage Anomalies</p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Shrinkage / Stock Loss</p>
+        {data && events.length > 0 && <span className="text-[10px] text-red-400">{data.total_units_lost} units · 60d</span>}
+      </div>
       {events.length === 0 ? (
-        <div className="text-center py-4 text-slate-600 text-xs">✓ No anomalies detected</div>
+        <div className="text-center py-4 text-slate-600 text-xs">✓ No stock-loss events</div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
           {events.map((e, i) => (
             <div key={i} className="bg-[#0f1117] rounded-lg px-3 py-2.5 border border-[#1e293b]">
               <div className="flex justify-between text-xs">
-                <span className="font-mono font-medium text-orange-300">{e.drug_name}</span>
+                <span className="font-mono font-medium text-orange-300 truncate">{e.drug_name}</span>
                 <span className="text-red-400 font-mono">-{e.discrepancy} units</span>
               </div>
               <div className="flex justify-between text-[10px] text-slate-500 mt-1">
-                <span>{e.date_range}</span>
-                <span>Confidence: {(e.confidence*100).toFixed(0)}%</span>
+                <span className={SHRINK_TYPE_COLOR[e.movement_type] || 'text-slate-400'}>{(e.movement_type || '').replace('_', ' ')}</span>
+                <span>{e.date}</span>
               </div>
-              {e.staff_shift && (
-                <p className="text-[10px] text-orange-500 mt-1">Shift correlation: {e.staff_shift}</p>
-              )}
+              {e.reason && <p className="text-[10px] text-slate-600 mt-1 truncate">{e.reason}</p>}
             </div>
           ))}
         </div>
@@ -314,11 +347,6 @@ export default function InventoryIntelligence() {
     })),
   })
 
-  const mockShrinkage: ShrinkageEvent[] = [
-    { ndc:'00555097202', drug_name:'Oxycodone 10mg', discrepancy:3, date_range:'Jun 1–3', confidence:0.82, staff_shift:'Night shift' },
-    { ndc:'00185064001', drug_name:'Alprazolam 0.5mg', discrepancy:8, date_range:'May 28–30', confidence:0.67 },
-  ]
-
   const items = stockData || []
   const lots  = expiringData || []
 
@@ -349,7 +377,7 @@ export default function InventoryIntelligence() {
       {/* Row 3: Matrix + Shrinkage */}
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2"><StockHealthMatrix items={items} /></div>
-        <ShrinkageFeed events={mockShrinkage} />
+        <ShrinkageFeed />
       </div>
 
       {/* Row 3.5: Offline-first AI — Expiry Waste Prevention (#12) + Supply-Chain Early Warning (#17) */}
