@@ -137,4 +137,6 @@ class SecurityEvent(TimestampedBase):
     footage_retention_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    event_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    # DB column is event_metadata (see migration); the prior "metadata" override
+    # pointed at a nonexistent column → every ORM SELECT of SecurityEvent 500'd.
+    event_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
