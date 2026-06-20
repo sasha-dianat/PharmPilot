@@ -53,7 +53,7 @@ function SourceRow({ source }: { source: SecondBrainSource }) {
     <div className="rounded-lg border border-[#253047] bg-[#111722] p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-slate-100">{source.source_title || 'Unknown source'}</p>
+          <p className="text-[13px] font-bold text-slate-100 leading-snug">{source.source_title || 'Unknown source'}</p>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
             <span className="font-mono text-blue-300">{source.source_id}</span>
             <span>{source.source_type || 'reference'}</span>
@@ -73,7 +73,7 @@ function SourceRow({ source }: { source: SecondBrainSource }) {
           </a>
         )}
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-slate-400">{source.snippet}</p>
+      <p className="mt-2 text-sm leading-[1.75] text-slate-200">{source.snippet}</p>
     </div>
   )
 }
