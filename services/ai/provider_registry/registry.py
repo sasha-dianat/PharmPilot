@@ -199,8 +199,8 @@ class AIProviderRegistry:
         "groq": ProviderConfig(
             name="Groq", api_key_env="GROQ_API_KEY",
             base_url="https://api.groq.com/openai/v1",
-            models=["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
-            default_model="llama-3.1-70b-versatile",
+            models=["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+            default_model="llama-3.3-70b-versatile",
             strengths=["ultra_low_latency", "open_source", "high_throughput"],
             has_baa=False,   # NOT PHI-safe — never route PHI here
             cost_per_1k_input=0.00059,
@@ -576,8 +576,11 @@ class AIProviderRegistry:
             return text, usage.prompt_tokens, usage.completion_tokens
 
         elif provider == "groq":
-            from groq import AsyncGroq
-            client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY", ""))
+            # Groq exposes an OpenAI-compatible API — reuse the installed openai
+            # SDK with Groq's base_url (no separate groq dependency needed).
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=os.environ.get("GROQ_API_KEY", ""),
+                                 base_url=config.base_url or "https://api.groq.com/openai/v1")
             msgs = []
             if system_prompt:
                 msgs.append({"role": "system", "content": system_prompt})
