@@ -8,6 +8,7 @@ from typing import Any
 from services.ai.second_brain.schema import (
     DEFAULT_TOP_K,
     EXTRACTIVE_DEGRADED_NOTE,
+    FULLTEXT_CHARS,
     LLMMeta,
     REFUSAL_TEXT,
     SNIPPET_CHARS,
@@ -163,16 +164,16 @@ def _extractive_result(
 
 
 def _source_from_chunk(chunk: Any) -> Source:
-    content = str(_attr(chunk, "content", "") or "")
-    snippet = " ".join(content.split())[:SNIPPET_CHARS]
+    content = " ".join(str(_attr(chunk, "content", "") or "").split())
     return Source(
         source_id=str(_attr(chunk, "source_id", "") or ""),
         source_title=str(_attr(chunk, "source_title", "Unknown Source") or "Unknown Source"),
         source_type=str(_attr(chunk, "source_type", "") or ""),
-        snippet=snippet,
+        snippet=content[:SNIPPET_CHARS],
         similarity_score=float(_attr(chunk, "similarity_score", 0.0) or 0.0),
         evidence_grade=_attr(chunk, "evidence_grade", None),
         url=_attr(chunk, "url", None),
+        full_text=content[:FULLTEXT_CHARS],
     )
 
 

@@ -27,6 +27,9 @@ DEFAULT_TOP_K = 8
 MAX_TOP_K = 20
 SCORE_THRESHOLD = 0.55
 SNIPPET_CHARS = 300
+# Fuller passage returned alongside the short snippet so the UI can expand a
+# truncated block to the rest of the paragraph without another round-trip.
+FULLTEXT_CHARS = 1800
 
 Confidence = Literal["high", "moderate", "low", "none"]
 
@@ -40,6 +43,7 @@ class Source:
     similarity_score: float
     evidence_grade: str | None = None
     url: str | None = None
+    full_text: str = ""
 
 
 @dataclass(slots=True)

@@ -313,6 +313,7 @@ export interface SecondBrainSource {
   similarity_score: number
   evidence_grade?: string | null
   url?: string | null
+  full_text?: string
 }
 export interface SecondBrainResponse {
   question: string
