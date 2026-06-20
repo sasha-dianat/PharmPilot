@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -92,6 +93,32 @@ async def answer(
     )
 
 
+def _clean_snippet(text: str, max_len: int = 320) -> str:
+    """Trim a retrieved chunk to whole sentences for display.
+
+    Chunk overlap often starts mid-sentence and ends mid-word; this drops a
+    leading sentence fragment, caps the length, and ends on the last complete
+    sentence so the pharmacist never sees half-words like 'teady state…'.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    # Drop a leading partial sentence (chunk started mid-sentence).
+    if not text[:1].isupper():
+        m = re.search(r"[.!?]\s+([A-Z])", text)
+        if m:
+            text = text[m.start(1):]
+    if len(text) > max_len:
+        text = text[:max_len]
+    # End on the last complete sentence; else drop the dangling partial word.
+    ends = list(re.finditer(r"[.!?](?=\s|$)", text))
+    if ends:
+        text = text[:ends[-1].end()]
+    elif not text.endswith((".", "!", "?")) and " " in text.rstrip():
+        text = text.rstrip()[: text.rstrip().rfind(" ")].rstrip() + "…"
+    return text.strip()
+
+
 def _extractive_result(
     *,
     sources: list[Source],
@@ -102,9 +129,24 @@ def _extractive_result(
 ) -> tuple[SecondBrainResult, LLMMeta]:
     answer_text = EXTRACTIVE_DEGRADED_NOTE
     # Inline the top retrieved passages so the answer is useful with no LLM —
-    # callers that render only `answer` still see the actual source text.
-    blocks = [f"• {s.source_title}: {s.snippet.strip()}"
-              for s in sources[:3] if getattr(s, "snippet", "")]
+    # callers that render only `answer` still see the actual source text. Each
+    # passage is trimmed to whole sentences, and near-duplicate drug/section
+    # variants (e.g. "Duloxetine" vs "Duloxetine HCl") are collapsed.
+    blocks, seen = [], set()
+    for s in sources:
+        snippet = _clean_snippet(getattr(s, "snippet", "") or "")
+        if not snippet:
+            continue
+        title = (s.source_title or "Source").strip()
+        base = title.split("—")[0].strip().split()[0].lower() if title else ""
+        section = title.split("—")[-1].strip().lower() if "—" in title else ""
+        key = (base, section)
+        if key in seen:
+            continue
+        seen.add(key)
+        blocks.append(f"• {title}: {snippet}")
+        if len(blocks) >= 3:
+            break
     if blocks:
         answer_text = answer_text + "\n\n" + "\n\n".join(blocks)
     return (

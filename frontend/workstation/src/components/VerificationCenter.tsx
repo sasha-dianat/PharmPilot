@@ -864,8 +864,28 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
         </button>
       </div>
       {answer && (
-        <div className="cd-narr text-xs text-ink bg-surface2 border border-line rounded-lg p-2.5 max-h-40 overflow-y-auto whitespace-pre-wrap leading-relaxed cd-section">
-          {answer}
+        <div className="bg-surface2 border border-line rounded-lg p-3.5 max-h-80 overflow-y-auto cd-section space-y-3">
+          {answer.split('\n\n').map((block, i) => {
+            const t = block.trim()
+            if (!t) return null
+            if (t.startsWith('•')) {
+              const body = t.replace(/^•\s*/, '')
+              const ci = body.indexOf(': ')
+              const head = ci > 0 ? body.slice(0, ci) : ''
+              const rest = ci > 0 ? body.slice(ci + 2) : body
+              return (
+                <div key={i} className="border-l-2 border-intel/40 pl-3">
+                  {head && <p className="cd-ui text-[13px] font-bold text-ink leading-snug">{head}</p>}
+                  <p className="cd-narr text-sm text-ink leading-[1.75] mt-1">{rest}</p>
+                </div>
+              )
+            }
+            // leading note line (extractive banner) — muted; or synthesized prose — readable
+            const isNote = /summary offline|most relevant source/i.test(t)
+            return (
+              <p key={i} className={`cd-narr leading-[1.75] ${isNote ? 'text-[12px] italic text-ink3' : 'text-sm text-ink'}`}>{t}</p>
+            )
+          })}
         </div>
       )}
     </div>
