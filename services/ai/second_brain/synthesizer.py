@@ -26,7 +26,7 @@ async def synthesize(question: str, chunks: list[object]) -> str | None:
                 phi=False,
                 task="rag",
             ),
-            timeout=8,
+            timeout=30,
         )
     except Exception:
         return None

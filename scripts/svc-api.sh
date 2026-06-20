@@ -7,6 +7,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 [ -f "$ROOT/.env" ] && set -o allexport && source "$ROOT/.env" && set +o allexport
 
+# Embedding (tokenizers) uses Rust thread parallelism; combined with the async
+# event loop this can deadlock the subsequent LLM HTTP call (RAG retrieve →
+# synthesize hangs until timeout → KB falls back to extractive). Disable it.
+export TOKENIZERS_PARALLELISM=false
+
 PY="${PHARMPILOT_PYTHON:-$(command -v python3)}"
 API_PORT="${PHARMPILOT_API_PORT:-8001}"
 PG_PORT="${PHARMPILOT_PGPORT:-5433}"
