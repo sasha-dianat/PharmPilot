@@ -20,6 +20,7 @@ import TrajectorySignalStrip from './TrajectorySignalStrip'
 import LabelPreview from './LabelPreview'
 import DictateNote from './DictateNote'
 import { rxApi, claimsApi, clinicalApi, apiClient } from '../lib/api'
+import type { SecondBrainSource } from '../lib/api'
 import { ErrorBoundary } from './ErrorBoundary'
 import RxCopilotRail from './RxCopilotRail'
 import CancelRxModal from './CancelRxModal'
@@ -830,21 +831,32 @@ function PrecomputedCouncilPanel({ cache }: { cache: CouncilCache }) {
 function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patientId?: string }) {
   const [question, setQuestion] = useState('')
   const [answer,   setAnswer]   = useState('')
+  const [sources,  setSources]  = useState<SecondBrainSource[]>([])
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [loading,  setLoading]  = useState(false)
 
   const handleAsk = async () => {
     if (!question.trim()) return
     setLoading(true)
     setAnswer('')
+    setSources([])
+    setExpanded(new Set())
     try {
       const { data } = await clinicalApi.queryKnowledge(question, patientId)
       setAnswer(data.answer || data.response || 'No answer returned.')
+      setSources(data.sources || [])
     } catch {
       setAnswer('Knowledge base unavailable — check API connection.')
     } finally {
       setLoading(false)
     }
   }
+
+  const toggle = (i: number) => setExpanded(prev => {
+    const next = new Set(prev)
+    next.has(i) ? next.delete(i) : next.add(i)
+    return next
+  })
 
   return (
     <div className="cd-card p-3 space-y-2">
@@ -873,10 +885,23 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
               const ci = body.indexOf(': ')
               const head = ci > 0 ? body.slice(0, ci) : ''
               const rest = ci > 0 ? body.slice(ci + 2) : body
+              const src = head ? sources.find(s => s.source_title?.trim() === head) : undefined
+              const full = src?.full_text?.trim() || ''
+              // Expandable only when the source holds materially more than the snippet.
+              const canExpand = full.length > rest.length + 24
+              const isOpen = expanded.has(i)
               return (
-                <div key={i} className="border-l-2 border-intel/40 pl-3">
+                <div key={i} className={`border-l-2 border-intel/40 pl-3 ${canExpand ? 'cursor-pointer group' : ''}`}
+                  onClick={canExpand ? () => toggle(i) : undefined}
+                  role={canExpand ? 'button' : undefined} tabIndex={canExpand ? 0 : undefined}
+                  onKeyDown={canExpand ? (e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle(i))) : undefined}>
                   {head && <p className="cd-ui text-[13px] font-bold text-ink leading-snug">{head}</p>}
-                  <p className="cd-narr text-sm text-ink leading-[1.75] mt-1">{rest}</p>
+                  <p className="cd-narr text-sm text-ink leading-[1.75] mt-1">{isOpen ? full : rest}</p>
+                  {canExpand && (
+                    <span className="cd-ui mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-intel group-hover:underline select-none">
+                      {isOpen ? '▴ Show less' : '▾ Read full passage'}
+                    </span>
+                  )}
                 </div>
               )
             }

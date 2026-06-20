@@ -56,6 +56,7 @@ class SourceResponse(BaseModel):
     similarity_score: float
     evidence_grade: str | None = None
     url: str | None = None
+    full_text: str = ""
 
 
 class SecondBrainQueryResponse(BaseModel):
