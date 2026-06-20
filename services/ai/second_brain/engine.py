@@ -63,7 +63,11 @@ async def answer(
             degraded=True,
         )
 
-    ok, cited_ids = grounding_ok(synthesized, {source.source_id for source in sources})
+    ok, cited_ids = grounding_ok(
+        synthesized,
+        {source.source_id for source in sources},
+        source_texts=[getattr(source, "snippet", "") for source in sources],
+    )
     if not ok:
         result, meta = _extractive_result(
             sources=sources,
