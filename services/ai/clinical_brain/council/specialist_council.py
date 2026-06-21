@@ -641,8 +641,10 @@ class SpecialistCouncil:
                 if other.startswith("patient:") and row["relationship"]:
                     rel_map[other.split(":", 1)[1]] = row["relationship"]
 
+            # Names are intentionally NOT selected — hereditary cross-referencing
+            # needs only conditions + relationship, never patient identifiers.
             rows = (await self.db.execute(text("""
-                SELECT p.id, p.first_name, p.last_name,
+                SELECT p.id,
                     (SELECT json_agg(cn.content) FROM clinical_notes cn
                      WHERE cn.patient_id = p.id AND cn.note_type IN ('condition','diagnosis')) AS diagnoses,
                     (SELECT json_agg(cn2.content) FROM clinical_notes cn2
@@ -655,7 +657,6 @@ class SpecialistCouncil:
             return [
                 {
                     "patient_id": str(r["id"]),
-                    "name": f"{r['first_name']} {r['last_name']}",
                     "relationship": rel_map.get(str(r["id"]), "relative"),
                     "diagnoses": r["diagnoses"] or [],
                     "inherited_conditions": r["inherited"] or [],
