@@ -63,6 +63,25 @@ async def generate(
 
     Always returns a GenResult — on total failure, text is "" and degraded=True.
     """
+    # PHI egress gate: no direct patient identifier may reach ANY LLM, even a
+    # BAA provider (minimum-necessary). Scrub patterned identifiers from the
+    # prompt + system before anything leaves the process; a hit is a tripwire
+    # that a caller is leaking — log the category only, never the value.
+    from .phi_scrub import scrub_identifiers
+
+    prompt, p_hits = scrub_identifiers(prompt)
+    if system is not None:
+        system, s_hits = scrub_identifiers(system)
+    else:
+        s_hits = []
+    leaked = sorted(set(p_hits) | set(s_hits))
+    if leaked:
+        logger.warning(
+            "[local_llm] PHI scrub redacted identifiers from outbound prompt "
+            "(task=%s, categories=%s) — fix the caller leaking these",
+            task, leaked,
+        )
+
     want_cloud = network_up() and not prefer_local
 
     # Resolve the AITask + PHI sensitivity from the registry's enums lazily so this
