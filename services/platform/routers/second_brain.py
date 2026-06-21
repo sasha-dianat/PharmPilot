@@ -38,6 +38,8 @@ class SecondBrainQueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     patient_id: UUID | None = None
     top_k: int = Field(DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+    # False → skip the LLM and return retrieved passages only (offline/extractive).
+    ai_assist: bool = True
 
     @field_validator("question")
     @classmethod
@@ -247,7 +249,7 @@ async def query_second_brain(
         result, llm_meta = await engine.answer(
             body.question,
             retrieve=retrieve,
-            synthesize=_get_synthesizer(),
+            synthesize=_get_synthesizer() if body.ai_assist else None,
             patient_context=patient_context,
             top_k=body.top_k,
         )
