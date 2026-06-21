@@ -46,10 +46,14 @@ Per design review, **bundle A (mechanistic knowledge)** is folded into this
 sub-project. Bundles **B (reasoning intelligence)**, **C (accelerators)**, and
 **D (governance)** are deferred to the enrichment track (alongside #3).
 
-Bundle A folded in: PK attribute layer (CYP/transporter substrate·inhibitor·inducer
-with fraction-metabolized), PD axis tags, **mechanistic inference** of unlisted
-interactions, NTI flagging, special-population + dose/route severity modifiers,
-combination-product decomposition, and per-rule **evidence grading**.
+Bundle A folded in (full PK/PD model, professor review items 1–7): per-enzyme PK
+attribute layer (CYP + transporters, FDA AUC-ratio strength, reversible/TDI,
+induction time-course), **direction-of-effect** modeling (prodrug/active-metabolite),
+**phenoconversion**, absorption-phase (chelation + pH) and renal-competition
+interactions, mechanistic inference with **predicted-magnitude bands**, PD axes with
+**effect direction** (additive/synergistic/antagonistic, MAOI, QT conditional gating),
+NTI flagging, special-population + dose/route severity modifiers, combination-product
+decomposition, and per-rule **evidence grading**.
 
 **A↔B coupling — explicit line:** PD axes are only useful if something consumes
 them. So #1 includes **basic pairwise** PD/PK inference (drug-vs-drug on a shared
@@ -81,49 +85,98 @@ new data-driven knowledge file.
 ### 0. Drug attribute layer — `drug_attributes.py` + `data/drug_attributes.yaml`  (bundle A)
 
 The per-drug pharmacology model that makes coverage *generative*. Loaded once into
-an in-memory index keyed by normalized ingredient. Per drug:
+an in-memory index keyed by normalized ingredient. The schema below is the **full
+PK/PD model** (professor review, items 1–7); seed data is high-yield first and
+grown via #3.
 
 ```yaml
+- ingredient: clopidogrel
+  classes: [p2y12_inhibitor, antiplatelet]
+  atc: B01AC04
+  prodrug: true                       # activity requires bioactivation
+  activating_enzyme: CYP2C19          # inhibiting THIS = loss of efficacy
+  pk:
+    enzymes:
+      - { enzyme: CYP2C19, role: substrate, fm: 0.5, yields: active }
+    transporters: []
+    elimination_route: hepatic
+  pgx_enzyme: CYP2C19                  # phenoconversion-relevant
+  pd:
+    bleeding: { strength: moderate, direction: additive }
+
 - ingredient: clarithromycin
   classes: [macrolide]
-  atc: J01FA09
   pk:
-    cyp:
-      - { enzyme: CYP3A4, role: inhibitor, strength: strong }
-    transporters:
-      - { name: P-gp, role: inhibitor, strength: moderate }
-  pd: {}                       # PD axes when applicable
-  nti: false
-  combination_of: []          # ingredient list if this is a combo product
+    enzymes:
+      - { enzyme: CYP3A4, role: inhibitor, strength: strong,
+          inhibition_type: mechanism_based }   # TDI → effect persists after stop
+    transporters: [{ name: P-gp, role: inhibitor, strength: moderate }]
+  pd: { qt: { tier: conditional } }            # CredibleMeds conditional risk
 
 - ingredient: simvastatin
   classes: [statin]
   pk:
-    cyp:
-      - { enzyme: CYP3A4, role: substrate, fraction_metabolized: 0.8 }
-  nti: false
+    enzymes: [{ enzyme: CYP3A4, role: substrate, fm: 0.8, yields: parent }]
+    transporters: [{ name: OATP1B1, role: substrate, organ: hepatic_uptake }]
+  nti: { is_nti: true, consequence: toxicity }  # rhabdomyolysis
+
+- ingredient: rifampin
+  classes: [rifamycin]
+  pk:
+    enzymes: [{ enzyme: CYP3A4, role: inducer, strength: strong }]
+    induction: { onset_days: 7, offset_days: 14 }  # delayed on/offset
+
+- ingredient: levothyroxine
+  classes: [thyroid_hormone]
+  absorption: { chelation_cations: [Ca, Mg, Al, Fe], separation_hours: 4 }
+
+- ingredient: phenelzine
+  classes: [maoi]
+  pd: { serotonergic: { subtype: maoi } }        # MAOI + serotonergic = contraindicated
 
 - ingredient: amiodarone
   classes: [antiarrhythmic]
   pk:
-    cyp: [{ enzyme: CYP3A4, role: inhibitor, strength: moderate },
-          { enzyme: CYP2D6, role: inhibitor, strength: moderate }]
-  pd: { qt: high }            # CredibleMeds "known risk" tier
-  nti: true
-  long_acting: true           # bypasses the recency cutoff (ties to §5)
+    enzymes: [{ enzyme: CYP3A4, role: inhibitor, strength: moderate },
+              { enzyme: CYP2D6, role: inhibitor, strength: moderate }]
+  pd: { qt: { tier: known } }
+  nti: { is_nti: true, consequence: toxicity }
+  long_acting: true                              # t½ ~58 d → bypasses §5 cutoff
 ```
 
-- **PK axes:** CYP (3A4/2D6/2C9/2C19/1A2) and transporters (P-gp, OATP1B1, BCRP,
-  OCT2/MATE) tagged `substrate | inhibitor | inducer` with `strength` and, for
-  substrates, `fraction_metabolized`.
-- **PD axes:** `qt`, `serotonergic`, `anticholinergic` (ACB score), `cns_depression`,
-  `bleeding`, `nephrotoxic`, `hyperkalemia`, `hypoglycemia`, `hyponatremia`,
-  `hepatotoxic` — each with a strength/tier.
-- **NTI**, **long_acting** (depot/long-half-life bypass for §5), pregnancy/lactation
-  and renal/hepatic dose flags, and `combination_of` for decomposition.
-- Seeded for a high-yield starter drug set; gaps surface via §"Error handling"
-  coverage notes. The `long_acting` flag here is the source of truth for §5's
-  `LONG_ACTING_DRUGS` bypass (single definition, no duplication).
+**PK model (items 1–6):**
+- `enzymes[]` — CYP (3A4/2D6/2C9/2C19/1A2…) and the role:
+  - `substrate` carries **per-enzyme `fm`** (fraction metabolized by *that* enzyme)
+    and `yields: parent | active` (parent active vs prodrug → drives direction).
+  - `inhibitor`/`inducer` carry `strength` defined by the **FDA AUC-ratio standard**
+    (inhibitor: strong ≥5×, moderate 2–5×, weak 1.25–2×; inducer: strong ≥80% AUC↓,
+    moderate 50–80%, weak 20–50%) and, for inhibitors, `inhibition_type:
+    reversible | mechanism_based` (TDI persists post-discontinuation).
+  - `induction: {onset_days, offset_days}` captures the delayed on/offset.
+- `transporters[]` — P-gp, OATP1B1/1B3, BCRP, OCT2/MATE, OAT — with `organ`
+  (hepatic_uptake / intestinal / bbb / renal_secretion) and consequence.
+- `prodrug` + `activating_enzyme`, `active_metabolite`, `pgx_enzyme` — enable
+  direction-of-effect and **phenoconversion** reasoning.
+- `elimination_route` (hepatic/renal/biliary) + renal handling for tubular-secretion
+  competition (lithium, methotrexate, digoxin).
+- `absorption` — `chelation_cations[]` (+ `separation_hours`) and
+  `ph_dependent: acid_requiring` for pre-systemic interactions.
+
+**PD model (item 7):** each axis carries a **`direction`** (`additive | synergistic |
+antagonistic`) and a strength/tier, so therapeutic opposition is detected, not just
+additive risk:
+- `qt: {tier: known | possible | conditional}` (CredibleMeds); conditional agents
+  gate on hypokalemia/hypomagnesemia/bradycardia or a PK level rise.
+- `serotonergic: {subtype: maoi | sri | releaser | weak}` (MAOI + serotonergic →
+  Contraindicated).
+- `anticholinergic: {acb: 0–3}`, `cns_depression`, `bleeding`, `nephrotoxic`,
+  `raas` (for triple-whammy tagging, used in B), `hyperkalemia`, `hypoglycemia`,
+  `hyponatremia`, `hepatotoxic` — each with `direction`.
+
+**Other:** `nti: {is_nti, consequence: toxicity | efficacy_loss}`, `long_acting`
+(single source of truth for §5's bypass), pregnancy/lactation + renal/hepatic dose
+flags, and `combination_of` for decomposition. Gaps surface via §"Error handling"
+coverage notes.
 
 ### 1. Knowledge store — `interaction_kb.py` + `data/interaction_rules.yaml`
 
@@ -156,26 +209,51 @@ an in-memory index keyed by normalized ingredient. Per drug:
   HIGH→Major; MODERATE→Moderate; LOW/INFO→Minor.
 - Frontend `severity.ts` tokens get a matching 4-tier mapping in sub-project #2.
 
-**Mechanism × victim matrix (bundle A)** — base severity for *inferred* PK findings,
-a deterministic table (no inference of severity, only lookup):
+**Direction of clinical effect (computed first, item-1 correctness fix).** Before
+severity, the engine derives the *direction* from `role × yields`:
 
-| Inhibitor/inducer strength | Substrate fraction-metabolized | Base severity |
-|---|---|---|
-| Strong inhibitor | high (≥0.5) | Major |
-| Strong inhibitor | low (<0.5) | Moderate |
-| Moderate inhibitor | high | Moderate |
-| Moderate/weak | low | Minor |
-| Strong inducer (efficacy loss) | high | Moderate |
+| Perpetrator role | Victim is… | Direction | Clinical consequence |
+|---|---|---|---|
+| Inhibitor | parent-active substrate | ↑ exposure | **toxicity** |
+| Inhibitor | prodrug (inhibits activating enzyme) | ↓ active | **efficacy loss** |
+| Inducer | parent-active substrate | ↓ exposure | **efficacy loss** |
+| Inducer | prodrug | ↑ active | **toxicity** |
+
+The finding's `mechanism`/`clinical_problem` is phrased from the direction
+(clopidogrel + omeprazole → "reduced antiplatelet effect", never "increased levels").
+
+**Predicted-magnitude band → base severity (item 2).** Map inhibitor/inducer
+`strength` × victim `fm` on the inhibited pathway to a predicted AUC fold-change band,
+then to severity (deterministic lookup, never inferred):
+
+| Strength | Victim fm (inhibited pathway) | Predicted AUC band | Base severity |
+|---|---|---|---|
+| Strong inhibitor | high (≥0.5) | ~≥5× ↑ | Major |
+| Strong inhibitor | low (<0.5) | ~2–5× ↑ | Moderate |
+| Moderate inhibitor | high | ~2–5× ↑ | Moderate |
+| Moderate/weak | low | <2× | Minor |
+| Strong inducer | high | ~≥80% ↓ | Major (efficacy loss) |
+| Moderate inducer | high | ~50–80% ↓ | Moderate |
+
+The band is surfaced verbatim in the finding (`predicted_magnitude`) — Lexicomp-grade
+output ("may increase exposure ~3–5×").
 
 **Severity modifiers (deterministic, applied after base lookup):**
-- **NTI victim** → +1 step (e.g. Major→Contraindicated), capped at Contraindicated.
-- **Renal/hepatic impairment** (from labs/flags) relevant to the victim → +1 step.
-- **Pregnancy** with a pregnancy-risk drug → +1 step.
-- **Dose/route attenuation** → −1 step for clearly low-risk forms (e.g. topical route,
-  cardioprotective low-dose aspirin) when the rule declares it dose/route-sensitive.
+- **NTI victim** → +1 step (consequence-aware: a toxicity-NTI escalates toxicity
+  findings; an efficacy-loss direction on an NTI also escalates). Capped at
+  Contraindicated.
+- **Renal/hepatic impairment** (labs/flags) relevant to the victim's elimination → +1.
+- **Pregnancy** with a pregnancy-risk drug → +1.
+- **QT conditional-risk gating** — a `conditional` QT agent only contributes when
+  hypokalemia/hypomagnesemia/bradycardia is present *or* a PK interaction raises its
+  level; otherwise downgraded to informational.
+- **Dose/route attenuation** → −1 for clearly low-risk forms (topical route,
+  cardioprotective low-dose aspirin, chelation pairs separated adequately) when the
+  rule/attribute declares it dose/route-sensitive.
 
-Modifiers are pure functions of recorded patient/drug attributes — never inferred,
-always explained in the finding's `patient_specific_factors`.
+Modifiers are pure functions of recorded attributes — never inferred, always listed in
+`patient_specific_factors`. MAOI + serotonergic and other hard contraindications are
+set directly by rule, not via the matrix.
 
 ### 3. Review set assembly — extend `_load_context` → `build_review_set`
 
@@ -199,13 +277,28 @@ combo pill contributes each ingredient to pairing and duplication.
 - **Drug–drug (explicit):** every unique unordered pair `(i<j)`; look up
   specific-drug then class-level rules from the knowledge store.
 - **Drug–drug (mechanistic inference, bundle A):** for each ordered pair, derive
-  unlisted interactions from the attribute layer:
-  - *PK:* if A is an inhibitor/inducer of enzyme/transporter E and B is a substrate
-    of E → predicted finding. Severity from the **mechanism × victim matrix**
-    (see §2): inhibitor strength × substrate `fraction_metabolized`, escalated when
-    the victim is **NTI**. Inducers emit a *reduced-efficacy* finding.
-  - *PD:* if A and B share a PD axis (both QT-prolonging, both serotonergic, both
-    bleeding-risk, etc.) → predicted additive finding at that axis.
+  unlisted interactions from the attribute layer. Each path computes **direction**
+  (§2) first, then magnitude/severity:
+  - *Metabolic PK:* A inhibits/induces enzyme E; B is a substrate of E → derive
+    direction from B's `yields` (parent vs prodrug) and A's role; severity from the
+    predicted-magnitude band × B's fm on E, escalated if B is NTI.
+  - *Phenoconversion:* a **strong** inhibitor of B's `pgx_enzyme` converts a normal
+    metabolizer to a *functional poor metabolizer* — for a prodrug this yields an
+    efficacy-loss finding (codeine/clopidogrel pattern); for a parent-active NTI, a
+    toxicity finding.
+  - *Transporter PK:* A inhibits transporter T; B is a substrate of T → finding
+    framed by T's organ (OATP1B1 → ↑statin → myopathy; P-gp → ↑digoxin; OCT2/MATE or
+    OAT → ↓renal secretion of B).
+  - *Absorption:* B requires acid and A is acid-suppressing → reduced-absorption
+    (efficacy loss); B is chelated by A's `chelation_cations` → reduced absorption,
+    **action = separate by `separation_hours`**, severity attenuated if separable.
+  - *Renal competition:* A reduces renal clearance of a renally-eliminated NTI B
+    (lithium, methotrexate, digoxin) → toxicity finding.
+  - *PD:* if A and B share a PD axis, branch on **direction**:
+    *additive/synergistic* (two QT, opioid+benzo synergy) → cumulative-risk finding
+    at that axis; *antagonistic* (NSAID vs antihypertensive, anticholinergic vs
+    AChEI) → **therapeutic-opposition / efficacy-loss** finding. MAOI + serotonergic
+    is a hard **Contraindicated**.
   - Inferred findings are tagged `source: inferred_mechanistic`, `evidence_grade:
     Predicted`, with lower base confidence, and are **always overridden** by an
     explicit curated/DDInter rule for the same participants (precedence:
@@ -224,11 +317,16 @@ cumulative ≥3-drug PD roll-ups are bundle B (deferred).
   a drug–drug interaction is **suppressed** when *both* participants' latest
   `last_seen_date` make at least one a `historical` med discontinued > window ago.
 - **Drug–disease against past conditions is NEVER suppressed** (condition persists).
-- **Long-half-life / depot exception list** (`LONG_ACTING_DRUGS`) bypasses the
-  cutoff — e.g. amiodarone, fluoxetine, leflunomide, depot antipsychotics,
-  denosumab, bisphosphonates. These keep full drug–drug evaluation regardless of
-  discontinuation date.
-- Every finding carries a `recency_note` (e.g. "historical — last dispensed 2024-02").
+- **Long-half-life / depot bypass** — drugs flagged `long_acting` in the attribute
+  layer (amiodarone, fluoxetine, leflunomide, depot antipsychotics, denosumab,
+  bisphosphonates) keep full drug–drug evaluation regardless of discontinuation date.
+- **Pharmacology-aware persistence (items 2–3):** the cutoff also does NOT suppress
+  a perpetrator whose effect outlasts dosing — **mechanism-based (TDI) inhibitors**
+  and **inducers** (whose `induction.offset_days` extends the active window). The
+  effective window for such perpetrators = `max(HISTORICAL_DDI_WINDOW_DAYS,
+  offset_days)`. A rifampin or clarithromycin course stopped "recently" is still live.
+- Every finding carries a `recency_note` (e.g. "historical — last dispensed 2024-02";
+  or "inducer effect persists ~2 wk after stop").
 
 ### 6. Output contract — `InteractionReport`
 
@@ -239,9 +337,12 @@ class Finding:
     type: str                # drug_drug | drug_disease | duplicate_therapy | drug_allergy
     severity: str            # canonical 4-tier (after modifiers)
     base_severity: str       # before patient-specific modifiers (auditability)
+    direction: str           # toxicity | efficacy_loss | additive_risk | opposition
+    predicted_magnitude: str | None  # e.g. "~3–5× ↑ exposure" / "~80% ↓ exposure"
+    onset_offset: str | None # e.g. "delayed onset ~1 wk; persists ~2 wk after stop"
     participants: list[dict]  # [{name, kind: drug|condition, provenance, last_seen}]
     mechanism: str           # human-readable; for inferred: the PK/PD pathway
-    mechanism_basis: str | None  # e.g. "CYP3A4 inhibition (strong) of substrate fm=0.8"
+    mechanism_basis: str | None  # e.g. "CYP3A4 inhibition (strong, TDI) of substrate fm=0.8"
     clinical_problem: str
     suggested_actions: list[str]
     evidence_sources: list[str]
@@ -279,10 +380,12 @@ Rx claim → /cds/interaction-report {patient_id, rx_ids}
        → decompose combination products to ingredients
   → engine.evaluate(review_set, rules_index, attr_index)   # in-process, deterministic
        explicit:   drug_drug | drug_disease | duplicate | allergy
-       inferred:   PK (CYP/transporter) + PD-axis pairwise        (bundle A)
+       inferred:   PK metabolic + phenoconversion + transporter + absorption + renal,
+                   PD-axis pairwise (additive/synergistic/antagonistic)   (bundle A)
+       direction:  role × yields → toxicity | efficacy_loss | opposition
        precedence: curated > ddinter > inferred_mechanistic
-       severity:   base lookup/matrix → modifiers (NTI, renal/hepatic, pregnancy, dose/route)
-       recency:    drug–drug cutoff (long_acting bypass); drug–disease never suppressed
+       severity:   magnitude band → modifiers (NTI, renal/hepatic, pregnancy, QT-gating, dose/route)
+       recency:    drug–drug cutoff (long_acting + TDI/inducer-offset bypass); drug–disease never suppressed
   → InteractionReport (severity-sorted)            # no network, no LLM
 ```
 
@@ -309,20 +412,32 @@ Rx claim → /cds/interaction-report {patient_id, rx_ids}
 - `degraded` path when the index is empty.
 - Migration parity: the 6 legacy rules still fire with equivalent (re-mapped) severity.
 
-Mechanistic layer (bundle A):
-- **PK inference**: strong-3A4-inhibitor × high-fm-3A4-substrate → predicted Major
-  (e.g. clarithromycin × simvastatin reproduced *by mechanism*, independent of the
-  explicit rule); matrix cells verified for each strength × fm combination.
+Mechanistic layer (bundle A, full PK/PD model items 1–7):
+- **Magnitude→severity**: strong-3A4-inhibitor × high-fm-3A4-substrate → predicted
+  Major with `predicted_magnitude ≈ ≥5×` (clarithromycin × simvastatin reproduced
+  *by mechanism*); every matrix cell verified for strength × fm.
+- **Direction of effect (item 1)**: clopidogrel + omeprazole (2C19 inhibitor ×
+  2C19-activated prodrug) → `direction: efficacy_loss`, NOT toxicity; rifampin +
+  warfarin (inducer × parent-active) → efficacy_loss; inducer × prodrug → toxicity.
+- **Phenoconversion**: strong 2D6 inhibitor + codeine (2D6 prodrug) → analgesic-
+  failure finding.
+- **Transporter**: OATP1B1 inhibitor × statin → myopathy framing; P-gp inhibitor ×
+  digoxin → ↑digoxin.
+- **Absorption**: levothyroxine + calcium → chelation finding with
+  `action: separate by 4 h` and attenuated severity; acid-requiring drug + PPI →
+  efficacy loss.
+- **Renal competition**: NSAID/diuretic × lithium → toxicity finding.
+- **PD direction**: two QT (additive); opioid+benzo (synergistic); NSAID ×
+  antihypertensive → `direction: opposition` (efficacy loss); MAOI + serotonergic →
+  Contraindicated; **QT conditional gating** — a conditional-risk QT drug contributes
+  only with hypokalemia/bradycardia or a level-raising PK interaction.
 - **NTI escalation**: inferred Major on an NTI victim → Contraindicated.
-- **Inducer** path emits a reduced-efficacy finding, not a toxicity one.
-- **PD pairwise**: two QT-prolongers / two serotonergic agents → predicted additive
-  finding at the right axis.
-- **Precedence**: an explicit curated rule overrides the inferred finding for the
-  same pair (one finding, source=curated); inferred is dropped, not duplicated.
+- **Recency persistence**: TDI inhibitor / inducer stopped within its `offset_days`
+  is NOT suppressed; `long_acting` drug bypasses the cutoff.
+- **Precedence**: explicit curated rule overrides the inferred finding for the same
+  pair (one finding, source=curated); inferred dropped, not duplicated.
 - **Combination decomposition**: a combo product triggers ingredient-level pairing
   and duplicate-therapy.
-- **Dose/route attenuation**: low-dose aspirin / topical route steps severity down
-  only when the rule is flagged dose/route-sensitive.
 - Inferred findings always carry `evidence_grade: Predicted` and
   `source: inferred_mechanistic`.
 
