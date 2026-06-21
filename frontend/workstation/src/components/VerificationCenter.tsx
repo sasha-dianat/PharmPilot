@@ -834,6 +834,14 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
   const [sources,  setSources]  = useState<SecondBrainSource[]>([])
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [loading,  setLoading]  = useState(false)
+  // Offline (extractive) vs AI-assisted (LLM synthesis). Sticky per browser.
+  const [aiAssist, setAiAssist] = useState<boolean>(() => {
+    try { return localStorage.getItem('kb-ai-assist') === '1' } catch { return false }
+  })
+  const setMode = (v: boolean) => {
+    setAiAssist(v)
+    try { localStorage.setItem('kb-ai-assist', v ? '1' : '0') } catch { /* ignore */ }
+  }
 
   const handleAsk = async () => {
     if (!question.trim()) return
@@ -842,7 +850,7 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
     setSources([])
     setExpanded(new Set())
     try {
-      const { data } = await clinicalApi.queryKnowledge(question, patientId)
+      const { data } = await clinicalApi.queryKnowledge(question, patientId, aiAssist)
       setAnswer(data.answer || data.response || 'No answer returned.')
       setSources(data.sources || [])
     } catch {
@@ -864,6 +872,19 @@ function ClinicalBrainQuery({ drugName, patientId }: { drugName: string; patient
         <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">📚</span>
         <span>Knowledge base · ask Clinical Brain</span>
         <span className="text-xs font-normal text-ink3 ml-1">— scope: {drugName} + patient</span>
+        <div className="ml-auto flex items-center rounded-lg border border-line2 bg-surface2 p-0.5 text-[11px] font-semibold cd-ui"
+          role="radiogroup" aria-label="Answer mode">
+          <button type="button" role="radio" aria-checked={!aiAssist} onClick={() => setMode(false)}
+            title="Return retrieved source passages only — no LLM, instant."
+            className={`px-2 py-1 rounded-md transition-colors ${!aiAssist ? 'bg-intel text-white' : 'text-ink3 hover:text-ink'}`}>
+            Offline
+          </button>
+          <button type="button" role="radio" aria-checked={aiAssist} onClick={() => setMode(true)}
+            title="Synthesize a grounded answer with an LLM; falls back to passages if no provider is reachable."
+            className={`px-2 py-1 rounded-md transition-colors ${aiAssist ? 'bg-intel text-white' : 'text-ink3 hover:text-ink'}`}>
+            AI-assisted
+          </button>
+        </div>
       </div>
       <div className="flex gap-2">
         <input type="text" value={question} onChange={e => setQuestion(e.target.value)}
