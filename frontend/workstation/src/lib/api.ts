@@ -165,6 +165,12 @@ export const clinicalApi = {
   // (returns retrieved passages) when no LLM key — unlike /knowledge/query (503).
   queryKnowledge: (question: string, patientId?: string, aiAssist = true) =>
     apiClient.post('/second-brain/query', { question, patient_id: patientId, top_k: 8, ai_assist: aiAssist }),
+  getInteractionReport: (patientId: string) =>
+    apiClient.get(`/cds/interaction-report/${patientId}`),
+  acknowledgeInteractions: (body: {
+    patient_id: string; rx_id?: string; findings_hash: string;
+    acknowledged: { rule_id: string; severity: string }[];
+  }) => apiClient.post('/cds/interaction-ack', body),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
     apiClient.post('/second-brain/query', {
       question,

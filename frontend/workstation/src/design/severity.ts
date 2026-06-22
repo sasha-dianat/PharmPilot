@@ -34,9 +34,10 @@ export const SEVERITY: Record<Severity, SevToken> = {
 /** Map backend severity vocab → design severity. */
 export function toSeverity(raw: string | null | undefined): Severity {
   switch ((raw ?? '').toLowerCase()) {
-    case 'critical': case 'blocker': case 'high': case 'severe': return 'blocker'
-    case 'caution': case 'moderate': return 'caution'
-    case 'warning': case 'warn': case 'low': return 'warning'
+    case 'critical': case 'blocker': case 'high': case 'severe': case 'contraindicated': return 'blocker'
+    case 'major': case 'caution': return 'caution'
+    case 'warning': case 'warn': case 'low': case 'moderate': return 'warning'
+    case 'minor': return 'neutral'
     case 'safe': case 'ok': case 'resolved': case 'normal': return 'safe'
     case 'counsel': case 'counselling': case 'counseling': return 'counsel'
     case 'dur': return 'dur'
