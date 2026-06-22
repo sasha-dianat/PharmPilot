@@ -46,3 +46,28 @@ def test_inferred_pk_emitted_without_explicit_rule():
            and {p["name"] for p in f.participants} == {"amiodarone", "simvastatin"}]
     assert inf and inf[0].evidence_grade == "Predicted"
     assert inf[0].direction == "toxicity"
+
+
+def test_phenoconversion_codeine_efficacy_loss():
+    rep = evaluate(_rs(["paroxetine", "codeine"]))   # strong 2D6 inhibitor + 2D6 prodrug
+    f = [x for x in rep.findings if x.direction == "efficacy_loss"
+         and {p["name"] for p in x.participants} == {"paroxetine", "codeine"}]
+    assert f
+
+
+def test_transporter_pgp_digoxin():
+    rep = evaluate(_rs(["clarithromycin", "digoxin"]))   # P-gp inhibitor + P-gp substrate
+    assert any("P-gp" in (f.mechanism_basis or "") for f in rep.findings)
+
+
+def test_absorption_chelation_separation_action():
+    rep = evaluate(_rs(["levothyroxine", "calcium carbonate"]))
+    f = [x for x in rep.findings if x.type == "drug_drug" and "separate" in
+         " ".join(x.suggested_actions).lower()]
+    assert f
+
+
+def test_renal_competition_lithium():
+    rep = evaluate(_rs(["ibuprofen", "lithium"]))
+    assert any(f.direction == "toxicity" and {p["name"] for p in f.participants} ==
+               {"ibuprofen", "lithium"} for f in rep.findings)

@@ -3,7 +3,10 @@ from __future__ import annotations
 from itertools import combinations
 
 from .attributes import AttributeIndex, load_attribute_index
-from .mechanism import metabolic_interaction
+from .mechanism import (
+    metabolic_interaction, phenoconversion, transporter_interaction,
+    absorption_interaction, renal_competition,
+)
 from .report import Finding, InteractionReport, build_report
 from .review_set import ReviewSet
 from .rules import RuleIndex, load_rule_index
@@ -94,6 +97,10 @@ def _drug_allergy(rs: ReviewSet) -> list[Finding]:
     return out
 
 
+_MECHANISMS = (metabolic_interaction, phenoconversion, transporter_interaction,
+               absorption_interaction, renal_competition)
+
+
 def _inferred_pk(rs: ReviewSet, attrs: AttributeIndex) -> list[Finding]:
     out = []
     for a, b in combinations(rs.meds, 2):
@@ -101,19 +108,20 @@ def _inferred_pk(rs: ReviewSet, attrs: AttributeIndex) -> list[Finding]:
         if not aa or not ba:
             continue
         for perp, victim, pm, vm in ((aa, ba, a, b), (ba, aa, b, a)):
-            m = metabolic_interaction(perp, victim)
-            if not m:
-                continue
-            out.append(_finding(
-                rule_id=f"pk:{m['enzyme']}:{perp.ingredient}->{victim.ingredient}",
-                type="drug_drug", severity=m["severity"], base=m["base_severity"],
-                direction=m["direction"], magnitude=m["predicted_magnitude"],
-                onset=m["onset_offset"], basis=m["mechanism_basis"],
-                mechanism=f"{perp.ingredient}: {m['mechanism_basis']} → {victim.ingredient}",
-                actions=["Review need; monitor for the predicted effect or adjust dose."],
-                evidence=["Mechanistic inference (PK)"], grade="Predicted",
-                source="inferred_mechanistic", participants=[_p(pm), _p(vm)],
-                factors=m["patient_specific_factors"], confidence=0.6))
+            for fn in _MECHANISMS:
+                m = fn(perp, victim)
+                if not m:
+                    continue
+                out.append(_finding(
+                    rule_id=f"{fn.__name__}:{perp.ingredient}->{victim.ingredient}",
+                    type="drug_drug", severity=m["severity"], base=m["base_severity"],
+                    direction=m["direction"], magnitude=m.get("predicted_magnitude"),
+                    onset=m.get("onset_offset"), basis=m["mechanism_basis"],
+                    mechanism=f"{perp.ingredient}: {m['mechanism_basis']} → {victim.ingredient}",
+                    actions=[m.get("action", "Review need; monitor or adjust dose.")],
+                    evidence=["Mechanistic inference"], grade="Predicted",
+                    source="inferred_mechanistic", participants=[_p(pm), _p(vm)],
+                    factors=m.get("patient_specific_factors", []), confidence=0.6))
     return out
 
 

@@ -70,3 +70,75 @@ def metabolic_interaction(perp: DrugAttributes, victim: DrugAttributes) -> dict 
             "enzyme": pe.enzyme,
         }
     return None
+
+
+def phenoconversion(perp: DrugAttributes, victim: DrugAttributes) -> dict | None:
+    if not victim.pgx_enzyme:
+        return None
+    for pe in perp.enzymes:
+        if pe.role == "inhibitor" and pe.strength == "strong" and pe.enzyme == victim.pgx_enzyme:
+            return {
+                "type": "drug_drug",
+                "direction": "efficacy_loss" if victim.prodrug else "toxicity",
+                "base_severity": InteractionSeverity.MAJOR,
+                "severity": InteractionSeverity.MAJOR,
+                "predicted_magnitude": "functional poor-metabolizer phenotype",
+                "onset_offset": None,
+                "mechanism_basis": f"phenoconversion via strong {pe.enzyme} inhibition",
+                "patient_specific_factors": [],
+            }
+    return None
+
+
+def transporter_interaction(perp: DrugAttributes, victim: DrugAttributes) -> dict | None:
+    for pt in perp.transporters:
+        if pt.role != "inhibitor":
+            continue
+        for vt in victim.transporters:
+            if vt.role == "substrate" and vt.name == pt.name:
+                return {
+                    "type": "drug_drug", "direction": "toxicity",
+                    "base_severity": InteractionSeverity.MODERATE,
+                    "severity": step(InteractionSeverity.MODERATE, +1) if victim.nti.is_nti
+                    else InteractionSeverity.MODERATE,
+                    "predicted_magnitude": None, "onset_offset": None,
+                    "mechanism_basis": f"{pt.name} inhibition ({vt.organ or 'transport'}) of {victim.ingredient}",
+                    "patient_specific_factors": (
+                        [f"{victim.ingredient} is narrow-therapeutic-index"] if victim.nti.is_nti else []),
+                }
+    return None
+
+
+def absorption_interaction(perp: DrugAttributes, victim: DrugAttributes) -> dict | None:
+    if victim.absorption and victim.absorption.chelation_cations and perp.provides_cations:
+        if set(perp.provides_cations) & set(victim.absorption.chelation_cations):
+            hrs = victim.absorption.separation_hours or 2
+            return {
+                "type": "drug_drug", "direction": "efficacy_loss",
+                "base_severity": InteractionSeverity.MODERATE, "severity": InteractionSeverity.MODERATE,
+                "predicted_magnitude": "reduced absorption", "onset_offset": None,
+                "mechanism_basis": "polyvalent-cation chelation",
+                "action": f"Separate administration by {hrs} h.",
+                "patient_specific_factors": [],
+            }
+    if victim.absorption and victim.absorption.ph_dependent == "acid_requiring" and perp.absorption_suppressant_ph:
+        return {
+            "type": "drug_drug", "direction": "efficacy_loss",
+            "base_severity": InteractionSeverity.MODERATE, "severity": InteractionSeverity.MODERATE,
+            "predicted_magnitude": "reduced absorption (raised gastric pH)", "onset_offset": None,
+            "mechanism_basis": "pH-dependent absorption", "patient_specific_factors": [],
+        }
+    return None
+
+
+def renal_competition(perp: DrugAttributes, victim: DrugAttributes) -> dict | None:
+    if victim.ingredient in perp.reduces_renal_clearance_of and victim.nti.is_nti:
+        return {
+            "type": "drug_drug", "direction": "toxicity",
+            "base_severity": InteractionSeverity.MAJOR,
+            "severity": step(InteractionSeverity.MAJOR, +1),    # NTI
+            "predicted_magnitude": "reduced renal clearance", "onset_offset": None,
+            "mechanism_basis": "competition / reduced GFR lowering renal elimination",
+            "patient_specific_factors": [f"{victim.ingredient} is narrow-therapeutic-index"],
+        }
+    return None
