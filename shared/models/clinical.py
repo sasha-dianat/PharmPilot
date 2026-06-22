@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,3 +70,20 @@ class ClinicalAuditLog(AuditedBase):
     output_snapshot: Mapped[dict | list] = mapped_column(JSONB, nullable=False)
     rules_triggered: Mapped[list] = mapped_column(JSONB, nullable=False)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class InteractionReportCache(AuditedBase):
+    """One current precomputed InteractionReport per patient+pharmacy, keyed by a
+    review-set hash so the pharmacist panel reads it instantly (computed at intake)."""
+    __tablename__ = "interaction_reports"
+    __table_args__ = (
+        UniqueConstraint("patient_id", "pharmacy_id", name="uq_interaction_report_patient"),
+    )
+
+    patient_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    pharmacy_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    review_set_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    findings_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
