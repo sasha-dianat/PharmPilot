@@ -110,3 +110,26 @@ def test_long_acting_bypasses_cutoff():
     rep = evaluate(_rs_hist(["simvastatin"], "amiodarone", days_ago=400), now=date.today())
     assert any({p["name"] for p in f.participants} == {"amiodarone", "simvastatin"}
                for f in rep.findings)
+
+
+def test_metformin_low_egfr_contraindicated():
+    rs = assemble_review_set(current_rx=[NS(drug_name="metformin")], meds=[],
+                             conditions=[], allergies=[], labs={"egfr": 25.0})
+    rep = evaluate(rs)
+    assert any(f.type == "drug_context" and f.severity is S.CONTRAINDICATED for f in rep.findings)
+
+
+def test_benzodiazepine_elderly_major():
+    rs = assemble_review_set(current_rx=[NS(drug_name="diazepam")], meds=[],
+                             conditions=[], allergies=[], age=72)
+    rep = evaluate(rs)
+    assert any(f.type == "drug_context" for f in rep.findings)
+
+
+def test_acei_spironolactone_potassium_escalation():
+    rs = assemble_review_set(current_rx=[NS(drug_name="lisinopril"), NS(drug_name="spironolactone")],
+                             meds=[], conditions=[], allergies=[], labs={"potassium": 5.6})
+    rep = evaluate(rs)
+    dd = [f for f in rep.findings if f.type == "drug_drug" and
+          {p["name"] for p in f.participants} == {"lisinopril", "spironolactone"}]
+    assert dd and dd[0].severity is S.CONTRAINDICATED

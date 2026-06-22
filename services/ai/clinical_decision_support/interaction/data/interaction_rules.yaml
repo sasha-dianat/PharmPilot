@@ -48,3 +48,37 @@
   evidence: ["KDIGO"]
   confidence: 0.9
   source: curated
+
+- kind: drug_context
+  left: biguanide
+  requires_lab: egfr
+  thresholds:
+    - { max: 30, severity: Contraindicated, note: "eGFR <30: metformin contraindicated" }
+    - { max: 44, severity: Major, note: "eGFR 30-44: review dose with prescriber" }
+  missing_severity: Moderate
+  mechanism: "Reduced renal clearance leads to metformin accumulation; lactic-acidosis risk."
+  action: "Verify a recent eGFR before continuation."
+  evidence: ["FDA DSC: metformin & renal function"]
+  source: curated
+
+- kind: drug_context
+  left: benzodiazepine
+  requires_age_min: 65
+  severity: Major
+  mechanism: "Beers: benzodiazepines raise falls/cognitive/MVA risk in older adults."
+  action: "Review necessity and duration; taper if discontinuing."
+  evidence: ["AGS Beers 2023"]
+  source: curated
+
+- kind: drug_drug
+  left: ace_inhibitor
+  right: potassium_sparing_diuretic
+  severity: Moderate
+  lab_escalation:
+    lab: potassium
+    steps: [{ min: 5.5, severity: Contraindicated }, { min: 5.0, severity: Major }]
+  mechanism: "Additive potassium retention leading to hyperkalemia."
+  action: "Check serum potassium and renal function; review need."
+  evidence: ["Lexicomp: ACEI + potassium-sparing diuretics"]
+  confidence: 0.9
+  source: curated

@@ -36,15 +36,63 @@ def _p(med):
             "last_seen": med.last_seen_date.isoformat() if med.last_seen_date else None}
 
 
+def _apply_lab_escalation(rule, base: InteractionSeverity, labs: dict) -> InteractionSeverity:
+    esc = rule.lab_escalation
+    if not esc:
+        return base
+    val = labs.get(esc["lab"])
+    if val is None:
+        return base
+    for s in esc["steps"]:               # steps are highest-threshold first
+        if val >= s["min"]:
+            return s["severity"]
+    return base
+
+
 def _explicit_drug_drug(rs: ReviewSet, rules: RuleIndex) -> list[Finding]:
     out = []
     for a, b in combinations(rs.meds, 2):
         for r in rules.find_drug_drug(set(a.classes), set(b.classes)):
+            sev = _apply_lab_escalation(r, r.severity, rs.labs)
+            factors = [f"{r.lab_escalation['lab']}={rs.labs.get(r.lab_escalation['lab']):g}"] \
+                if r.lab_escalation and rs.labs.get(r.lab_escalation["lab"]) is not None else []
             out.append(_finding(
-                rule_id=f"dd:{r.left}-{r.right}", type="drug_drug", severity=r.severity,
+                rule_id=f"dd:{r.left}-{r.right}", type="drug_drug", severity=sev,
+                base=r.severity, direction="toxicity", mechanism=r.mechanism, actions=[r.action],
+                evidence=r.evidence, grade="Established", source=r.source,
+                participants=[_p(a), _p(b)], factors=factors, confidence=r.confidence))
+    return out
+
+
+def _drug_context(rs: ReviewSet, rules: RuleIndex) -> list[Finding]:
+    out = []
+    for med in rs.meds:
+        for r in rules.find_drug_context(set(med.classes)):
+            if r.requires_age_min is not None:
+                if rs.age is None or rs.age < r.requires_age_min:
+                    continue
+                sev, factors = r.severity, [f"age {rs.age} ≥ {r.requires_age_min}"]
+            elif r.requires_lab:
+                val = rs.labs.get(r.requires_lab)
+                if val is None:
+                    sev = r.missing_severity or InteractionSeverity.MINOR
+                    factors = [f"{r.requires_lab} not on file"]
+                else:
+                    sev = r.missing_severity or InteractionSeverity.MINOR
+                    factors = [f"{r.requires_lab}={val:g}"]
+                    for t in r.thresholds:
+                        if val <= t["max"]:
+                            sev = t["severity"]
+                            break
+                    else:
+                        continue   # value above all thresholds → no alert
+            else:
+                sev, factors = r.severity, []
+            out.append(_finding(
+                rule_id=f"ctx:{r.left}", type="drug_context", severity=sev,
                 direction="toxicity", mechanism=r.mechanism, actions=[r.action],
                 evidence=r.evidence, grade="Established", source=r.source,
-                participants=[_p(a), _p(b)], confidence=r.confidence))
+                participants=[_p(med)], factors=factors, confidence=r.confidence))
     return out
 
 
@@ -193,6 +241,7 @@ def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
     now = now or date.today()
     findings: list[Finding] = []
     findings += _explicit_drug_drug(rs, rules)
+    findings += _drug_context(rs, rules)
     findings += _inferred_pk(rs, attrs)
     findings += _inferred_pd(rs, attrs)
     findings += _drug_disease(rs, rules)
