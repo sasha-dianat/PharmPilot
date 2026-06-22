@@ -1,0 +1,97 @@
+# Per-drug PK/PD attribute seed (high-yield first; grows via sub-project #3).
+- ingredient: clopidogrel
+  classes: [antiplatelet]
+  prodrug: true
+  activating_enzyme: CYP2C19
+  pgx_enzyme: CYP2C19
+  enzymes:
+    - { enzyme: CYP2C19, role: substrate, fm: 0.5, yields: active }
+  elimination_route: hepatic
+  pd: { bleeding: { strength: moderate, direction: additive } }
+
+- ingredient: omeprazole
+  classes: [ppi]
+  enzymes:
+    - { enzyme: CYP2C19, role: inhibitor, strength: moderate, inhibition_type: reversible }
+  absorption_suppressant: { ph: true }
+
+- ingredient: clarithromycin
+  classes: [macrolide]
+  enzymes:
+    - { enzyme: CYP3A4, role: inhibitor, strength: strong, inhibition_type: mechanism_based }
+  transporters: [{ name: P-gp, role: inhibitor, strength: moderate }]
+  pd: { qt: { tier: conditional } }
+
+- ingredient: simvastatin
+  classes: [statin]
+  enzymes: [{ enzyme: CYP3A4, role: substrate, fm: 0.8, yields: parent }]
+  transporters: [{ name: OATP1B1, role: substrate, organ: hepatic_uptake }]
+  nti: { is_nti: true, consequence: toxicity }
+
+- ingredient: rifampin
+  classes: [rifamycin]
+  enzymes: [{ enzyme: CYP3A4, role: inducer, strength: strong }]
+  induction: { onset_days: 7, offset_days: 14 }
+
+- ingredient: warfarin
+  classes: [anticoagulant]
+  enzymes: [{ enzyme: CYP2C9, role: substrate, fm: 0.9, yields: parent }]
+  nti: { is_nti: true, consequence: toxicity }
+  pd: { bleeding: { strength: high, direction: additive } }
+
+- ingredient: codeine
+  classes: [opioid]
+  prodrug: true
+  activating_enzyme: CYP2D6
+  pgx_enzyme: CYP2D6
+  enzymes: [{ enzyme: CYP2D6, role: substrate, fm: 0.1, yields: active }]
+  pd: { cns_depression: { strength: moderate, direction: synergistic } }
+
+- ingredient: paroxetine
+  classes: [ssri]
+  enzymes: [{ enzyme: CYP2D6, role: inhibitor, strength: strong, inhibition_type: mechanism_based }]
+  pd: { serotonergic: { subtype: sri }, bleeding: { strength: moderate, direction: additive } }
+
+- ingredient: phenelzine
+  classes: [maoi]
+  pd: { serotonergic: { subtype: maoi } }
+
+- ingredient: levothyroxine
+  classes: [thyroid_hormone]
+  absorption: { chelation_cations: [Ca, Mg, Al, Fe], separation_hours: 4 }
+
+- ingredient: calcium carbonate
+  classes: [antacid, mineral]
+  provides_cations: [Ca]
+
+- ingredient: lithium
+  classes: [mood_stabilizer]
+  elimination_route: renal
+  nti: { is_nti: true, consequence: toxicity }
+
+- ingredient: ibuprofen
+  classes: [nsaid]
+  reduces_renal_clearance_of: [lithium, methotrexate]
+  pd: { bleeding: { strength: moderate, direction: additive },
+        nephrotoxic: { strength: moderate, direction: additive },
+        antihypertensive_opposition: { direction: antagonistic } }
+
+- ingredient: amiodarone
+  classes: [antiarrhythmic]
+  enzymes: [{ enzyme: CYP3A4, role: inhibitor, strength: moderate },
+            { enzyme: CYP2D6, role: inhibitor, strength: moderate }]
+  pd: { qt: { tier: known } }
+  nti: { is_nti: true, consequence: toxicity }
+  long_acting: true
+
+- ingredient: digoxin
+  classes: [cardiac_glycoside]
+  transporters: [{ name: P-gp, role: substrate, organ: renal_secretion }]
+  elimination_route: renal
+  nti: { is_nti: true, consequence: toxicity }
+
+- ingredient: lisinopril
+  classes: [ace_inhibitor]
+  elimination_route: renal
+  pd: { antihypertensive_opposition: { direction: antagonistic },
+        hyperkalemia: { strength: moderate, direction: additive } }
