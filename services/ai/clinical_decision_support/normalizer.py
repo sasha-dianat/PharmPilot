@@ -79,6 +79,8 @@ GENERIC_CLASSES: dict[str, set[str]] = {
     "erythromycin": {"macrolide_cyp3a4_inhibitor"},
     "metformin": {"biguanide"},
     "tramadol": {"serotonergic_opioid"},
+    "amoxicillin": {"penicillin"},
+    "ampicillin": {"penicillin"},
 }
 
 
