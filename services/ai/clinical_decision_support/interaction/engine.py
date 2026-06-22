@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from itertools import combinations
 
 from .attributes import AttributeIndex, load_attribute_index
@@ -153,13 +154,43 @@ def _dedup(findings: list[Finding]) -> list[Finding]:
     return list(best.values())
 
 
+HISTORICAL_DDI_WINDOW_DAYS = 183
+
+
+def _is_stale(med, attrs: AttributeIndex, now: date) -> bool:
+    if med.provenance != "historical" or med.last_seen_date is None:
+        return False
+    a = attrs.get(med.normalized_name)
+    if a and a.long_acting:
+        return False
+    window = HISTORICAL_DDI_WINDOW_DAYS
+    if a and a.induction_offset_days:
+        window = max(window, a.induction_offset_days)
+    return (now - med.last_seen_date).days > window
+
+
+def _suppress_stale_dd(findings: list[Finding], rs: ReviewSet,
+                       attrs: AttributeIndex, now: date) -> list[Finding]:
+    by_name = {m.normalized_name: m for m in rs.meds}
+    kept = []
+    for f in findings:
+        if f.type == "drug_drug":
+            meds = [by_name.get(p["name"]) for p in f.participants if p["kind"] == "drug"]
+            if any(m and _is_stale(m, attrs, now) for m in meds):
+                continue
+        kept.append(f)
+    return kept
+
+
 def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
-             attrs: AttributeIndex | None = None) -> InteractionReport:
+             attrs: AttributeIndex | None = None,
+             now: date | None = None) -> InteractionReport:
     try:
         rules = rules or load_rule_index()
         attrs = attrs or load_attribute_index()
     except Exception:
         return build_report([], degraded=True)
+    now = now or date.today()
     findings: list[Finding] = []
     findings += _explicit_drug_drug(rs, rules)
     findings += _inferred_pk(rs, attrs)
@@ -167,4 +198,6 @@ def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
     findings += _drug_disease(rs, rules)
     findings += _duplicate_therapy(rs)
     findings += _drug_allergy(rs)
-    return build_report(_dedup(findings))
+    findings = _dedup(findings)
+    findings = _suppress_stale_dd(findings, rs, attrs, now)
+    return build_report(findings)

@@ -87,3 +87,26 @@ def test_pd_opposition_nsaid_antihypertensive():
 def test_maoi_serotonergic_contraindicated():
     rep = evaluate(_rs(["phenelzine", "paroxetine"]))
     assert any(f.severity is S.CONTRAINDICATED for f in rep.findings)
+
+
+def _rs_hist(current, historical_name, days_ago, status="discontinued"):
+    from datetime import date, timedelta
+    return assemble_review_set(
+        current_rx=[NS(drug_name=d) for d in current],
+        meds=[NS(normalized_name=historical_name, drug_name=historical_name,
+                 status=status, start_date=date.today() - timedelta(days=days_ago))],
+        conditions=[], allergies=[])
+
+
+def test_stale_historical_drug_drug_suppressed():
+    from datetime import date
+    rep = evaluate(_rs_hist(["simvastatin"], "clarithromycin", days_ago=400), now=date.today())
+    assert not any({p["name"] for p in f.participants} == {"clarithromycin", "simvastatin"}
+                   for f in rep.findings)
+
+
+def test_long_acting_bypasses_cutoff():
+    from datetime import date
+    rep = evaluate(_rs_hist(["simvastatin"], "amiodarone", days_ago=400), now=date.today())
+    assert any({p["name"] for p in f.participants} == {"amiodarone", "simvastatin"}
+               for f in rep.findings)
