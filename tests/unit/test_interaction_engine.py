@@ -71,3 +71,19 @@ def test_renal_competition_lithium():
     rep = evaluate(_rs(["ibuprofen", "lithium"]))
     assert any(f.direction == "toxicity" and {p["name"] for p in f.participants} ==
                {"ibuprofen", "lithium"} for f in rep.findings)
+
+
+def test_pd_additive_bleeding():
+    rep = evaluate(_rs(["warfarin", "paroxetine"]))   # both bleeding axis, no explicit rule
+    assert any(f.type == "drug_drug" and f.direction == "additive_risk" and
+               "bleeding" in f.mechanism.lower() for f in rep.findings)
+
+
+def test_pd_opposition_nsaid_antihypertensive():
+    rep = evaluate(_rs(["ibuprofen", "lisinopril"]))
+    assert any(f.direction == "opposition" for f in rep.findings)
+
+
+def test_maoi_serotonergic_contraindicated():
+    rep = evaluate(_rs(["phenelzine", "paroxetine"]))
+    assert any(f.severity is S.CONTRAINDICATED for f in rep.findings)

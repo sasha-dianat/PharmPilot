@@ -7,6 +7,7 @@ from .mechanism import (
     metabolic_interaction, phenoconversion, transporter_interaction,
     absorption_interaction, renal_competition,
 )
+from .pd import pd_interactions
 from .report import Finding, InteractionReport, build_report
 from .review_set import ReviewSet
 from .rules import RuleIndex, load_rule_index
@@ -125,6 +126,22 @@ def _inferred_pk(rs: ReviewSet, attrs: AttributeIndex) -> list[Finding]:
     return out
 
 
+def _inferred_pd(rs: ReviewSet, attrs: AttributeIndex) -> list[Finding]:
+    out = []
+    for a, b in combinations(rs.meds, 2):
+        aa, ba = attrs.get(a.normalized_name), attrs.get(b.normalized_name)
+        if not aa or not ba:
+            continue
+        for m in pd_interactions(aa, ba, labs=rs.labs):
+            out.append(_finding(
+                rule_id=f"pd:{m['axis']}:{aa.ingredient}-{ba.ingredient}", type="drug_drug",
+                severity=m["severity"], direction=m["direction"], mechanism=m["mechanism"],
+                actions=["Review combination; monitor for the additive/opposing effect."],
+                evidence=["Mechanistic inference (PD)"], grade="Predicted",
+                source="inferred_mechanistic", participants=[_p(a), _p(b)], confidence=0.6))
+    return out
+
+
 def _dedup(findings: list[Finding]) -> list[Finding]:
     _SRC = {"curated": 0, "ddinter": 1, "inferred_mechanistic": 2}
     best: dict[tuple, Finding] = {}
@@ -146,6 +163,7 @@ def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
     findings: list[Finding] = []
     findings += _explicit_drug_drug(rs, rules)
     findings += _inferred_pk(rs, attrs)
+    findings += _inferred_pd(rs, attrs)
     findings += _drug_disease(rs, rules)
     findings += _duplicate_therapy(rs)
     findings += _drug_allergy(rs)
