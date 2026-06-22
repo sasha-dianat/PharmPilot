@@ -29,3 +29,20 @@ def test_duplicate_therapy_same_class():
 def test_drug_allergy():
     rep = evaluate(_rs(["amoxicillin"], allergies=["penicillin"]))
     assert any(f.type == "drug_allergy" for f in rep.findings)
+
+
+def test_inferred_pk_when_no_explicit_rule():
+    # clarithromycin + simvastatin: explicit rule EXISTS → source curated, inferred suppressed
+    rep = evaluate(_rs(["clarithromycin", "simvastatin"]))
+    dd = [f for f in rep.findings if {p["name"] for p in f.participants} ==
+          {"clarithromycin", "simvastatin"}]
+    assert len(dd) == 1 and dd[0].source == "curated"     # precedence: curated > inferred
+
+
+def test_inferred_pk_emitted_without_explicit_rule():
+    # amiodarone (mod 3A4 inhibitor) + simvastatin (3A4 substrate) has no curated rule here
+    rep = evaluate(_rs(["amiodarone", "simvastatin"]))
+    inf = [f for f in rep.findings if f.source == "inferred_mechanistic"
+           and {p["name"] for p in f.participants} == {"amiodarone", "simvastatin"}]
+    assert inf and inf[0].evidence_grade == "Predicted"
+    assert inf[0].direction == "toxicity"

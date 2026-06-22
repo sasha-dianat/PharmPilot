@@ -3,6 +3,7 @@ from __future__ import annotations
 from itertools import combinations
 
 from .attributes import AttributeIndex, load_attribute_index
+from .mechanism import metabolic_interaction
 from .report import Finding, InteractionReport, build_report
 from .review_set import ReviewSet
 from .rules import RuleIndex, load_rule_index
@@ -93,6 +94,40 @@ def _drug_allergy(rs: ReviewSet) -> list[Finding]:
     return out
 
 
+def _inferred_pk(rs: ReviewSet, attrs: AttributeIndex) -> list[Finding]:
+    out = []
+    for a, b in combinations(rs.meds, 2):
+        aa, ba = attrs.get(a.normalized_name), attrs.get(b.normalized_name)
+        if not aa or not ba:
+            continue
+        for perp, victim, pm, vm in ((aa, ba, a, b), (ba, aa, b, a)):
+            m = metabolic_interaction(perp, victim)
+            if not m:
+                continue
+            out.append(_finding(
+                rule_id=f"pk:{m['enzyme']}:{perp.ingredient}->{victim.ingredient}",
+                type="drug_drug", severity=m["severity"], base=m["base_severity"],
+                direction=m["direction"], magnitude=m["predicted_magnitude"],
+                onset=m["onset_offset"], basis=m["mechanism_basis"],
+                mechanism=f"{perp.ingredient}: {m['mechanism_basis']} → {victim.ingredient}",
+                actions=["Review need; monitor for the predicted effect or adjust dose."],
+                evidence=["Mechanistic inference (PK)"], grade="Predicted",
+                source="inferred_mechanistic", participants=[_p(pm), _p(vm)],
+                factors=m["patient_specific_factors"], confidence=0.6))
+    return out
+
+
+def _dedup(findings: list[Finding]) -> list[Finding]:
+    _SRC = {"curated": 0, "ddinter": 1, "inferred_mechanistic": 2}
+    best: dict[tuple, Finding] = {}
+    for f in findings:
+        key = (f.type, frozenset(p["name"] for p in f.participants))
+        cur = best.get(key)
+        if cur is None or (_SRC[f.source], -f.severity.rank) < (_SRC[cur.source], -cur.severity.rank):
+            best[key] = f
+    return list(best.values())
+
+
 def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
              attrs: AttributeIndex | None = None) -> InteractionReport:
     try:
@@ -102,7 +137,8 @@ def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
         return build_report([], degraded=True)
     findings: list[Finding] = []
     findings += _explicit_drug_drug(rs, rules)
+    findings += _inferred_pk(rs, attrs)
     findings += _drug_disease(rs, rules)
     findings += _duplicate_therapy(rs)
     findings += _drug_allergy(rs)
-    return build_report(findings)
+    return build_report(_dedup(findings))
