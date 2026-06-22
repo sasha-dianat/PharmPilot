@@ -14,6 +14,8 @@ from .review_set import ReviewSet
 from .rules import RuleIndex, load_rule_index
 from .severity import InteractionSeverity
 
+MODEL_VERSION = "interaction-v1"
+
 CROSS_REACTIVITY = {"penicillin": {"penicillin", "cephalosporin"}}
 
 
