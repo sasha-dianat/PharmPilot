@@ -329,3 +329,104 @@ async def interaction_report(
             report.findings[0].pharmacist_verification_notice if report.findings
             else "Advisory clinical decision support only."),
     }
+
+
+from datetime import timezone
+
+from services.ai.clinical_decision_support.interaction.precompute import recompute_and_cache
+from services.ai.clinical_decision_support.interaction.report import report_to_dict
+from services.ai.clinical_decision_support.interaction.review_set import (
+    build_review_set as _build_rs, review_set_hash,
+)
+from shared.models.clinical import InteractionReportCache
+from shared.models.prescriber import Prescriber
+
+
+@router.get("/interaction-report/{patient_id}")
+async def get_interaction_report(
+    patient_id: UUID,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    patient = (await db.execute(select(Patient).where(
+        Patient.id == patient_id, Patient.pharmacy_id == staff.pharmacy_id,
+        Patient.is_deleted == False))).scalar_one_or_none()  # noqa: E712
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    rs = await _build_rs(db=db, patient=patient, pharmacy_id=staff.pharmacy_id)
+    rsh = review_set_hash(rs)
+    cache = (await db.execute(select(InteractionReportCache).where(
+        InteractionReportCache.patient_id == patient_id,
+        InteractionReportCache.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if cache and cache.review_set_hash == rsh:
+        return {"report": cache.report, "findings_hash": cache.findings_hash,
+                "review_set_hash": rsh, "cached": True,
+                "computed_at": cache.computed_at.isoformat()}
+    _report, rsh2, fh = await recompute_and_cache(
+        db=db, patient=patient, pharmacy_id=staff.pharmacy_id, rs=rs)
+    return {"report": report_to_dict(_report), "findings_hash": fh,
+            "review_set_hash": rsh2, "cached": False,
+            "computed_at": datetime.now(timezone.utc).isoformat()}
+
+
+class InteractionAckRequest(BaseModel):
+    patient_id: UUID
+    rx_id: UUID | None = None
+    findings_hash: str
+    acknowledged: list[dict]
+
+
+def _ack_snapshot(*, staff, patient, prescription, prescriber, acknowledged) -> dict:
+    return {
+        "pharmacist": {"id": str(staff.id),
+                       "name": f"{getattr(staff,'first_name','')} {getattr(staff,'last_name','')}".strip(),
+                       "license": getattr(staff, "pharmacist_license_number", None)},
+        "physician": {
+            "name": (f"{prescriber.first_name} {prescriber.last_name}" if prescriber else None),
+            "medical_council_id": getattr(prescriber, "medical_council_id", None) if prescriber else None,
+            "specialty": getattr(prescriber, "specialty", None) if prescriber else None,
+        },
+        "patient": {"id": str(patient.id),
+                    "name": f"{getattr(patient,'first_name','')} {getattr(patient,'last_name','')}".strip(),
+                    "national_id": getattr(patient, "national_id", None)},
+        "prescription": {"rx_id": (str(prescription.id) if prescription else None),
+                         "drug_name": getattr(prescription, "drug_name", None) if prescription else None},
+        "findings": list(acknowledged),
+    }
+
+
+@router.post("/interaction-ack")
+async def acknowledge_interactions(
+    body: InteractionAckRequest,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    patient = (await db.execute(select(Patient).where(
+        Patient.id == body.patient_id, Patient.pharmacy_id == staff.pharmacy_id,
+        Patient.is_deleted == False))).scalar_one_or_none()  # noqa: E712
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    prescription = prescriber = None
+    if body.rx_id:
+        prescription = (await db.execute(select(Prescription).where(
+            Prescription.id == body.rx_id,
+            Prescription.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+        if prescription:
+            prescriber = (await db.execute(select(Prescriber).where(
+                Prescriber.id == prescription.prescriber_id))).scalar_one_or_none()
+
+    snapshot = _ack_snapshot(staff=staff, patient=patient, prescription=prescription,
+                             prescriber=prescriber, acknowledged=body.acknowledged)
+    audit = ClinicalAuditLog(
+        user_id=staff.id, patient_id=patient.id, module="interaction_acknowledgment",
+        input_snapshot=_jsonable(snapshot),
+        output_snapshot=_jsonable({"acknowledged_by": str(staff.id),
+                                   "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+                                   "findings_hash": body.findings_hash}),
+        rules_triggered=[a.get("rule_id") for a in body.acknowledged],
+        model_version="interaction-v1", created_by=staff.id, updated_by=staff.id)
+    db.add(audit)
+    await db.flush()
+    return {"audit_id": str(audit.id), "findings_hash": body.findings_hash}
