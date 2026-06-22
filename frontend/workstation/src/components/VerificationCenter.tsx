@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useRxQueueStore } from '../stores/rxQueue'
 import type { DURAlert } from '../stores/rxQueue'
 import DURAlertPanel from './DURAlertPanel'
+import InteractionReportPanel from './InteractionReportPanel'
 import CouncilReport from './CouncilReport'
 import TrajectorySignalStrip from './TrajectorySignalStrip'
 import LabelPreview from './LabelPreview'
@@ -161,8 +162,17 @@ export default function VerificationCenter() {
       .finally(() => setPdmpLoading(false))
   }, [selectedRx?.id, selectedRx?.status, selectedRx?.is_controlled])
 
+  // Interaction acknowledgment gate (Phase 2a): serious findings require a
+  // one-click, audited pharmacist sign-off before adjudication. Bound to the
+  // report's findings_hash so a changed basket re-requires acknowledgment.
+  const [requiredAckHash, setRequiredAckHash] = useState<string | null>(null)
+  const [ackedHash, setAckedHash] = useState<string | null>(null)
+  useEffect(() => { setAckedHash(null); setRequiredAckHash(null) }, [selectedRx?.id])
+
+  const interactionSignedOff = !requiredAckHash || ackedHash === requiredAckHash
   const criticalHardStops = durAlerts.filter(a => a.is_hard_stop && !a.was_overridden).length
-  const canAdjudicate     = selectedRx?.status === 'verification_in_progress' && criticalHardStops === 0
+  const canAdjudicate     = selectedRx?.status === 'verification_in_progress'
+    && criticalHardStops === 0 && interactionSignedOff
   const currentStep       = selectedRx ? (STATUS_TO_STEP[selectedRx.status] ?? 'Pending') : 'Pending'
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -367,6 +377,31 @@ export default function VerificationCenter() {
             onAlertResolved={() => refetchAlerts()}
           />
         </div>
+      </ErrorBoundary>
+
+      {/* ── Interaction report (precomputed engine) ───────────────────────── */}
+      <ErrorBoundary label="Interaction Report" inline>
+        <InteractionReportPanel
+          patientId={selectedRx.patient_id}
+          onSerious={setRequiredAckHash}
+        />
+        {requiredAckHash && ackedHash !== requiredAckHash && (
+          <button
+            onClick={async () => {
+              try {
+                await clinicalApi.acknowledgeInteractions({
+                  patient_id: selectedRx.patient_id,
+                  rx_id: selectedRx.id,
+                  findings_hash: requiredAckHash,
+                  acknowledged: [],
+                })
+                setAckedHash(requiredAckHash)
+              } catch {/* leave gated */}
+            }}
+            className="cd-ui mt-1 w-full px-3 py-2 bg-[#fb923c] text-white text-sm rounded-lg hover:brightness-110">
+            Acknowledge serious interactions to proceed
+          </button>
+        )}
       </ErrorBoundary>
 
       {/* ── Triage lane badge ─────────────────────────────────────────────── */}
