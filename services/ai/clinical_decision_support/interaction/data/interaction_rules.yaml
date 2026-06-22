@@ -1,0 +1,50 @@
+# kind: drug_drug | drug_disease. left/right are normalized drug OR class names.
+- kind: drug_drug
+  left: anticoagulant
+  right: nsaid
+  severity: Major
+  mechanism: "Additive bleeding risk; NSAID GI mucosal injury plus platelet effects."
+  action: "Assess GI bleed risk; consider gastroprotection or alternative analgesic."
+  evidence: ["Lexicomp: NSAIDs + anticoagulants"]
+  confidence: 0.92
+  source: curated
+
+- kind: drug_drug
+  left: clarithromycin
+  right: simvastatin
+  severity: Contraindicated
+  mechanism: "Strong CYP3A4 inhibition raises simvastatin exposure; myopathy/rhabdomyolysis risk."
+  action: "Hold simvastatin during the macrolide course or use azithromycin."
+  evidence: ["FDA label: simvastatin"]
+  confidence: 0.97
+  source: curated
+
+- kind: drug_drug
+  left: ssri
+  right: serotonergic_opioid
+  severity: Major
+  mechanism: "Additive serotonergic effect; serotonin syndrome and seizure risk."
+  action: "Assess for serotonin toxicity; discuss alternative analgesic."
+  evidence: ["Lexicomp: tramadol + SSRIs"]
+  confidence: 0.90
+  source: curated
+
+- kind: drug_disease
+  left: nsaid
+  right: peptic_ulcer_disease
+  severity: Major
+  mechanism: "NSAIDs impair GI mucosal protection; ulcer recurrence/bleeding risk."
+  action: "Avoid NSAID or add gastroprotection; consider alternative analgesic."
+  evidence: ["AGS Beers 2023"]
+  confidence: 0.9
+  source: curated
+
+- kind: drug_disease
+  left: nsaid
+  right: chronic_kidney_disease
+  severity: Major
+  mechanism: "NSAIDs reduce renal perfusion; AKI / CKD progression risk."
+  action: "Avoid NSAID in significant CKD; prefer acetaminophen."
+  evidence: ["KDIGO"]
+  confidence: 0.9
+  source: curated
