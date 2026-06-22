@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataclasses import asdict
+
 from services.ai.clinical_decision_support import engine
+from services.ai.clinical_decision_support.interaction.engine import evaluate as eval_interactions
+from services.ai.clinical_decision_support.interaction.review_set import build_review_set
 from services.ai.clinical_decision_support.normalizer import classes_of, normalize
 from services.ai.clinical_decision_support.schema import (
     CDSContext,
@@ -283,3 +287,45 @@ async def evaluate_cds(
     if not context.medications:
         response["note"] = "No active medications available for CDS evaluation."
     return response
+
+
+class InteractionReportRequest(BaseModel):
+    patient_id: UUID
+    rx_ids: list[UUID] | None = None
+
+
+def _finding_json(f) -> dict:
+    d = asdict(f)
+    d["severity"] = f.severity.value
+    d["base_severity"] = f.base_severity.value
+    return d
+
+
+@router.post("/interaction-report")
+async def interaction_report(
+    body: InteractionReportRequest,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Patient).where(
+            Patient.id == body.patient_id,
+            Patient.pharmacy_id == staff.pharmacy_id,
+            Patient.is_deleted == False,  # noqa: E712
+        )
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    review_set = await build_review_set(
+        db=db, patient=patient, pharmacy_id=staff.pharmacy_id, rx_ids=body.rx_ids)
+    report = eval_interactions(review_set)
+    return {
+        "summary": report.summary,
+        "degraded": report.degraded,
+        "findings": [_finding_json(f) for f in report.findings],
+        "pharmacist_verification_notice": (
+            report.findings[0].pharmacist_verification_notice if report.findings
+            else "Advisory clinical decision support only."),
+    }

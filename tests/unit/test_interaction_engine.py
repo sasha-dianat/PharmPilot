@@ -1,5 +1,7 @@
 from types import SimpleNamespace as NS
 
+import pytest
+
 from services.ai.clinical_decision_support.interaction.engine import evaluate
 from services.ai.clinical_decision_support.interaction.review_set import assemble_review_set
 from services.ai.clinical_decision_support.interaction.severity import InteractionSeverity as S
@@ -133,3 +135,13 @@ def test_acei_spironolactone_potassium_escalation():
     dd = [f for f in rep.findings if f.type == "drug_drug" and
           {p["name"] for p in f.participants} == {"lisinopril", "spironolactone"}]
     assert dd and dd[0].severity is S.CONTRAINDICATED
+
+
+@pytest.mark.parametrize("pair", [
+    ("clarithromycin", "simvastatin"),
+    ("warfarin", "ibuprofen"),
+    ("paroxetine", "tramadol"),     # ssri + serotonergic_opioid via classes
+])
+def test_legacy_pairs_still_fire(pair):
+    rep = evaluate(_rs(list(pair)))
+    assert any(f.type == "drug_drug" for f in rep.findings), pair
