@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.ai.clinical_brain.council.specialist_council import SpecialistCouncil
+from services.ai.clinical_decision_support.interaction.precompute import recompute_for_patient_id
 from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.core.pharmacy_workflow.triage import ReviewTriageEngine, TriageInput
 
@@ -88,6 +89,13 @@ class IntakePrecomputeService:
                 {"cc": json.dumps(council_cache), "lane": triage.lane.value,
                  "tr": json.dumps(triage_result), "id": str(prescription_id)},
             )
+            # ── Interaction report (deterministic engine) — precomputed + cached
+            # per-patient so the pharmacist's interaction panel renders instantly.
+            # Self-isolating: never raises, never blocks the intake analysis.
+            await recompute_for_patient_id(
+                db=self.db, patient_id=UUID(rx["patient_id"]),
+                pharmacy_id=UUID(rx["pharmacy_id"]))
+
             logger.info("Precompute ready for Rx %s: lane=%s, %d council findings",
                         prescription_id, triage.lane.value, council_cache["total_findings"])
             return {"status": "ready", "lane": triage.lane.value, "council": council_cache}
@@ -110,7 +118,7 @@ class IntakePrecomputeService:
 
     async def _load_rx(self, rx_id: UUID) -> dict | None:
         row = (await self.db.execute(
-            text("""SELECT id, patient_id, drug_name, drug_strength, sig_text,
+            text("""SELECT id, patient_id, pharmacy_id, drug_name, drug_strength, sig_text,
                            quantity_prescribed, days_supply, refills_authorized,
                            refills_remaining, dea_schedule, is_controlled, ndc
                     FROM prescriptions WHERE id=:id"""),
@@ -121,6 +129,7 @@ class IntakePrecomputeService:
             h in (row["drug_name"] or "").lower() for h in _CONTROLLED_HINT)
         return {
             "patient_id": str(row["patient_id"]),
+            "pharmacy_id": str(row["pharmacy_id"]),
             "is_controlled": is_controlled,
             "dea_schedule": row["dea_schedule"],
             "is_first_fill": (row["refills_authorized"] or 0) == (row["refills_remaining"] or 0),

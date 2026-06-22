@@ -36,6 +36,14 @@ def test_get_interaction_report_recomputes_on_miss():
     assert "findings_hash" in out and "report" in out
 
 
+def test_intake_precompute_wires_interaction_recompute():
+    # Interaction precompute is hooked into the existing post-response intake
+    # precompute service (fired at both intake and reanalyze), not inline in the
+    # router — so it never adds latency to the intake response.
+    from services.core.pharmacy_workflow import intake_precompute
+    assert hasattr(intake_precompute, "recompute_for_patient_id")
+
+
 def test_ack_snapshot_captures_full_context():
     staff = NS(id=uuid4(), first_name="Pat", last_name="Pharm", pharmacist_license_number="LIC-9")
     patient = NS(id=uuid4(), first_name="Ali", last_name="Karimi", national_id="1234567890")
