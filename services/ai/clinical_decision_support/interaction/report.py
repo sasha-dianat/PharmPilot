@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import asdict, dataclass
 
 from .severity import InteractionSeverity
 
@@ -55,3 +56,34 @@ def build_report(findings: list[Finding], *, degraded: bool = False,
         summary[f.severity.value] += 1
     return InteractionReport(summary=summary, findings=ordered,
                              generated_at=generated_at, degraded=degraded)
+
+
+_SERIOUS = {InteractionSeverity.CONTRAINDICATED, InteractionSeverity.MAJOR}
+
+
+def serious_findings(report: InteractionReport) -> list[Finding]:
+    return [f for f in report.findings if f.severity in _SERIOUS]
+
+
+def findings_hash(report: InteractionReport) -> str:
+    parts = sorted(
+        f"{f.rule_id}:{','.join(sorted(p['name'] for p in f.participants))}:{f.severity.value}"
+        for f in serious_findings(report)
+    )
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def _finding_to_dict(f: Finding) -> dict:
+    d = asdict(f)
+    d["severity"] = f.severity.value
+    d["base_severity"] = f.base_severity.value
+    return d
+
+
+def report_to_dict(report: InteractionReport) -> dict:
+    return {
+        "summary": report.summary,
+        "degraded": report.degraded,
+        "findings": [_finding_to_dict(f) for f in report.findings],
+        "findings_hash": findings_hash(report),
+    }

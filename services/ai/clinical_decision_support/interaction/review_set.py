@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -108,3 +109,17 @@ async def build_review_set(*, db: AsyncSession, patient, pharmacy_id, rx_ids=Non
         allergies=[a.allergen_name for a in allergy_rows],
         labs=labs, age=_age_from_dob(getattr(patient, "date_of_birth", None)),
     )
+
+
+# Lab keys whose values can change findings (engine reads these).
+_RELEVANT_LABS = ("potassium", "egfr")
+
+
+def review_set_hash(rs: ReviewSet) -> str:
+    """Stable content hash over everything the engine consumes, so any change
+    that could change findings changes the cache key."""
+    meds = sorted(f"{m.normalized_name}:{m.provenance}" for m in rs.meds)
+    conds = sorted(c.concept for c in rs.conditions)
+    labs = [f"{k}={round(rs.labs[k], 2)}" for k in _RELEVANT_LABS if k in rs.labs]
+    payload = "|".join(["M", *meds, "C", *conds, "L", *labs, "A", *sorted(rs.allergies)])
+    return hashlib.sha256(payload.encode()).hexdigest()
