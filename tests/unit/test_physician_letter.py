@@ -81,3 +81,23 @@ def test_unknown_language_falls_back_to_persian():
 
 def test_letter_version_present():
     assert LETTER_VERSION
+
+
+from services.ai.clinical_decision_support.physician_letter.validate import is_safe_template
+
+
+def test_validate_accepts_clean_placeholder_template():
+    assert is_safe_template("Dear {{PHYSICIAN_NAME}} ({{COUNCIL_ID}}), warning text.")
+
+
+def test_validate_rejects_unknown_token():
+    assert not is_safe_template("Dear {{DOCTOR}}")
+
+
+def test_validate_rejects_stray_identifier():
+    # model invented a national-id-like number instead of using the placeholder
+    assert not is_safe_template("Patient national id 1234567890 has a problem.")
+
+
+def test_validate_rejects_email_leak():
+    assert not is_safe_template("contact dr@example.com")
