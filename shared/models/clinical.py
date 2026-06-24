@@ -87,3 +87,23 @@ class InteractionReportCache(AuditedBase):
     report: Mapped[dict] = mapped_column(JSONB, nullable=False)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PhysicianLetter(AuditedBase):
+    """Verbatim legal record of a physician responsibility letter issued for a
+    contraindicated interaction (identifiers substituted; content-hashed)."""
+    __tablename__ = "physician_letters"
+
+    patient_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    rx_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    pharmacy_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    prescriber_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    prescriber_council_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pharmacist_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    pharmacist_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    pharmacist_license: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    language: Mapped[str] = mapped_column(String(8), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    letter_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
