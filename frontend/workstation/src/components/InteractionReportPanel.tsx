@@ -1,7 +1,8 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { clinicalApi } from '../lib/api'
 import { SEVERITY, toSeverity } from '../design/severity'
+import PhysicianLetterModal from './PhysicianLetterModal'
 
 interface Finding {
   rule_id: string; type: string; severity: string; direction: string
@@ -25,9 +26,11 @@ export default function InteractionReportPanel({
     queryFn: () => clinicalApi.getInteractionReport(patientId!).then(r => r.data),
   })
 
+  const [letterOpen, setLetterOpen] = useState(false)
   const report = data?.report
   const findings = report?.findings ?? []
   const serious = findings.filter(f => f.severity === 'Contraindicated' || f.severity === 'Major')
+  const contraindicated = findings.filter(f => f.severity === 'Contraindicated')
 
   // tell the parent whether a serious sign-off is required (and for which hash)
   useEffect(() => {
@@ -93,6 +96,20 @@ export default function InteractionReportPanel({
               )
             })}
           </div>
+
+          {contraindicated.length > 0 && (
+            <button onClick={() => setLetterOpen(true)}
+              className="cd-ui mt-1 w-full px-3 py-2 bg-[#ef4444] text-white text-sm rounded-lg hover:brightness-110">
+              Generate physician letter
+            </button>
+          )}
+          {letterOpen && patientId && (
+            <PhysicianLetterModal
+              patientId={patientId}
+              findings={contraindicated.map(f => ({ rule_id: f.rule_id, participants: f.participants,
+                mechanism: f.mechanism, severity: f.severity }))}
+              onClose={() => setLetterOpen(false)} />
+          )}
         </>
       )}
     </div>

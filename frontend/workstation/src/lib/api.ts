@@ -171,6 +171,11 @@ export const clinicalApi = {
     patient_id: string; rx_id?: string; findings_hash: string;
     acknowledged: { rule_id: string; severity: string }[];
   }) => apiClient.post('/cds/interaction-ack', body),
+  generatePhysicianLetter: (body: {
+    patient_id: string; rx_id?: string; language: string;
+    physician_name: string; council_id?: string;
+    findings: { rule_id?: string; participants: { name: string }[]; mechanism: string; severity: string }[];
+  }) => apiClient.post('/cds/physician-letter', body),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
     apiClient.post('/second-brain/query', {
       question,
