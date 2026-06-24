@@ -430,3 +430,91 @@ async def acknowledge_interactions(
     db.add(audit)
     await db.flush()
     return {"audit_id": str(audit.id), "findings_hash": body.findings_hash}
+
+
+import hashlib
+
+from services.ai.clinical_decision_support.physician_letter.compose import compose
+from services.ai.clinical_decision_support.physician_letter.content import build_clinical_content
+from services.ai.clinical_decision_support.physician_letter.placeholders import substitute
+from services.ai.clinical_decision_support.physician_letter.render import render_html
+from services.ai.clinical_decision_support.physician_letter.templates import LETTER_VERSION
+from shared.models.clinical import PhysicianLetter
+from shared.models.pharmacy import Pharmacy
+
+
+class PhysicianLetterRequest(BaseModel):
+    patient_id: UUID
+    rx_id: UUID | None = None
+    language: str = "fa"
+    physician_name: str
+    council_id: str | None = None
+    findings: list[dict]
+
+
+@router.post("/physician-letter")
+async def generate_physician_letter(
+    body: PhysicianLetterRequest,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    patient = (await db.execute(select(Patient).where(
+        Patient.id == body.patient_id, Patient.pharmacy_id == staff.pharmacy_id,
+        Patient.is_deleted == False))).scalar_one_or_none()  # noqa: E712
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    pharmacy = (await db.execute(select(Pharmacy).where(
+        Pharmacy.id == staff.pharmacy_id))).scalar_one_or_none()
+
+    content = build_clinical_content(body.findings)
+    template_text, source = await compose(content, body.language)
+    values = {
+        "{{PATIENT_NAME}}": f"{patient.first_name} {patient.last_name}",
+        "{{PATIENT_NATIONAL_ID}}": patient.national_id or "—",
+        "{{PHYSICIAN_NAME}}": body.physician_name,
+        "{{COUNCIL_ID}}": body.council_id or "—",
+        "{{PHARMACIST_NAME}}": f"{getattr(staff,'first_name','')} {getattr(staff,'last_name','')}".strip(),
+        "{{PHARMACIST_LICENSE}}": getattr(staff, "pharmacist_license_number", None) or "—",
+        "{{PHARMACY_NAME}}": getattr(pharmacy, "name", None) or "—",
+        "{{DATE}}": datetime.now(timezone.utc).date().isoformat(),
+    }
+    letter_text = substitute(template_text, values)
+    content_hash = hashlib.sha256(letter_text.encode()).hexdigest()
+
+    letter = PhysicianLetter(
+        patient_id=patient.id, rx_id=body.rx_id, pharmacy_id=staff.pharmacy_id,
+        prescriber_name=body.physician_name, prescriber_council_id=body.council_id,
+        pharmacist_id=staff.id, pharmacist_name=values["{{PHARMACIST_NAME}}"],
+        pharmacist_license=getattr(staff, "pharmacist_license_number", None),
+        language=body.language, source=source, model_version=LETTER_VERSION,
+        letter_text=letter_text, content_hash=content_hash,
+        created_by=staff.id, updated_by=staff.id)
+    db.add(letter)
+    db.add(ClinicalAuditLog(
+        user_id=staff.id, patient_id=patient.id, module="physician_letter",
+        input_snapshot=_jsonable({"findings": body.findings, "language": body.language,
+                                  "physician": {"name": body.physician_name, "council_id": body.council_id}}),
+        output_snapshot=_jsonable({"source": source, "content_hash": content_hash}),
+        rules_triggered=[f.get("rule_id") for f in body.findings],
+        model_version=LETTER_VERSION, created_by=staff.id, updated_by=staff.id))
+    await db.flush()
+    return {"id": str(letter.id), "letter_text": letter_text,
+            "letter_html": render_html(letter_text, body.language),
+            "language": body.language, "source": source, "content_hash": content_hash}
+
+
+@router.get("/physician-letter/{letter_id}")
+async def get_physician_letter(
+    letter_id: UUID,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    letter = (await db.execute(select(PhysicianLetter).where(
+        PhysicianLetter.id == letter_id,
+        PhysicianLetter.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if not letter:
+        raise HTTPException(status_code=404, detail="Letter not found")
+    return {"id": str(letter.id), "letter_text": letter.letter_text,
+            "letter_html": render_html(letter.letter_text, letter.language),
+            "language": letter.language, "source": letter.source,
+            "content_hash": letter.content_hash}
