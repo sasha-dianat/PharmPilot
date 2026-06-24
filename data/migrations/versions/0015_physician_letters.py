@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.Column("pharmacist_name", sa.String(200), nullable=False),
         sa.Column("pharmacist_license", sa.String(50), nullable=True),
         sa.Column("language", sa.String(8), nullable=False),
-        sa.Column("source", sa.String(40), nullable=False),
+        sa.Column("source", sa.String(80), nullable=False),
         sa.Column("model_version", sa.String(40), nullable=False),
         sa.Column("letter_text", sa.Text(), nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),

@@ -103,7 +103,7 @@ class PhysicianLetter(AuditedBase):
     pharmacist_name: Mapped[str] = mapped_column(String(200), nullable=False)
     pharmacist_license: Mapped[str | None] = mapped_column(String(50), nullable=True)
     language: Mapped[str] = mapped_column(String(8), nullable=False)
-    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)  # "provider:model" can be long
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     letter_text: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
