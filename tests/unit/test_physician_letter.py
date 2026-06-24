@@ -101,3 +101,40 @@ def test_validate_rejects_stray_identifier():
 
 def test_validate_rejects_email_leak():
     assert not is_safe_template("contact dr@example.com")
+
+
+from types import SimpleNamespace as NS
+from services.ai.clinical_decision_support.physician_letter import compose as comp
+
+
+def test_build_prompt_contains_no_identifiers():
+    p = comp.build_prompt(_C, "fa")
+    assert "warfarin" in p                      # de-identified clinical content present
+    assert "Ali Karimi" not in p and "1234567890" not in p
+    assert "{{PATIENT_NAME}}" in p              # instructs placeholder usage
+
+
+def test_compose_uses_llm_when_safe(monkeypatch):
+    safe = "Dear {{PHYSICIAN_NAME}} ({{COUNCIL_ID}}) re {{PATIENT_NAME}}. " + _C.mechanism
+    async def _gen(*a, **k): return NS(text=safe, degraded=False, provider="groq", model="llama")
+    monkeypatch.setattr(comp.local_llm, "generate", _gen)
+    import asyncio
+    text, source = asyncio.run(comp.compose(_C, "fa"))
+    assert text == safe and source == "groq:llama"
+
+
+def test_compose_falls_back_when_degraded(monkeypatch):
+    async def _gen(*a, **k): return NS(text="", degraded=True, provider="none", model="")
+    monkeypatch.setattr(comp.local_llm, "generate", _gen)
+    import asyncio
+    text, source = asyncio.run(comp.compose(_C, "fa"))
+    assert source == "deterministic" and "{{PATIENT_NAME}}" in text
+
+
+def test_compose_falls_back_when_llm_unsafe(monkeypatch):
+    async def _gen(*a, **k):
+        return NS(text="patient 1234567890 ...", degraded=False, provider="groq", model="x")
+    monkeypatch.setattr(comp.local_llm, "generate", _gen)
+    import asyncio
+    text, source = asyncio.run(comp.compose(_C, "fa"))
+    assert source == "deterministic"
