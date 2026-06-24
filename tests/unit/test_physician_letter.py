@@ -138,3 +138,16 @@ def test_compose_falls_back_when_llm_unsafe(monkeypatch):
     import asyncio
     text, source = asyncio.run(comp.compose(_C, "fa"))
     assert source == "deterministic"
+
+
+from services.ai.clinical_decision_support.physician_letter.render import render_html
+
+
+def test_render_html_rtl_for_persian():
+    html = render_html("متن نامه", "fa")
+    assert 'dir="rtl"' in html and "@page" in html and "متن نامه" in html
+
+
+def test_render_html_ltr_for_english():
+    html = render_html("Letter body", "en")
+    assert 'dir="ltr"' in html and "Letter body" in html
