@@ -46,3 +46,38 @@ def test_build_content_is_deidentified():
     blob = f"{c.warning} {c.mechanism} {' '.join(c.drugs)}"
     _, hits = scrub_identifiers(blob)
     assert hits == []   # no identifiers in clinical content
+
+
+from services.ai.clinical_decision_support.physician_letter.templates import (
+    deterministic_template, LETTER_VERSION,
+)
+from services.ai.clinical_decision_support.physician_letter.content import ClinicalContent
+from services.ai.clinical_decision_support.physician_letter.placeholders import substitute
+
+_C = ClinicalContent(warning="A contraindicated interaction was found.",
+                     mechanism="MAOI + serotonergic agent.", drugs=["warfarin", "phenelzine"])
+_VALUES = {
+    "{{PATIENT_NAME}}": "Ali Karimi", "{{PATIENT_NATIONAL_ID}}": "1234567890",
+    "{{PHYSICIAN_NAME}}": "Dr Who", "{{COUNCIL_ID}}": "NP-77",
+    "{{PHARMACIST_NAME}}": "Pat Pharm", "{{PHARMACIST_LICENSE}}": "LIC-9",
+    "{{PHARMACY_NAME}}": "Central Pharmacy", "{{DATE}}": "2026-06-24",
+}
+
+
+def test_persian_template_inlines_content_and_substitutes():
+    tpl = deterministic_template(_C, "fa")
+    assert "warfarin" in tpl and "{{PATIENT_NAME}}" in tpl   # content inlined, identifiers as tokens
+    letter = substitute(tpl, _VALUES)
+    assert "Ali Karimi" in letter and "NP-77" in letter and "{{" not in letter
+
+
+def test_english_template_available():
+    assert "{{PHYSICIAN_NAME}}" in deterministic_template(_C, "en")
+
+
+def test_unknown_language_falls_back_to_persian():
+    assert deterministic_template(_C, "de") == deterministic_template(_C, "fa")
+
+
+def test_letter_version_present():
+    assert LETTER_VERSION
