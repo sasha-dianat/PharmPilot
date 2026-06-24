@@ -24,3 +24,25 @@ def test_substitute_raises_on_unfilled_token():
 def test_substitute_rejects_unknown_token():
     with pytest.raises(ValueError):
         substitute("{{NOT_A_TOKEN}}", {"{{NOT_A_TOKEN}}": "x"})
+
+
+from services.ai.clinical_decision_support.physician_letter.content import (
+    build_clinical_content, ClinicalContent,
+)
+from services.ai.intelligence_core.phi_scrub import scrub_identifiers
+
+
+def test_build_content_is_deidentified():
+    findings = [{
+        "participants": [{"name": "warfarin"}, {"name": "phenelzine"}],
+        "mechanism": "MAOI with serotonergic agent: hypertensive crisis.",
+        "mechanism_basis": "serotonergic + MAOI",
+        "severity": "Contraindicated",
+    }]
+    c = build_clinical_content(findings)
+    assert isinstance(c, ClinicalContent)
+    assert "warfarin" in c.drugs and "phenelzine" in c.drugs
+    assert "hypertensive" in c.mechanism
+    blob = f"{c.warning} {c.mechanism} {' '.join(c.drugs)}"
+    _, hits = scrub_identifiers(blob)
+    assert hits == []   # no identifiers in clinical content
