@@ -8,6 +8,8 @@ import yaml
 
 from services.ai.clinical_decision_support.normalizer import normalize
 
+from .bundle import read_attribute_payloads
+
 _DATA = Path(__file__).parent / "data" / "drug_attributes.yaml"
 
 
@@ -118,4 +120,12 @@ def _parse(entry: dict) -> DrugAttributes:
 @lru_cache(maxsize=1)
 def load_attribute_index() -> AttributeIndex:
     raw = yaml.safe_load(_DATA.read_text()) or []
-    return AttributeIndex(by_ingredient={a.ingredient: a for a in (_parse(e) for e in raw)})
+    by_ingredient = {a.ingredient: a for a in (_parse(e) for e in raw)}
+    for payload in read_attribute_payloads():
+        try:
+            attr = _parse(payload)
+        except Exception:
+            continue
+        if attr.ingredient not in by_ingredient:   # curated wins; bundle fills gaps
+            by_ingredient[attr.ingredient] = attr
+    return AttributeIndex(by_ingredient=by_ingredient)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from .bundle import read_rule_payloads
 from .severity import InteractionSeverity, normalize_severity
 
 _DATA = Path(__file__).parent / "data" / "interaction_rules.yaml"
@@ -76,7 +77,7 @@ def _parse(e: dict) -> InteractionRule:
 @lru_cache(maxsize=1)
 def load_rule_index() -> RuleIndex:
     raw = yaml.safe_load(_DATA.read_text()) or []
-    rules = [_parse(e) for e in raw]
+    rules = [_parse(e) for e in raw] + [_parse(p) for p in read_rule_payloads()]
     return RuleIndex(
         drug_drug=tuple(r for r in rules if r.kind == "drug_drug"),
         drug_disease=tuple(r for r in rules if r.kind == "drug_disease"),

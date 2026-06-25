@@ -74,3 +74,62 @@ def test_bundle_stats(tmp_path, monkeypatch):
     monkeypatch.setattr(bundle, "BUNDLE_PATH", p)
     s = bundle.bundle_stats()
     assert s.get("schema_version") == bundle.SCHEMA_VERSION and s.get("rule_count") == "1"
+
+
+from types import SimpleNamespace as NS
+
+from services.ai.clinical_decision_support.interaction.engine import evaluate
+from services.ai.clinical_decision_support.interaction.review_set import assemble_review_set
+from services.ai.clinical_decision_support.interaction import rules as rules_mod
+from services.ai.clinical_decision_support.interaction import attributes as attrs_mod
+from services.ai.clinical_decision_support.interaction.severity import InteractionSeverity as S
+
+
+def _rs(drugs):
+    return assemble_review_set(current_rx=[NS(drug_name=d) for d in drugs], meds=[],
+                               conditions=[], allergies=[])
+
+
+def _install_and_reload(monkeypatch, path):
+    monkeypatch.setattr(bundle, "BUNDLE_PATH", path)
+    rules_mod.load_rule_index.cache_clear()
+    attrs_mod.load_attribute_index.cache_clear()
+
+
+def test_bundle_rule_merges_into_engine(tmp_path, monkeypatch):
+    p = tmp_path / "bundle.sqlite"
+    # a NEW specific-drug pair not in the curated YAML
+    _make_bundle(p, rules=[{"kind": "drug_drug", "left": "tizanidine", "right": "ciprofloxacin",
+                            "severity": "Major", "mechanism": "CYP1A2 inhibition raises tizanidine."}])
+    _install_and_reload(monkeypatch, p)
+    rep = evaluate(_rs(["tizanidine", "ciprofloxacin"]))
+    dd = [f for f in rep.findings if f.source == "ddinter"
+          and {x["name"] for x in f.participants} == {"tizanidine", "ciprofloxacin"}]
+    assert dd and dd[0].severity is S.MAJOR
+    _install_and_reload(monkeypatch, tmp_path / "gone.sqlite")  # cleanup → caches cleared
+
+
+def test_curated_wins_over_bundle(tmp_path, monkeypatch):
+    p = tmp_path / "bundle.sqlite"
+    # duplicate the curated warfarin×nsaid pair but with a WRONG lower severity
+    _make_bundle(p, rules=[{"kind": "drug_drug", "left": "anticoagulant", "right": "nsaid",
+                            "severity": "Minor", "mechanism": "bundle (should be overridden)."}])
+    _install_and_reload(monkeypatch, p)
+    rep = evaluate(_rs(["warfarin", "ibuprofen"]))
+    dd = [f for f in rep.findings if f.type == "drug_drug"
+          and {x["name"] for x in f.participants} == {"warfarin", "ibuprofen"}]
+    assert len(dd) == 1 and dd[0].source == "curated" and dd[0].severity is S.MAJOR
+    _install_and_reload(monkeypatch, tmp_path / "gone.sqlite")
+
+
+def test_bundle_attribute_gap_fills_only(tmp_path, monkeypatch):
+    p = tmp_path / "bundle.sqlite"
+    _make_bundle(p, attrs=[
+        {"ingredient": "brandnewdrug", "classes": ["statin"]},          # new → added
+        {"ingredient": "warfarin", "classes": ["WRONG"]},               # existing → ignored
+    ])
+    _install_and_reload(monkeypatch, p)
+    idx = attrs_mod.load_attribute_index()
+    assert idx.get("brandnewdrug") is not None                          # gap-filled
+    assert "WRONG" not in idx.get("warfarin").classes                   # curated preserved
+    _install_and_reload(monkeypatch, tmp_path / "gone.sqlite")
