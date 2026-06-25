@@ -32,6 +32,7 @@ import Pharmacogenomics      from './dashboards/Pharmacogenomics'
 import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
 import SecondBrainChat       from './dashboards/SecondBrainChat'
 import DrugIntelligence      from './dashboards/DrugIntelligence'
+import InteractionAuditView  from './dashboards/InteractionAuditView'
 import LabSafetyPage         from './pages/LabSafetyPage'
 import MedReconciliationPage from './pages/MedReconciliationPage'
 
@@ -55,6 +56,7 @@ const SECTIONS = [
   { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
   { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
   { id:'depot',      key:'t', label:'Depot Restocking',   icon:Package,     description:'Dual-verify transfer', shortcut:'Alt+T' },
+  { id:'interaction-audit', key:'a', label:'Interaction Audit', icon:ClipboardCheck, description:'Acknowledgment & letter legal trail', shortcut:'Alt+A' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -80,6 +82,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   'ai-hub':  AIIntelligenceHub,
   knowledge: KnowledgeManager,
   depot:     DepotRestocking,
+  'interaction-audit': InteractionAuditView,
 }
 
 interface Props {

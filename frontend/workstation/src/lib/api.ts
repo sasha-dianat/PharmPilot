@@ -176,6 +176,11 @@ export const clinicalApi = {
     physician_name: string; council_id?: string;
     findings: { rule_id?: string; participants: { name: string }[]; mechanism: string; severity: string }[];
   }) => apiClient.post('/cds/physician-letter', body),
+  getPhysicianLetter: (id: string) => apiClient.get(`/cds/physician-letter/${id}`),
+  getInteractionAudit: (params: {
+    patient_name?: string; council_id?: string; from?: string; to?: string;
+    type?: 'ack' | 'letter'; limit?: number; offset?: number;
+  }) => apiClient.get('/cds/interaction-audit', { params }),
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
     apiClient.post('/second-brain/query', {
       question,
