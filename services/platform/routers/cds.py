@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as _time, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataclasses import asdict
@@ -518,3 +518,87 @@ async def get_physician_letter(
             "letter_html": render_html(letter.letter_text, letter.language),
             "language": letter.language, "source": letter.source,
             "content_hash": letter.content_hash}
+
+
+def _normalize_ack(row, patient_name: str | None) -> dict:
+    snap = row.input_snapshot or {}
+    severities = sorted({f.get("severity") for f in (snap.get("findings") or []) if f.get("severity")})
+    return {
+        "id": str(row.id), "type": "ack", "at": row.created_at.isoformat(),
+        "pharmacist": snap.get("pharmacist") or {"id": str(row.user_id) if row.user_id else None},
+        "patient": {"id": str(row.patient_id) if row.patient_id else None, "name": patient_name},
+        "physician": snap.get("physician") or {},
+        "severities": severities,
+        "letter_id": None, "language": None, "source": None, "content_hash": None,
+    }
+
+
+def _normalize_letter(row, patient_name: str | None) -> dict:
+    return {
+        "id": str(row.id), "type": "letter", "at": row.created_at.isoformat(),
+        "pharmacist": {"id": str(row.pharmacist_id), "name": row.pharmacist_name,
+                       "license": row.pharmacist_license},
+        "patient": {"id": str(row.patient_id), "name": patient_name},
+        "physician": {"name": row.prescriber_name, "council_id": row.prescriber_council_id},
+        "severities": [],
+        "letter_id": str(row.id), "language": row.language, "source": row.source,
+        "content_hash": row.content_hash,
+    }
+
+
+@router.get("/interaction-audit")
+async def interaction_audit(
+    patient_id: UUID | None = None,
+    patient_name: str | None = None,
+    council_id: str | None = None,
+    from_: date | None = Query(None, alias="from"),
+    to: date | None = None,
+    type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    staff: Staff = Depends(require_permission("reports:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    cap = offset + limit
+    records: list[dict] = []
+
+    if type in (None, "ack"):
+        q = (select(ClinicalAuditLog, Patient.first_name, Patient.last_name)
+             .join(Patient, Patient.id == ClinicalAuditLog.patient_id)
+             .where(ClinicalAuditLog.module == "interaction_acknowledgment",
+                    Patient.pharmacy_id == staff.pharmacy_id))
+        if patient_id:
+            q = q.where(ClinicalAuditLog.patient_id == patient_id)
+        if patient_name:
+            q = q.where(ClinicalAuditLog.input_snapshot["patient"]["name"].astext.ilike(f"%{patient_name}%"))
+        if council_id:
+            q = q.where(ClinicalAuditLog.input_snapshot["physician"]["medical_council_id"].astext.ilike(f"%{council_id}%"))
+        if from_:
+            q = q.where(ClinicalAuditLog.created_at >= datetime.combine(from_, _time.min))
+        if to:
+            q = q.where(ClinicalAuditLog.created_at <= datetime.combine(to, _time.max))
+        q = q.order_by(ClinicalAuditLog.created_at.desc()).limit(cap)
+        for row, fn, ln in (await db.execute(q)).all():
+            records.append(_normalize_ack(row, f"{fn} {ln}".strip()))
+
+    if type in (None, "letter"):
+        q = (select(PhysicianLetter, Patient.first_name, Patient.last_name)
+             .join(Patient, Patient.id == PhysicianLetter.patient_id, isouter=True)
+             .where(PhysicianLetter.pharmacy_id == staff.pharmacy_id))
+        if patient_id:
+            q = q.where(PhysicianLetter.patient_id == patient_id)
+        if patient_name:
+            q = q.where(func.concat(Patient.first_name, " ", Patient.last_name).ilike(f"%{patient_name}%"))
+        if council_id:
+            q = q.where(PhysicianLetter.prescriber_council_id.ilike(f"%{council_id}%"))
+        if from_:
+            q = q.where(PhysicianLetter.created_at >= datetime.combine(from_, _time.min))
+        if to:
+            q = q.where(PhysicianLetter.created_at <= datetime.combine(to, _time.max))
+        q = q.order_by(PhysicianLetter.created_at.desc()).limit(cap)
+        for row, fn, ln in (await db.execute(q)).all():
+            name = f"{fn or ''} {ln or ''}".strip() or None
+            records.append(_normalize_letter(row, name))
+
+    records.sort(key=lambda r: r["at"], reverse=True)
+    return {"records": records[offset:offset + limit], "count": len(records)}
