@@ -23,26 +23,36 @@
 
 ## Components
 
-### Part A — `normalize()` salt-stripping (`normalizer.py`)
+### Part A — `normalize()` salt-stripping with a mineral-cation guard (`normalizer.py`)
 
-After the existing tokenization, drop known **salt/ester** tokens that are **not the first token** (the active ingredient is first), then proceed unchanged:
+Drug–drug interactions are a property of the active moiety, so for an **organic active** the salt is
+just a counter-ion and should be stripped (`tizanidine hcl` → `tizanidine`). But when the **first
+token is a mineral cation** (calcium, iron, etc.) the anion *defines the product*
+(`calcium citrate` ≠ `calcium carbonate`, with different indications) — so those are preserved whole.
 
 ```python
+# Mineral cations whose salt/anion is part of the clinical identity — never strip when first.
+_MINERAL_CATIONS = {
+    "calcium", "magnesium", "sodium", "potassium", "iron", "ferrous", "ferric",
+    "zinc", "aluminum", "aluminium",
+}
+# Counter-ions/esters/hydrates that are NOT the active when they trail an organic drug.
 _SALT_TOKENS = {
-    "hcl", "hydrochloride", "hbr", "hydrobromide", "sodium", "potassium", "calcium",
-    "magnesium", "sulfate", "sulphate", "mesylate", "maleate", "tartrate", "besylate",
-    "succinate", "fumarate", "phosphate", "citrate", "acetate", "bromide", "tosylate",
+    "hcl", "hydrochloride", "hbr", "hydrobromide", "sulfate", "sulphate", "bisulfate",
+    "mesylate", "maleate", "tartrate", "besylate", "succinate", "fumarate", "tosylate",
+    "citrate", "acetate", "carbonate", "phosphate", "gluconate", "bromide", "chloride",
     "dihydrate", "monohydrate", "hemihydrate", "anhydrous",
 }
 # inside normalize(), after `tokens = [...]`:
-if tokens:
+if tokens and tokens[0] not in _MINERAL_CATIONS:
     tokens = [tokens[0]] + [t for t in tokens[1:] if t not in _SALT_TOKENS]
 ```
 
-- `"tizanidine hcl"` → `tizanidine`; `"warfarin sodium"` → `warfarin`; `"metoprolol succinate"` →
-  `metoprolol`.
-- Preserved (active is first token): `"sodium chloride"`, `"calcium carbonate"`,
-  `"potassium chloride"`.
+- Organic actives stripped: `"tizanidine hcl"` → `tizanidine`; `"warfarin sodium"` → `warfarin`;
+  `"metoprolol succinate"` → `metoprolol`; `"sildenafil citrate"` → `sildenafil`;
+  `"lithium carbonate"` → `lithium` (lithium is the active, not a preserved mineral).
+- Mineral-first preserved (distinct products): `"calcium citrate"` ≠ `"calcium carbonate"`;
+  `"ferrous sulfate"`, `"sodium chloride"`, `"potassium chloride"` kept whole.
 - Guarded + covered by new tests; must not regress existing normalize/engine tests.
 
 ### Part B — bundle builder (`scripts/interaction_bundle/ddinter_builder.py`, testable)
@@ -104,10 +114,11 @@ Colab: DDInter CSVs → adapt → RawInteraction rows
 ## Testing
 
 `tests/unit/test_normalizer_salts.py`:
-- `normalize("tizanidine hcl 4mg") == "tizanidine"`; `"warfarin sodium"` → `warfarin`;
-  `"metoprolol succinate"` → `metoprolol`.
-- Preserved: `normalize("sodium chloride")` keeps `sodium` (and `chloride`); `"calcium carbonate"`
-  unchanged in spirit (first token preserved).
+- Organic actives stripped: `normalize("tizanidine hcl 4mg") == "tizanidine"`; `"warfarin sodium"` →
+  `warfarin`; `"metoprolol succinate"` → `metoprolol`; `"sildenafil citrate"` → `sildenafil`;
+  `"lithium carbonate"` → `lithium`.
+- **Mineral guard:** `normalize("calcium citrate") != normalize("calcium carbonate")` (both distinct,
+  preserved); `"ferrous sulfate"` and `"sodium chloride"` preserved whole.
 - A focused regression run of the existing engine suite (no behavior change for known drugs).
 
 `tests/unit/test_ddinter_builder.py`:
