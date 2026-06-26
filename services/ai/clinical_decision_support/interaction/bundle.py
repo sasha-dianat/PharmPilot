@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 
@@ -84,3 +85,39 @@ def bundle_stats(path: Path | None = None) -> dict:
     finally:
         if con is not None:
             con.close()
+
+
+_REQUIRED_TABLES = ("interaction_rules", "drug_attributes", "bundle_meta")
+
+
+def validate_bundle_file(path: Path) -> tuple[bool, str, dict]:
+    """(ok, reason, stats). Never raises."""
+    if not path.exists():
+        return False, "file not found", {}
+    con = None
+    try:
+        con = _open(path)
+    except sqlite3.Error:
+        return False, "not a valid SQLite database", {}
+    try:
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for req in _REQUIRED_TABLES:
+            if req not in tables:
+                return False, f"missing table: {req}", {}
+        row = con.execute("SELECT value FROM bundle_meta WHERE key='schema_version'").fetchone()
+        got = row[0] if row else None
+        if got != SCHEMA_VERSION:
+            return False, f"schema version mismatch (got {got}, expected {SCHEMA_VERSION})", {}
+        stats = {k: v for k, v in con.execute("SELECT key, value FROM bundle_meta")}
+        return True, "ok", stats
+    except sqlite3.Error as exc:
+        return False, f"unreadable bundle: {exc}", {}
+    finally:
+        if con is not None:
+            con.close()
+
+
+def install_bundle(temp_path: Path) -> None:
+    """Atomically move a validated bundle into place (same-fs os.replace)."""
+    BUNDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(temp_path, BUNDLE_PATH)
