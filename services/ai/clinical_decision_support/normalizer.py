@@ -84,6 +84,20 @@ GENERIC_CLASSES: dict[str, set[str]] = {
 }
 
 
+# Mineral cations whose salt/anion is part of the clinical identity — never strip when first.
+_MINERAL_CATIONS = {
+    "calcium", "magnesium", "sodium", "potassium", "iron", "ferrous", "ferric",
+    "zinc", "aluminum", "aluminium",
+}
+# Counter-ions / esters / hydrates that are not the active when trailing an organic drug.
+_SALT_TOKENS = {
+    "hcl", "hydrochloride", "hbr", "hydrobromide", "sulfate", "sulphate", "bisulfate",
+    "mesylate", "maleate", "tartrate", "besylate", "succinate", "fumarate", "tosylate",
+    "citrate", "acetate", "carbonate", "phosphate", "gluconate", "bromide", "chloride",
+    "dihydrate", "monohydrate", "hemihydrate", "anhydrous",
+}
+
+
 def normalize(name: str | None) -> str:
     if not name:
         return ""
@@ -95,6 +109,11 @@ def normalize(name: str | None) -> str:
     # "diphenhydramine 25mg" instead of "diphenhydramine", so downstream
     # exact-name lookups (e.g. the anticholinergic-burden table) miss.
     tokens = [token for token in re.split(r"[\s/-]+", cleaned) if token and not token[0].isdigit()]
+    # Strip salt/counter-ion tokens for organic actives so "tizanidine hcl" → "tizanidine".
+    # Guard: when the FIRST token is a mineral cation, the anion defines the product
+    # (calcium citrate ≠ calcium carbonate), so keep the whole name.
+    if tokens and tokens[0] not in _MINERAL_CATIONS:
+        tokens = [tokens[0]] + [t for t in tokens[1:] if t not in _SALT_TOKENS]
     for token in tokens:
         if token in BRAND_TO_GENERIC:
             return BRAND_TO_GENERIC[token]
