@@ -10,7 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -33,6 +33,7 @@ import PhysicianMessageComposer from './dashboards/PhysicianMessageComposer'
 import SecondBrainChat       from './dashboards/SecondBrainChat'
 import DrugIntelligence      from './dashboards/DrugIntelligence'
 import InteractionAuditView  from './dashboards/InteractionAuditView'
+import InteractionBundleAdmin from './dashboards/InteractionBundleAdmin'
 import LabSafetyPage         from './pages/LabSafetyPage'
 import MedReconciliationPage from './pages/MedReconciliationPage'
 
@@ -57,6 +58,7 @@ const SECTIONS = [
   { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
   { id:'depot',      key:'t', label:'Depot Restocking',   icon:Package,     description:'Dual-verify transfer', shortcut:'Alt+T' },
   { id:'interaction-audit', key:'a', label:'Interaction Audit', icon:ClipboardCheck, description:'Acknowledgment & letter legal trail', shortcut:'Alt+A' },
+  { id:'interaction-bundle', key:'b', label:'Interaction Bundle', icon:Database, description:'Install the DDI knowledge bundle', shortcut:'Alt+B' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -83,6 +85,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   knowledge: KnowledgeManager,
   depot:     DepotRestocking,
   'interaction-audit': InteractionAuditView,
+  'interaction-bundle': InteractionBundleAdmin,
 }
 
 interface Props {

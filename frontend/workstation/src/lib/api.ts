@@ -181,6 +181,14 @@ export const clinicalApi = {
     patient_name?: string; council_id?: string; from?: string; to?: string;
     type?: 'ack' | 'letter'; limit?: number; offset?: number;
   }) => apiClient.get('/cds/interaction-audit', { params }),
+  getBundleStatus: () => apiClient.get('/cds/interaction-bundle/status'),
+  installBundle: (file: File, confirmReplace = false) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('confirm_replace', String(confirmReplace))
+    return apiClient.post('/cds/interaction-bundle/install', form,
+      { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
   querySecondBrain: (question: string, patientId?: string, topK = 8) =>
     apiClient.post('/second-brain/query', {
       question,
