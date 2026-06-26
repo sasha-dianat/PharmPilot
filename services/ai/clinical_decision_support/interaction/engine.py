@@ -4,6 +4,7 @@ from datetime import date
 from itertools import combinations
 
 from .attributes import AttributeIndex, load_attribute_index
+from .bundle import bundle_stats
 from .mechanism import (
     metabolic_interaction, phenoconversion, transporter_interaction,
     absorption_interaction, renal_competition,
@@ -252,3 +253,13 @@ def evaluate(rs: ReviewSet, *, rules: RuleIndex | None = None,
     findings = _dedup(findings)
     findings = _suppress_stale_dd(findings, rs, attrs, now)
     return build_report(findings)
+
+
+def reload_indexes() -> dict:
+    """Clear + warm the rule/attribute caches so a freshly-installed bundle takes
+    effect without a process restart. Returns the new bundle stats."""
+    load_rule_index.cache_clear()
+    load_attribute_index.cache_clear()
+    load_rule_index()
+    load_attribute_index()
+    return bundle_stats()

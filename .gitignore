@@ -30,3 +30,6 @@ KBdata/
 
 # graphify knowledge graph (regenerated from code via post-commit hook)
 graphify-out/
+
+# Generated interaction knowledge bundle (installed by the admin module, never committed)
+services/ai/clinical_decision_support/interaction/data/bundle.sqlite

@@ -133,3 +133,23 @@ def test_bundle_attribute_gap_fills_only(tmp_path, monkeypatch):
     assert idx.get("brandnewdrug") is not None                          # gap-filled
     assert "WRONG" not in idx.get("warfarin").classes                   # curated preserved
     _install_and_reload(monkeypatch, tmp_path / "gone.sqlite")
+
+
+from services.ai.clinical_decision_support.interaction.engine import reload_indexes
+
+
+def test_reload_indexes_picks_up_new_bundle(tmp_path, monkeypatch):
+    p = tmp_path / "bundle.sqlite"
+    monkeypatch.setattr(bundle, "BUNDLE_PATH", p)
+    # start with no bundle
+    rules_mod.load_rule_index.cache_clear(); attrs_mod.load_attribute_index.cache_clear()
+    rep = evaluate(_rs(["tizanidine", "ciprofloxacin"]))
+    assert not any(f.source == "ddinter" for f in rep.findings)
+    # install a bundle + reload
+    _make_bundle(p, rules=[{"kind": "drug_drug", "left": "tizanidine", "right": "ciprofloxacin",
+                            "severity": "Major", "mechanism": "m"}])
+    stats = reload_indexes()
+    assert stats.get("schema_version") == bundle.SCHEMA_VERSION
+    rep2 = evaluate(_rs(["tizanidine", "ciprofloxacin"]))
+    assert any(f.source == "ddinter" for f in rep2.findings)
+    _install_and_reload(monkeypatch, tmp_path / "gone.sqlite")
