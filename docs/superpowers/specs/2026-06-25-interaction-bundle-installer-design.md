@@ -43,11 +43,15 @@ install_bundle(temp_path: Path) -> None
 
 ### 2. Endpoints — `cds.py`
 
-- `POST /cds/interaction-bundle/install` (`require_permission("clinical:write")`):
+- `POST /cds/interaction-bundle/install` (`require_permission("clinical:write")`), form fields:
+  the `UploadFile` + `confirm_replace: bool = False`:
   1. Stream the `UploadFile` to a `NamedTemporaryFile` in chunks (e.g. 1 MB) — bounded memory.
-  2. `ok, reason, stats = validate_bundle_file(tmp)`. If not ok → delete tmp, `HTTPException(422, reason)`.
-  3. `install_bundle(tmp)` → `new_stats = reload_indexes()`.
-  4. Return `{"installed": true, "stats": new_stats}`.
+  2. **Replace guardrail:** if a bundle is already installed (`bundle_stats()` non-empty) and
+     `confirm_replace` is not true → delete tmp, `HTTPException(409, "a bundle is already installed;
+     confirm replacement")`. This is server-enforced so a UI-only confirm can't be bypassed.
+  3. `ok, reason, stats = validate_bundle_file(tmp)`. If not ok → delete tmp, `HTTPException(422, reason)`.
+  4. `install_bundle(tmp)` → `new_stats = reload_indexes()`.
+  5. Return `{"installed": true, "stats": new_stats}`.
   Any unexpected error → 500 with a safe message; the live bundle is only ever replaced by a *validated*
   temp file, so a failure mid-stream/validation leaves the engine on its current (good) bundle.
 - `GET /cds/interaction-bundle/status` (`require_permission("clinical:read")`):
@@ -60,15 +64,18 @@ Registered in `DashboardShell` (like #2c's `InteractionAuditView`), admin-facing
   versions (parsed from the `datasets` meta JSON), `rule_count`, `attribute_count`, `built_at`,
   `checksum` (short). "No bundle installed — the engine is running on curated rules only" when empty.
 - **Install card:** a `.sqlite` file picker + **Install bundle** button → `POST .../install` as
-  `multipart/form-data`. On success, refresh the status card + a success note ("Installed N rules,
-  M attributes"). On 422, show the validation `reason` inline (e.g. "schema version mismatch").
+  `multipart/form-data`. **If a bundle is already installed, clicking Install first shows a
+  confirmation dialog** ("This replaces the current bundle vX — continue?"); on confirm it posts with
+  `confirm_replace=true`. When none is installed, it posts directly. On success, refresh the status
+  card + a success note ("Installed N rules, M attributes"). On 422, show the validation `reason`
+  inline; on 409 (shouldn't occur once the UI confirms), re-prompt.
 - A short note that the bundle is produced by the Colab ingestion notebook (#3b).
 
 ### 4. API client — `api.ts`
 
 ```ts
-clinicalApi.getBundleStatus()           // GET /cds/interaction-bundle/status
-clinicalApi.installBundle(file: File)    // POST multipart → /cds/interaction-bundle/install
+clinicalApi.getBundleStatus()                                  // GET /cds/interaction-bundle/status
+clinicalApi.installBundle(file: File, confirmReplace = false)  // POST multipart → .../install
 ```
 
 ## Data flow
@@ -105,6 +112,8 @@ Backend (`tests/unit/test_interaction_bundle_installer.py`):
     rule (end-to-end through `reload_indexes`).
   - bad upload → 422 with the reason; a previously-installed good bundle is **unchanged** (assert its
     rule still loads).
+  - **replace guardrail:** with a bundle already installed, an upload *without* `confirm_replace` →
+    409 and the existing bundle is unchanged; the same upload *with* `confirm_replace=true` → installs.
   - `GET status` returns installed=false/{} when none, populated stats when installed.
 
 Frontend (component / preview):
