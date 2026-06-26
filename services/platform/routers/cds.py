@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from datetime import date, datetime, time as _time, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dataclasses import asdict
 
 from services.ai.clinical_decision_support import engine
-from services.ai.clinical_decision_support.interaction.engine import evaluate as eval_interactions
+from services.ai.clinical_decision_support.interaction import bundle as ix_bundle
+from services.ai.clinical_decision_support.interaction.engine import evaluate as eval_interactions, reload_indexes
 from services.ai.clinical_decision_support.interaction.review_set import build_review_set
 from services.ai.clinical_decision_support.normalizer import classes_of, normalize
 from services.ai.clinical_decision_support.schema import (
@@ -602,3 +605,43 @@ async def interaction_audit(
 
     records.sort(key=lambda r: r["at"], reverse=True)
     return {"records": records[offset:offset + limit], "count": len(records)}
+
+
+async def _stream_to_bundle_dir(file) -> "Path":
+    """Stream an upload to a temp file inside the bundle's own directory, so the
+    later os.replace into BUNDLE_PATH is a same-filesystem atomic move."""
+    from pathlib import Path
+    ix_bundle.BUNDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=ix_bundle.BUNDLE_PATH.parent, suffix=".sqlite.tmp")
+    with os.fdopen(fd, "wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            out.write(chunk)
+    return Path(name)
+
+
+@router.post("/interaction-bundle/install")
+async def install_interaction_bundle(
+    file: UploadFile = File(...),
+    confirm_replace: bool = Form(False),
+    staff: Staff = Depends(require_permission("clinical:write")),
+):
+    tmp = await _stream_to_bundle_dir(file)
+    try:
+        if ix_bundle.bundle_stats() and not confirm_replace:
+            raise HTTPException(status_code=409, detail="a bundle is already installed; confirm replacement")
+        ok, reason, _stats = ix_bundle.validate_bundle_file(tmp)
+        if not ok:
+            raise HTTPException(status_code=422, detail=reason)
+        ix_bundle.install_bundle(tmp)         # moves tmp → BUNDLE_PATH
+        return {"installed": True, "stats": reload_indexes()}
+    finally:
+        if tmp.exists():                      # not installed (install moved it on success)
+            os.unlink(tmp)
+
+
+@router.get("/interaction-bundle/status")
+async def interaction_bundle_status(
+    staff: Staff = Depends(require_permission("clinical:read")),
+):
+    stats = ix_bundle.bundle_stats()
+    return {"installed": bool(stats), "stats": stats}
