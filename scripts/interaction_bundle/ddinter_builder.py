@@ -38,7 +38,11 @@ def build_rules(rows: Iterable[RawInteraction]) -> list[dict]:
         a, b = normalize(row.drug_a), normalize(row.drug_b)
         if not a or not b or a == b:
             continue
-        severity = _LEVEL_MAP.get((row.level or "").strip().lower(), "Minor")
+        # Skip rows whose severity isn't a known tier (DDInter has an "Unknown"
+        # level) — don't import unclassified pairs as if they were Minor.
+        severity = _LEVEL_MAP.get((row.level or "").strip().lower())
+        if severity is None:
+            continue
         rule = {
             "kind": "drug_drug", "left": a, "right": b, "severity": severity,
             "mechanism": (row.mechanism or "").strip() or "DDInter-listed interaction.",

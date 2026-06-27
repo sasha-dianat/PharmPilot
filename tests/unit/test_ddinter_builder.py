@@ -16,6 +16,13 @@ def test_build_rules_normalizes_and_maps():
     assert r["evidence"] == ["DDInter 2.0"] and r["confidence"] < 0.9
 
 
+def test_build_rules_skips_unknown_level():
+    rows = [RawInteraction("Dolutegravir", "Calcium gluconate", "Unknown"),  # unknown → skip
+            RawInteraction("Warfarin", "Aspirin", "Major")]
+    rules = build_rules(rows)
+    assert len(rules) == 1 and {rules[0]["left"], rules[0]["right"]} == {"warfarin", "aspirin"}
+
+
 def test_build_rules_skips_and_dedups():
     rows = [
         RawInteraction("Aspirin", "Aspirin", "Major"),            # self-pair → skip
