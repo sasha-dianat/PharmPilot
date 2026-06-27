@@ -298,9 +298,11 @@ class InteractionReportRequest(BaseModel):
 
 
 def _finding_json(f) -> dict:
+    from services.ai.clinical_decision_support.interaction.report import finding_section
     d = asdict(f)
     d["severity"] = f.severity.value
     d["base_severity"] = f.base_severity.value
+    d["section"] = finding_section(f)
     return d
 
 

@@ -73,10 +73,20 @@ def findings_hash(report: InteractionReport) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
+def finding_section(f: Finding) -> str:
+    """'dispense' if the finding involves a drug from the prescription(s) being
+    acted on (any current_rx participant); otherwise 'profile' — a pre-existing
+    alert among the patient's standing meds (e.g. metformin renal) that isn't
+    introduced by what's being dispensed now."""
+    return "dispense" if any(p.get("provenance") == "current_rx"
+                             for p in f.participants) else "profile"
+
+
 def _finding_to_dict(f: Finding) -> dict:
     d = asdict(f)
     d["severity"] = f.severity.value
     d["base_severity"] = f.base_severity.value
+    d["section"] = finding_section(f)
     return d
 
 
