@@ -12,6 +12,8 @@ import { useQuery } from '@tanstack/react-query'
 import { patientApi, rxApi } from '../lib/api'
 import { formatJalali, ageFromDob, dateDisplay } from '../lib/jalali'
 import DictateNote from './DictateNote'
+import { useRxQueueStore } from '../stores/rxQueue'
+import { PrescriberProfileCard, PrescriberDeviationFlag } from './PrescriberIntelligence'
 
 interface Props {
   patientId: string
@@ -57,6 +59,12 @@ function getEGFRFlag(value: string): string | null {
 
 export default function PatientPanel({ patientId }: Props) {
   const [activeTab, setActiveTab] = useState<'overview' | 'meds' | 'labs' | 'fills'>('overview')
+  const [prescriberOpen, setPrescriberOpen] = useState(false)
+  // The Rx currently being worked drives prescriber context (profile + this-Rx
+  // deviation). Only trust it when it belongs to the patient on screen.
+  const selectedRx = useRxQueueStore(s => s.selectedRx)
+  const rxForPrescriber = selectedRx?.patient_id === patientId ? selectedRx : null
+  const prescriberId = (rxForPrescriber as any)?.prescriber_id as string | undefined
 
   const { data: patient, isLoading: loadingPatient, isError: patientError } = useQuery({
     queryKey: ['patient', patientId],
@@ -282,6 +290,36 @@ export default function PatientPanel({ patientId }: Props) {
                       <span className="text-intel">📠 Fax PA</span>
                       <span className="text-intel">🗂 Record</span>
                     </div>
+
+                    {/* Prescriber context — prescribing pattern + this-Rx deviation */}
+                    {prescriberId && (
+                      <div className="mt-2 border-t border-line pt-2">
+                        <button
+                          onClick={() => setPrescriberOpen(o => !o)}
+                          aria-expanded={prescriberOpen}
+                          className="cd-ui w-full flex items-center gap-1.5 text-[11px] font-medium text-intel hover:text-intel/80"
+                        >
+                          <span>🧭 Prescriber context</span>
+                          <span className="text-ink3 text-[10px]">pattern · deviation</span>
+                          <span className={`ml-auto text-ink3 text-[10px] transition-transform ${prescriberOpen ? 'rotate-180' : ''}`}>▾</span>
+                        </button>
+                        {prescriberOpen && (
+                          <div className="mt-2 space-y-2 cd-section">
+                            <PrescriberProfileCard prescriberId={prescriberId} prescriberName={prescriberName ?? undefined} />
+                            {rxForPrescriber && (rxForPrescriber as any).ndc && (
+                              <PrescriberDeviationFlag
+                                prescriberId={prescriberId}
+                                ndc={(rxForPrescriber as any).ndc}
+                                drugName={rxForPrescriber.drug_name}
+                                quantity={rxForPrescriber.quantity_prescribed}
+                                isControlled={rxForPrescriber.is_controlled}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="text-[9px] text-ink3 mt-1.5 italic">Contact details &amp; prescribing history wire from the provider registry.</div>
                   </>
                 ) : (

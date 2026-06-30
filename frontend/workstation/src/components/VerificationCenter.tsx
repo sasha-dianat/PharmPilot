@@ -14,10 +14,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useRxQueueStore } from '../stores/rxQueue'
 import type { DURAlert } from '../stores/rxQueue'
-import DURAlertPanel from './DURAlertPanel'
-import InteractionReportPanel from './InteractionReportPanel'
-import CouncilReport from './CouncilReport'
-import TrajectorySignalStrip from './TrajectorySignalStrip'
+import MedicalIntelligence from './MedicalIntelligence'
 import LabelPreview from './LabelPreview'
 import DictateNote from './DictateNote'
 import { rxApi, claimsApi, clinicalApi, apiClient } from '../lib/api'
@@ -109,7 +106,13 @@ interface RxAnalysis {
 }
 
 export default function VerificationCenter() {
-  const { selectedRx, setSelectedRx, updateRxInQueue } = useRxQueueStore()
+  const { selectedRx, setSelectedRx, updateRxInQueue, queue, selectRx } = useRxQueueStore()
+
+  // All active meds for the selected patient — the basket reviewed in one place.
+  const basket = (queue ?? []).filter(
+    r => selectedRx && r.patient_id === selectedRx.patient_id &&
+    !['dispensed', 'cancelled', 'returned_to_stock'].includes(r.status)
+  )
 
   const [claimResult, setClaimResult] = useState<ClaimResult | null>(null)
   const [pdmpResult,  setPdmpResult]  = useState<PDMPResult | null>(null)
@@ -328,6 +331,40 @@ export default function VerificationCenter() {
         )}
       </div>
 
+      {/* ── Prescription basket — review all the patient's meds in one place ── */}
+      {basket.length > 1 && (
+        <div className="cd-card cd-section p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">℞</span>
+            <span className="cd-ui text-sm font-semibold text-ink">Prescription basket</span>
+            <span className="cd-data text-xs text-ink3">{basket.length} items</span>
+          </div>
+          <div className="space-y-1.5">
+            {basket.map((r) => {
+              const active = r.id === selectedRx?.id
+              return (
+                <button key={r.id} onClick={() => selectRx(r.id)}
+                  className={`w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${
+                    active ? 'border-intel bg-intel-soft' : 'border-line hover:bg-surface2'}`}>
+                  <span className={`cd-data text-[11px] ${active ? 'text-intel font-semibold' : 'text-ink3'}`}>
+                    #{(r.rx_number ?? '').slice(-4)}
+                  </span>
+                  <span className="text-[13px] text-ink font-medium truncate flex-1">
+                    {r.drug_name} {r.drug_strength}
+                    {r.is_controlled && <span className="cd-data ml-1 text-[9px] bg-caution-soft text-caution px-1 rounded">{r.dea_schedule}</span>}
+                  </span>
+                  <span className="cd-data text-[10px] text-ink3">×{r.quantity_prescribed}</span>
+                  <RxStatusBadge status={r.status} />
+                </button>
+              )
+            })}
+          </div>
+          <p className="cd-ui text-[10px] text-ink3 mt-2">
+            Clinical intelligence below covers the whole basket. Select an item to act on it (claim · verify · dispense).
+          </p>
+        </div>
+      )}
+
       {/* ── Step indicator ────────────────────────────────────────────────── */}
       <StepIndicator currentStep={currentStep} />
 
@@ -353,37 +390,17 @@ export default function VerificationCenter() {
         <PDMPPanel loading={pdmpLoading} result={pdmpResult} />
       )}
 
-      {/* ── Clinical intelligence section label ───────────────────────────── */}
-      <div className="flex items-center gap-2 px-1 pt-1">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-ink3">Clinical intelligence</span>
-        <span className="text-[10px] text-ink3">· AI services tuned in Dashboards</span>
-      </div>
-
-      {/* ── DUR Alerts ────────────────────────────────────────────────────── */}
-      <ErrorBoundary label="DUR Alerts" inline>
-        <div className="cd-card p-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="cd-ui text-sm font-semibold text-ink flex items-center gap-1.5">
-              <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">🔍</span>
-              Drug utilization review
-            </span>
-            {durAlerts.length > 0
-              ? <span className="cd-data text-xs text-ink3">{durAlerts.length} alert{durAlerts.length !== 1 ? 's' : ''}</span>
-              : <span className="text-[11px] bg-safe-soft text-safe border border-safe/25 px-2 py-0.5 rounded-md ml-auto">0 hard stops</span>}
-          </div>
-          <DURAlertPanel
-            alerts={durAlerts}
-            rxId={selectedRx.id}
-            onAlertResolved={() => refetchAlerts()}
-          />
-        </div>
-      </ErrorBoundary>
-
-      {/* ── Interaction report (precomputed engine) ───────────────────────── */}
-      <ErrorBoundary label="Interaction Report" inline>
-        <InteractionReportPanel
+      {/* ── Unified clinical console — interactions · ADR/DUR · council ·
+             trajectory · prescriber, all in one severity-ranked surface ───── */}
+      <ErrorBoundary label="Medical Intelligence" inline>
+        <MedicalIntelligence
           patientId={selectedRx.patient_id}
+          rxId={selectedRx.id}
+          drugName={selectedRx.drug_name}
+          durAlerts={durAlerts}
+          analysis={analysis}
           onSerious={setRequiredAckHash}
+          onAlertResolved={() => refetchAlerts()}
         />
         {requiredAckHash && ackedHash !== requiredAckHash && (
           <button
@@ -398,93 +415,11 @@ export default function VerificationCenter() {
                 setAckedHash(requiredAckHash)
               } catch {/* leave gated */}
             }}
-            className="cd-ui mt-1 w-full px-3 py-2 bg-[#fb923c] text-white text-sm rounded-lg hover:brightness-110">
+            className="cd-ui mt-2 w-full px-3 py-2 bg-caution text-white text-sm rounded-lg hover:brightness-110">
             Acknowledge serious interactions to proceed
           </button>
         )}
       </ErrorBoundary>
-
-      {/* ── Triage lane badge ─────────────────────────────────────────────── */}
-      {analysis?.triage_lane && (
-        <div className={`cd-section flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium border ${
-          analysis.triage_lane === 'green'
-            ? 'bg-safe-soft border-safe/30 text-safe'
-            : analysis.triage_lane === 'amber'
-            ? 'bg-warning-soft border-warning/30 text-warning'
-            : 'bg-blocker-soft border-blocker/40 text-blocker'
-        }`}>
-          <span className="text-lg">
-            {analysis.triage_lane === 'green' ? '🟢' : analysis.triage_lane === 'amber' ? '🟡' : '🔴'}
-          </span>
-          <div className="flex-1">
-            <span className="cd-ui uppercase font-bold tracking-wide">
-              {analysis.triage_lane === 'green' ? 'Fast lane'
-                : analysis.triage_lane === 'amber' ? 'Standard review'
-                : 'Full scrutiny required'}
-            </span>
-            {analysis.triage_result?.reasons?.[0] && (
-              <span className="cd-ui text-xs font-normal ml-2 opacity-80">
-                — {analysis.triage_result.reasons[0]}
-              </span>
-            )}
-          </div>
-          {analysis.triage_result?.requires_visual_verification && (
-            <span className="cd-data text-xs bg-surface border border-line2 text-ink2 rounded-md px-2 py-0.5">
-              Visual verify required
-            </span>
-          )}
-          {analysis.triage_result?.hard_gates?.length ? (
-            <div className="cd-data text-xs">
-              Gates: {analysis.triage_result.hard_gates.join(', ')}
-            </div>
-          ) : null}
-        </div>
-      )}
-
-      {/* ── Patient Intelligence — trajectory, care gaps, prescriber context ── */}
-      {selectedRx.patient_id && (
-        <ErrorBoundary label="Patient Intelligence" inline>
-          <TrajectorySignalStrip
-            patientId={selectedRx.patient_id}
-            patientName={(selectedRx as any).patient_name}
-            prescriberId={(selectedRx as any).prescriber_id}
-            prescriberName={(selectedRx as any).prescriber_name}
-            ndc={(selectedRx as any).ndc}
-            drugName={selectedRx.drug_name}
-            quantity={selectedRx.quantity_prescribed}
-            isControlled={selectedRx.is_controlled}
-          />
-        </ErrorBoundary>
-      )}
-
-      {/* ── Specialist Council — precomputed (instant) or SSE (fallback) ─── */}
-      {selectedRx.status === 'verification_in_progress' && selectedRx.patient_id && (
-        <ErrorBoundary label="Clinical Council" inline>
-          <div className="cd-card p-3">
-            {analysis?.status === 'ready' && analysis.council_cache ? (
-              <PrecomputedCouncilPanel cache={analysis.council_cache} />
-            ) : analysis?.status === 'computing' || analysis?.status === 'pending' ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm text-intel">
-                  <div className="w-3 h-3 border-2 border-intel border-t-transparent rounded-full animate-spin" />
-                  <span className="cd-ui">Specialist council computing…</span>
-                </div>
-                <CouncilReport
-                  prescriptionId={selectedRx.id}
-                  patientId={selectedRx.patient_id}
-                  pharmacyId={pharmacyId}
-                />
-              </div>
-            ) : (
-              <CouncilReport
-                prescriptionId={selectedRx.id}
-                patientId={selectedRx.patient_id}
-                pharmacyId={pharmacyId}
-              />
-            )}
-          </div>
-        </ErrorBoundary>
-      )}
 
       {/* ── Adjudication result ────────────────────────────────────────────── */}
       {claimResult && (
@@ -780,85 +715,6 @@ function ActionButtons({
           Reject<kbd className="cd-kbd">R</kbd>
         </button>
       )}
-    </div>
-  )
-}
-
-// ── Precomputed council panel ─────────────────────────────────────────────────
-const SEVERITY_STYLE: Record<string, { border: string; bg: string; text: string; icon: string }> = {
-  blocker:       { border: 'border-blocker', bg: 'bg-blocker-soft', text: 'text-blocker', icon: '🚫' },
-  caution:       { border: 'border-caution', bg: 'bg-caution-soft', text: 'text-caution', icon: '⚠️' },
-  counseling:    { border: 'border-counsel', bg: 'bg-counsel-soft', text: 'text-counsel', icon: '💬' },
-  monitoring:    { border: 'border-warning', bg: 'bg-warning-soft', text: 'text-warning', icon: '📋' },
-  clarification: { border: 'border-intel',   bg: 'bg-intel-soft',   text: 'text-intel',   icon: '❓' },
-}
-
-function FindingRow({ f, index = 0 }: { f: CouncilFinding; index?: number }) {
-  const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.monitoring
-  return (
-    <div
-      className={`cd-stream ${style.bg} border-l-2 ${style.border} rounded-lg p-2.5 text-xs`}
-      style={{ '--i': index } as React.CSSProperties}
-    >
-      <div className="flex items-center gap-1.5 mb-1">
-        <span>{style.icon}</span>
-        <span className={`cd-ui font-semibold ${style.text}`}>{f.specialist}</span>
-        {f.evidence_grade && (
-          <span className="cd-data bg-surface border border-line2 text-ink2 px-1 rounded text-[9px]">Grade {f.evidence_grade}</span>
-        )}
-      </div>
-      <p className="cd-narr text-ink leading-relaxed">{f.message}</p>
-      {f.evidence_source && <p className="cd-ui text-ink3 mt-0.5 italic text-[9px]">{f.evidence_source}</p>}
-    </div>
-  )
-}
-
-function PrecomputedCouncilPanel({ cache }: { cache: CouncilCache }) {
-  const allCategories = [
-    { list: cache.blockers,      label: 'Blockers' },
-    { list: cache.cautions,      label: 'Cautions' },
-    { list: cache.hereditary,    label: 'Hereditary / family risk' },
-    { list: cache.clarification, label: 'Prescriber clarification' },
-    { list: cache.counseling,    label: 'Counseling points' },
-    { list: cache.monitoring,    label: 'Monitoring' },
-  ].filter(c => c.list?.length)
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="w-5 h-5 rounded-md bg-intel-soft text-intel flex items-center justify-center text-xs">🏛️</span>
-          <span className="cd-ui font-semibold text-ink text-sm">Specialist council</span>
-          <span className="cd-data text-xs text-safe">✓ {cache.specialists_consulted.length} specialists · precomputed</span>
-        </div>
-        <div className="flex gap-1 text-[10px] cd-data">
-          {cache.blockers?.length > 0 && <span className="bg-blocker-soft text-blocker border border-blocker/30 px-1.5 py-0.5 rounded font-medium">🚫 {cache.blockers.length}</span>}
-          {cache.cautions?.length > 0 && <span className="bg-caution-soft text-caution border border-caution/30 px-1.5 py-0.5 rounded">⚠️ {cache.cautions.length}</span>}
-          {cache.hereditary?.length > 0 && <span className="bg-counsel-soft text-counsel border border-counsel/30 px-1.5 py-0.5 rounded">🧬 {cache.hereditary.length}</span>}
-        </div>
-      </div>
-
-      {allCategories.length === 0 ? (
-        <div className="flex items-center gap-2 px-3 py-2 bg-safe-soft border border-safe/30 rounded-lg text-safe text-sm cd-ui">
-          <span>✅</span><span>No significant considerations identified by the council.</span>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {allCategories.map(({ list, label }) => (
-            <div key={label}>
-              <div className="cd-ui text-[9px] font-semibold text-ink3 uppercase tracking-wider mb-1">{label} ({list.length})</div>
-              <div className="space-y-1.5">
-                {list.map((f, i) => <FindingRow key={i} f={f} index={i} />)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <p className="cd-ui text-[9px] text-ink3 italic border-t border-line pt-1.5">
-        Pre-computed at intake. For pharmacist review — not a diagnosis.
-        {cache.generated_at && ` Computed: ${new Date(cache.generated_at).toLocaleTimeString()}`}
-      </p>
     </div>
   )
 }
