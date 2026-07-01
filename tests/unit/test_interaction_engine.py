@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -5,6 +6,21 @@ import pytest
 from services.ai.clinical_decision_support.interaction.engine import evaluate
 from services.ai.clinical_decision_support.interaction.review_set import assemble_review_set
 from services.ai.clinical_decision_support.interaction.severity import InteractionSeverity as S
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_bundle(monkeypatch):
+    """These tests pin curated + inferred-mechanistic behavior, which an installed
+    DDInter bundle would override (ddinter outranks inferred in _dedup). Point
+    BUNDLE_PATH at a nonexistent file and clear the cached indexes so the engine
+    runs on curated rules only — deterministic whether or not a bundle is present."""
+    from services.ai.clinical_decision_support.interaction import bundle, rules, attributes
+    monkeypatch.setattr(bundle, "BUNDLE_PATH", Path("/nonexistent/bundle.sqlite"))
+    rules.load_rule_index.cache_clear()
+    attributes.load_attribute_index.cache_clear()
+    yield
+    rules.load_rule_index.cache_clear()
+    attributes.load_attribute_index.cache_clear()
 
 
 def _rs(drugs, conditions=None, allergies=None):
