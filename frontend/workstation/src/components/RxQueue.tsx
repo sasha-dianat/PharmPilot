@@ -7,9 +7,10 @@
  * rx_number tail) + status + patient anchor + lane colour, never the drug name
  * as the primary key. All store/keyboard/claim/grouping logic is unchanged.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRxQueueStore, type Prescription, type RxStatus } from '../stores/rxQueue'
 import { rxApi } from '../lib/api'
+import ReceptionQuotePanel from './ReceptionQuotePanel'
 
 const STATUS_CONFIG: Record<RxStatus, { label: string; tone: string; lane: string; priority: number }> = {
   intake:                    { label: 'Intake',        tone: 'bg-surface2 text-ink2 border-line2',          lane: 'bg-line2',    priority: 5 },
@@ -34,68 +35,6 @@ function rxToken(rxNumber: string | undefined): string {
   return n.length > 4 ? `#${n.slice(-4)}` : (n ? `#${n}` : '#----')
 }
 
-interface RxCardProps {
-  rx: Prescription
-  isSelected: boolean
-  onSelect: () => void
-  onClaim: () => void
-}
-
-function RxCard({ rx, isSelected, onSelect, onClaim }: RxCardProps) {
-  const status = STATUS_CONFIG[rx.status] || STATUS_CONFIG.intake
-  const hasAlerts = (rx.dur_alerts?.length ?? 0) > 0
-  const criticalAlerts = rx.dur_alerts?.filter((a) => a.severity === 'critical').length ?? 0
-  const highAlerts = rx.dur_alerts?.filter((a) => a.severity === 'high').length ?? 0
-  const aiRisk = rx.ai_risk_score ?? 0
-  const patientName = (rx as any).patient_name as string | undefined
-
-  return (
-    <div
-      onClick={onSelect}
-      onDoubleClick={onClaim}
-      tabIndex={0}
-      className={`cd-hover relative overflow-hidden rounded-xl pl-3 pr-3 py-2.5 cursor-pointer select-none border ${
-        isSelected ? 'border-intel bg-intel-soft' : 'border-line bg-surface hover:border-line2'
-      } ${criticalAlerts > 0 ? 'ring-1 ring-blocker/40' : ''}`}
-    >
-      <span className={`absolute left-0 top-0 bottom-0 w-1 ${status.lane}`} aria-hidden="true" />
-
-      <div className="flex items-center justify-between gap-2">
-        <span className="cd-data text-sm font-semibold text-ink">{rxToken(rx.rx_number)}</span>
-        <span className={`cd-data text-[10px] px-2 py-0.5 rounded-md font-medium border ${status.tone}`}>
-          {status.label}
-        </span>
-      </div>
-
-      {patientName && <div className="text-xs text-ink2 mt-0.5 truncate">{patientName}</div>}
-
-      <div className="text-[11px] text-ink3 truncate mt-0.5">
-        {rx.drug_name} {rx.drug_strength}
-        {rx.is_controlled && (
-          <span className="cd-data ml-1 text-[10px] bg-caution-soft text-caution px-1 rounded">{rx.dea_schedule}</span>
-        )}
-      </div>
-
-      {(hasAlerts || aiRisk > 0.5) && (
-        <div className="flex items-center gap-1.5 mt-2">
-          {criticalAlerts > 0 && (
-            <span className="cd-data text-[10px] bg-blocker-soft text-blocker px-1.5 py-0.5 rounded font-medium">🚫 {criticalAlerts}</span>
-          )}
-          {highAlerts > 0 && (
-            <span className="cd-data text-[10px] bg-caution-soft text-caution px-1.5 py-0.5 rounded">⚠ {highAlerts}</span>
-          )}
-          {aiRisk > 0.7 && (
-            <span className="cd-data text-[10px] bg-counsel-soft text-counsel px-1.5 py-0.5 rounded ml-auto">Risk {(aiRisk * 100).toFixed(0)}%</span>
-          )}
-        </div>
-      )}
-
-      {rx.status === 'verification_in_progress' && rx.claimed_by_staff_id && (
-        <div className="mt-1 text-[10px] text-intel flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-intel" /> In verification</div>
-      )}
-    </div>
-  )
-}
 
 export default function RxQueue() {
   const { queue, selectedRxId, selectRx, setSelectedRx } = useRxQueueStore()
@@ -134,75 +73,106 @@ export default function RxQueue() {
     }
   }
 
-  // Group queue by priority
+  // Reception quote modal state (the affordability-negotiation surface)
+  const [quoteBasket, setQuoteBasket] = useState<{ name: string; items: { drug_name: string; quantity: number }[] } | null>(null)
+
   const activeRxs = queue.filter((rx) =>
     !['dispensed', 'cancelled', 'returned_to_stock'].includes(rx.status)
   )
 
-  const urgentRxs = activeRxs.filter((rx) =>
-    ['dur_hold', 'adjudication_rejected', 'pending_pa'].includes(rx.status)
-  )
-  const workingRxs = activeRxs.filter((rx) =>
-    ['pending_verification', 'verification_in_progress', 'pending_adjudication'].includes(rx.status)
-  )
-  const readyRxs = activeRxs.filter((rx) =>
-    ['ready_to_fill', 'filling', 'filled', 'will_call'].includes(rx.status)
-  )
-  const otherRxs = activeRxs.filter((rx) =>
-    !urgentRxs.find((u) => u.id === rx.id) &&
-    !workingRxs.find((w) => w.id === rx.id) &&
-    !readyRxs.find((r) => r.id === rx.id)
+  // ── Group prescriptions into per-patient baskets ───────────────────────────
+  // A physician usually prescribes several drugs at once; the queue shows them as
+  // ONE basket per patient (not one card per drug), most-urgent patient first.
+  const baskets = new Map<string, { name: string; rxs: Prescription[] }>()
+  for (const rx of activeRxs) {
+    const name = (rx as any).patient_name || 'بیمار'
+    const b = baskets.get(rx.patient_id) ?? { name, rxs: [] }
+    b.rxs.push(rx)
+    baskets.set(rx.patient_id, b)
+  }
+  const basketPriority = (rxs: Prescription[]) =>
+    Math.min(...rxs.map((r) => (STATUS_CONFIG[r.status] || STATUS_CONFIG.intake).priority))
+  const orderedBaskets = [...baskets.entries()].sort(
+    (a, b) => basketPriority(a[1].rxs) - basketPriority(b[1].rxs)
   )
 
-  const renderGroup = (title: string, rxs: Prescription[], dot: string) => {
-    if (!rxs.length) return null
-    return (
-      <div className="cd-section">
-        <div className="flex items-center gap-2 mb-2 px-1">
-          <span className={`w-2 h-2 rounded-full ${dot}`} />
-          <span className="cd-ui text-[10px] font-semibold text-ink3 uppercase tracking-wider">
-            {title} ({rxs.length})
-          </span>
-        </div>
-        <div className="space-y-2">
-          {rxs.map((rx) => (
-            <RxCard
-              key={rx.id}
-              rx={rx}
-              isSelected={rx.id === selectedRxId}
-              onSelect={() => selectRx(rx.id)}
-              onClaim={() => handleClaim(rx.id)}
-            />
-          ))}
-        </div>
-      </div>
-    )
-  }
+  const openQuote = (name: string, rxs: Prescription[]) =>
+    setQuoteBasket({
+      name,
+      items: rxs.map((r) => ({
+        drug_name: `${r.drug_name}${r.drug_strength ? ' ' + r.drug_strength : ''}`,
+        quantity: r.quantity_prescribed || 1,
+      })),
+    })
 
   return (
-    <div
-      ref={containerRef}
-      className="cd-scope h-full overflow-y-auto focus:outline-none"
-      tabIndex={-1}
-    >
-      <div className="p-3 space-y-4">
-        {/* Queue header */}
+    <div ref={containerRef} className="cd-scope h-full overflow-y-auto focus:outline-none" tabIndex={-1}>
+      <div className="p-3 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="cd-ui font-semibold text-ink">Rx queue</h2>
-          <span className="cd-data text-xs text-ink3">{activeRxs.length} active</span>
+          <span className="cd-data text-xs text-ink3">{baskets.size} بیمار · {activeRxs.length} اقلام</span>
         </div>
 
         {activeRxs.length === 0 ? (
           <div className="text-center py-8 text-ink3 text-sm">Queue is empty</div>
         ) : (
-          <>
-            {renderGroup('Needs attention', urgentRxs, 'bg-blocker')}
-            {renderGroup('In verification', workingRxs, 'bg-intel')}
-            {renderGroup('Ready / filling', readyRxs, 'bg-safe')}
-            {renderGroup('Other', otherRxs, 'bg-line2')}
-          </>
+          orderedBaskets.map(([pid, basket]) => {
+            const lane = (STATUS_CONFIG[basket.rxs[0].status] || STATUS_CONFIG.intake).lane
+            const alerts = basket.rxs.reduce((n, r) => n + (r.dur_alerts?.length ?? 0), 0)
+            return (
+              <div key={pid} className="cd-card cd-section overflow-hidden">
+                {/* basket header = the patient (click → review the whole basket) */}
+                <div onClick={() => selectRx(basket.rxs[0].id)}
+                  className="flex items-center gap-2 px-3 py-2 border-b border-line bg-surface2/60 cursor-pointer hover:bg-surface2">
+                  <span className={`w-1.5 h-1.5 rounded-full ${lane}`} />
+                  <span className="cd-ui text-[13px] font-semibold text-ink truncate">{basket.name}</span>
+                  <span className="cd-data text-[10px] text-ink3">{basket.rxs.length} قلم</span>
+                  {alerts > 0 && (
+                    <span className="cd-data text-[10px] bg-caution-soft text-caution px-1.5 rounded">⚠ {alerts}</span>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openQuote(basket.name, basket.rxs) }}
+                    className="cd-ui ml-auto text-[11px] px-2 py-1 rounded-lg bg-intel-soft text-intel border border-intel/30 hover:brightness-105">
+                    💳 استعلام قیمت
+                  </button>
+                </div>
+                {/* medications in the basket */}
+                <div className="divide-y divide-line">
+                  {basket.rxs.map((rx) => {
+                    const st = STATUS_CONFIG[rx.status] || STATUS_CONFIG.intake
+                    const isSel = rx.id === selectedRxId
+                    const crit = rx.dur_alerts?.filter((a) => a.severity === 'critical').length ?? 0
+                    return (
+                      <button
+                        key={rx.id}
+                        onClick={() => selectRx(rx.id)}
+                        onDoubleClick={() => handleClaim(rx.id)}
+                        className={`w-full text-left flex items-center gap-2 px-3 py-2 ${isSel ? 'bg-intel-soft' : 'hover:bg-surface2'}`}>
+                        <span className={`cd-data text-[11px] ${isSel ? 'text-intel font-semibold' : 'text-ink3'}`}>{rxToken(rx.rx_number)}</span>
+                        <span className="text-[12px] text-ink truncate flex-1">
+                          {rx.drug_name} {rx.drug_strength}
+                          {rx.is_controlled && <span className="cd-data ml-1 text-[9px] bg-caution-soft text-caution px-1 rounded">{rx.dea_schedule}</span>}
+                        </span>
+                        {crit > 0 && <span className="cd-data text-[10px] bg-blocker-soft text-blocker px-1 rounded">🚫{crit}</span>}
+                        <span className={`cd-data text-[10px] px-1.5 py-0.5 rounded border ${st.tone}`}>{st.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })
         )}
       </div>
+
+      {quoteBasket && (
+        <ReceptionQuotePanel
+          patientName={quoteBasket.name}
+          items={quoteBasket.items}
+          onClose={() => setQuoteBasket(null)}
+          onSendToFilling={() => { setQuoteBasket(null) }}
+        />
+      )}
     </div>
   )
 }

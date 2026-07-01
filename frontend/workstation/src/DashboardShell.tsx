@@ -34,6 +34,7 @@ import SecondBrainChat       from './dashboards/SecondBrainChat'
 import DrugIntelligence      from './dashboards/DrugIntelligence'
 import InteractionAuditView  from './dashboards/InteractionAuditView'
 import InteractionBundleAdmin from './dashboards/InteractionBundleAdmin'
+import PriceProposalsAdmin   from './dashboards/PriceProposalsAdmin'
 import LabSafetyPage         from './pages/LabSafetyPage'
 import MedReconciliationPage from './pages/MedReconciliationPage'
 
@@ -59,6 +60,7 @@ const SECTIONS = [
   { id:'depot',      key:'t', label:'Depot Restocking',   icon:Package,     description:'Dual-verify transfer', shortcut:'Alt+T' },
   { id:'interaction-audit', key:'a', label:'Interaction Audit', icon:ClipboardCheck, description:'Acknowledgment & letter legal trail', shortcut:'Alt+A' },
   { id:'interaction-bundle', key:'u', label:'Interaction Bundle', icon:Database, description:'Install the DDI knowledge bundle', shortcut:'Alt+U' },
+  { id:'price-proposals', key:'p', label:'Price Proposals', icon:DollarSign, description:'Approve daily price-sync changes', shortcut:'Alt+P' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -86,6 +88,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   depot:     DepotRestocking,
   'interaction-audit': InteractionAuditView,
   'interaction-bundle': InteractionBundleAdmin,
+  'price-proposals': PriceProposalsAdmin,
 }
 
 interface Props {
@@ -133,7 +136,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r' || key === 'd' || key === 'l' || key === 'i' || key === 'u'))) {
+      if (e.altKey && (((key >= '1' && key <= '9') || key === '0' || key === 'k' || key === 'g' || key === 'c' || key === 'm' || key === 'r' || key === 'd' || key === 'l' || key === 'i' || key === 'u' || key === 'p'))) {
         const section = SECTIONS.find(s => s.key === key)
         if (section) setActiveSection(section.id)
         e.preventDefault()

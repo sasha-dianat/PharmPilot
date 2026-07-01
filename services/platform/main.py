@@ -3,6 +3,7 @@ PharmPilot AI — Main FastAPI Application
 """
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import structlog
@@ -50,8 +51,17 @@ async def lifespan(app: FastAPI):
             raise
         logger.info("Database migrated to alembic head")
 
+    # Daily drug-price sync scheduler (opt-in; never auto-applies prices).
+    price_sync_task = None
+    if os.getenv("PRICE_SYNC_ENABLED", "").lower() in ("1", "true", "yes"):
+        from services.core.drug_catalog.scheduler import daily_loop
+        price_sync_task = asyncio.create_task(daily_loop())
+        logger.info("Daily price-sync scheduler started")
+
     yield
 
+    if price_sync_task:
+        price_sync_task.cancel()
     logger.info("PharmPilot shutting down")
     await engine.dispose()
 
@@ -95,6 +105,7 @@ def create_app() -> FastAPI:
         intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx, physician_message,
         lab_safety, med_reconciliation, second_brain, drug_intelligence,
         depot_transfer, ai_settings, inventory_movements, procurement,
+        pricing,
     )
 
     app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["auth"])
@@ -131,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(intel_clinical.router,  prefix="/api/v1/intelligence/clinical",    tags=["intelligence: clinical"]) # #11 Counseling + #6 Integrity + #10 Compounding
     app.include_router(intel_workflow.router,  prefix="/api/v1/intelligence/workflow",    tags=["intelligence: workflow"]) # #2 Queue + #16 Trajectory + #15 Copilot
     app.include_router(cds.router,             prefix="/api/v1/cds",                      tags=["clinical decision support"])
+    app.include_router(pricing.router,         prefix="/api/v1/pricing",                  tags=["pricing & affordability"])
     app.include_router(adr.router,             prefix="/api/v1/adr",                      tags=["adr detective"])
     app.include_router(counselling.router,     prefix="/api/v1/counselling",              tags=["patient counselling"])
     app.include_router(physician_message.router, prefix="/api/v1/physician-message",      tags=["physician message"])

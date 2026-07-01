@@ -101,6 +101,19 @@ export const claimsApi = {
   history: (pharmacyId: string) => apiClient.get(`/claims/history/${pharmacyId}`),
 }
 
+// ── Pricing & affordability (reception) ───────────────────────────────────────
+export interface QuoteLine { irc?: string | null; drug_name?: string | null; quantity: number; removed?: boolean }
+export interface QuotePayload {
+  insurer: string; setting: string; technical_fee?: number; lines: QuoteLine[]
+}
+export const pricingApi = {
+  quote: (payload: QuotePayload) => apiClient.post('/pricing/quote', payload),
+  listProposals: (status = 'pending') => apiClient.get('/pricing/proposals', { params: { status } }),
+  decideProposals: (ids: string[], approve: boolean) =>
+    apiClient.post('/pricing/proposals/decide', { ids, approve }),
+  runSync: () => apiClient.post('/pricing/sync/run', {}),
+}
+
 // ── Inventory ─────────────────────────────────────────────────────────────
 export const inventoryApi = {
   searchDrugs: (q: string) => apiClient.get('/inventory/drugs/search', { params: { q } }),
@@ -177,6 +190,8 @@ export const clinicalApi = {
     findings: { rule_id?: string; participants: { name: string }[]; mechanism: string; severity: string }[];
   }) => apiClient.post('/cds/physician-letter', body),
   getPhysicianLetter: (id: string) => apiClient.get(`/cds/physician-letter/${id}`),
+  revisePhysicianLetter: (id: string, letter_text: string) =>
+    apiClient.post(`/cds/physician-letter/${id}/revise`, { letter_text }),
   getInteractionAudit: (params: {
     patient_name?: string; council_id?: string; from?: string; to?: string;
     type?: 'ack' | 'letter'; limit?: number; offset?: number;
