@@ -26,6 +26,7 @@ from services.core.drug_catalog import repo
 from services.core.drug_catalog import sync_service
 from services.core.drug_catalog.alternatives import find_alternatives
 from services.core.drug_catalog.schema import CatalogRecord
+from services.core.pricing_ir.eligibility import get_eligibility_provider
 from uuid import UUID
 
 router = APIRouter()
@@ -42,15 +43,26 @@ class QuoteRequest(BaseModel):
     insurer: str = "tamin"
     setting: str = "outpatient"
     technical_fee: float | None = None
+    national_id: str | None = None      # enables live نسخه الکترونیک استعلام when a provider is configured
     lines: list[QuoteLineIn]
 
 
 def _coverage(rec: CatalogRecord, insurer: str) -> tuple[bool, Decimal | None, Decimal]:
-    """(is_covered, reference_price, vat_rate). Seed has no per-insurer coverage
-    JSON yet, so default: drugs/OTC covered at announced reference, supplements &
-    cosmetics not covered; cosmetics carry VAT."""
-    covered = rec.category in (ItemCategory.DRUG, ItemCategory.OTC)
+    """(is_covered, insurer_reference_price, vat_rate).
+
+    Prefer the catalog's per-insurer coverage JSON when present:
+      {"tamin": {"covered": true, "reference_price": 110000}, ...}
+    The reference_price is what the insurer reimburses against — dispensing a
+    pricier product yields مابه‌التفاوت. Falls back to a sane default (drugs/OTC
+    covered at their own announced price → no differential; supplements/cosmetics
+    not covered; cosmetics carry VAT)."""
     vat = VAT_RATE_COSMETIC if rec.category == ItemCategory.COSMETIC else Decimal("0")
+    entry = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
+    if entry is not None:
+        covered = bool(entry.get("covered", True))
+        ref = entry.get("reference_price")
+        return covered, (Decimal(str(ref)) if ref is not None else None), vat
+    covered = rec.category in (ItemCategory.DRUG, ItemCategory.OTC)
     return covered, None, vat
 
 
@@ -69,6 +81,14 @@ async def quote(body: QuoteRequest,
             rec = await repo.resolve_by_name(db, l.drug_name)
         resolved.append((l, rec))
 
+    # ── Live e-prescription استعلام (authoritative سهم), if a provider is wired ─
+    elig = None
+    provider = get_eligibility_provider()
+    if body.national_id:
+        ircs = [rec.irc for _, rec in resolved if rec is not None]
+        elig = await provider.inquire(national_id=body.national_id, insurer=body.insurer, ircs=ircs)
+    elig_lines = {ln.irc: ln for ln in elig.lines} if elig else {}
+
     # ── Cheaper alternatives per line (same ingredient_key) ───────────────────
     keys = [rec.ingredient_key for _, rec in resolved if rec is not None]
     pool = await repo.fetch_by_ingredient_keys(db, keys)
@@ -83,6 +103,11 @@ async def quote(body: QuoteRequest,
             line_meta.append({"line": l, "rec": None, "skip": False, "unmatched": True})
             continue
         covered, ref, vat = _coverage(rec, body.insurer)
+        el = elig_lines.get(rec.irc)          # live استعلام overrides catalog coverage
+        if el is not None:
+            covered = el.covered
+            if el.reference_price is not None:
+                ref = Decimal(str(el.reference_price))
         engine_lines.append(LineInput(
             drug=DrugPrice(
                 irc=rec.irc, name=rec.name_fa, consumer_price=rec.effective_price,
@@ -139,6 +164,11 @@ async def quote(body: QuoteRequest,
                    "patient": float(t.patient), "differential": float(t.differential),
                    "vat": float(t.vat), "grand_total": float(t.grand_total)},
         "notes": pricing.notes,
+        "eligibility": {
+            "source": "live" if elig else "local",
+            "provider": provider.code,
+            "tracking_code": (elig.tracking_code if elig else None),
+        },
     }
 
 

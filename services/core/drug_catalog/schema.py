@@ -15,10 +15,31 @@ from services.ai.clinical_decision_support.normalizer import normalize
 from services.core.pricing_ir.engine import ItemCategory, resolve_consumer_price
 
 
+# Common lay/brand names → canonical active ingredient (extend as needed; a real
+# deployment loads this from the catalog's synonym table).
+_SYNONYMS: dict[str, str] = {
+    "vitamin d3": "cholecalciferol", "vitamin d": "cholecalciferol", "vit d3": "cholecalciferol",
+    "vitamin d2": "ergocalciferol",
+    "vitamin c": "ascorbic acid", "vit c": "ascorbic acid",
+    "vitamin b12": "cyanocobalamin", "b12": "cyanocobalamin",
+    "folic acid": "folate",
+    "omega 3": "omega-3", "fish oil": "omega-3",
+    "vitamin b6": "pyridoxine",
+    "tylenol": "acetaminophen", "paracetamol": "acetaminophen",
+}
+
+
+def canonical_ingredient(name: str) -> str:
+    """Map a lay/brand ingredient name to its canonical active ingredient."""
+    n = (name or "").strip().lower()
+    return _SYNONYMS.get(n, n)
+
+
 def ingredient_key(generic_name: str, strength: str, dosage_form: str) -> str:
     """Canonical grouping key. Normalizes the active ingredient (brand→generic,
-    salt-stripping via the shared normalizer) and the strength/form spelling."""
-    g = normalize(generic_name) or (generic_name or "").strip().lower()
+    salt-stripping via the shared normalizer, then a synonym map for lay names
+    like 'Vitamin D3' → cholecalciferol) and the strength/form spelling."""
+    g = canonical_ingredient(normalize(generic_name) or (generic_name or "").strip().lower())
     s = re.sub(r"\s+", "", (strength or "").lower())
     f = (dosage_form or "").strip().lower()
     return f"{g}|{s}|{f}"
@@ -40,6 +61,8 @@ class CatalogRecord:
     atc: str | None = None
     package_count: int | None = None
     gtin: str | None = None
+    # {"tamin": {"covered": true, "reference_price": 110000}, "salamat": {...}, ...}
+    coverage: dict | None = None
 
     @property
     def ingredient_key(self) -> str:

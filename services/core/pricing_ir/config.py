@@ -1,14 +1,20 @@
 """Iranian pricing tariffs — EDITABLE CONFIG (no calculation logic here).
 
-⚠️ VERIFY: every numeric tariff below is a best-effort placeholder pending
-confirmation against primary sources (سازمان غذا و دارو, سازمان تأمین اجتماعی,
-سازمان بیمه سلامت) — the deep-research pass was cut short by an account session
-limit, so these have NOT been source-verified. The engine is intentionally
-config-driven so a domain expert can correct any number here without touching
-`engine.py`. Tariffs are revised ~yearly; treat this file as the single place
-to update them.
+Confidence (researched 2026-07-01):
+  • CONFIRMED: outpatient franchise = 30% patient / 70% basic insurer for both
+    تأمین اجتماعی and بیمه سلامت (1404 گذاری تعرفه دولتی سرپایی).
+  • Special populations (کمیته امداد, روستایی/عشایر, towns <20k) = 15% outpatient;
+    special-disease patients (هموفیلی، تالاسمی، دیالیز) = 0% for formulary drugs —
+    NOT yet modelled here (add a patient-category override when needed).
+  • Inpatient ~10% public is the standard convention (VERIFY exact per scheme).
+  • Armed-forces shares: still VERIFY.
+  • حق فنی: a per-Rx professional fee set yearly by سازمان غذا و دارو; by regulation
+    insurers should pay it but in practice often don't — treat covers_* as policy,
+    the amount is deployment-specific (default 0).
+  • VAT: registered drugs are exempt (0). Cosmetics/some supplements taxable.
 
-Money is in **Rial** (1 Toman = 10 Rial). Shares are fractions of 1.0.
+Engine is config-driven so a domain expert corrects any number here without
+touching `engine.py`. Money is **Rial** (1 Toman = 10 Rial); shares are fractions.
 """
 from __future__ import annotations
 
@@ -25,8 +31,8 @@ class InsurerPlan:
     """
     code: str
     name_fa: str
-    outpatient_patient_share: Decimal     # فرانشیز سرپایی  (VERIFY)
-    inpatient_patient_share: Decimal      # فرانشیز بستری   (VERIFY)
+    outpatient_patient_share: Decimal     # فرانشیز سرپایی  (0.30 CONFIRMED for tamin/salamat)
+    inpatient_patient_share: Decimal      # فرانشیز بستری   (~0.10 public; VERIFY per scheme)
     covers_technical_fee: bool            # does the insurer pay part of حق فنی?
     technical_fee_patient_share: Decimal  # patient's % of حق فنی when covered (VERIFY)
 

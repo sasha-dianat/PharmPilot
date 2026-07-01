@@ -65,6 +65,12 @@ def test_ingredient_key_function_normalizes_casing_and_spacing():
     assert ingredient_key("Metformin", "500 MG", "Tablet") == ingredient_key("metformin", "500mg", "tablet")
 
 
+def test_synonym_groups_lay_name_with_ingredient():
+    # 'Vitamin D3' Rx text must group with the cholecalciferol catalog item
+    assert ingredient_key("Vitamin D3", "1000IU", "softgel") == \
+           ingredient_key("cholecalciferol", "1000IU", "softgel")
+
+
 def test_build_records_handles_aliases_and_skips_bad_rows():
     from services.core.drug_catalog.importer import build_records
     rows = [

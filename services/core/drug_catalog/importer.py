@@ -85,6 +85,7 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
             atc=(str(_pick(row, "atc")).strip() if _pick(row, "atc") else None),
             package_count=(int(_pick(row, "package_count")) if str(_pick(row, "package_count") or "").isdigit() else None),
             gtin=(str(_pick(row, "gtin")).strip() if _pick(row, "gtin") else None),
+            coverage=(row.get("coverage") if isinstance(row.get("coverage"), dict) else None),
         ))
     return out
 
@@ -114,7 +115,7 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
             category=r.category.value,
             announced_price=(int(r.announced_price) if r.announced_price is not None else None),
             last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
-            source=source,
+            coverage=r.coverage, source=source,
         )
         stmt = insert(DrugCatalogItem).values(**values)
         update_cols = {k: v for k, v in values.items() if k != "irc"}

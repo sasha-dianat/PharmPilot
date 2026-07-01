@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models.drug_catalog import DrugCatalogItem
 from services.ai.clinical_decision_support.normalizer import normalize
 from services.core.pricing_ir.engine import ItemCategory
-from .schema import CatalogRecord
+from .schema import CatalogRecord, canonical_ingredient
 
 
 def _to_record(row: DrugCatalogItem) -> CatalogRecord:
@@ -24,7 +24,7 @@ def _to_record(row: DrugCatalogItem) -> CatalogRecord:
         last_invoice_price=Decimal(str(row.last_invoice_price)) if row.last_invoice_price is not None else None,
         brand_name=row.brand_name, manufacturer=row.manufacturer,
         is_generic=row.is_generic, category=category, atc=row.atc,
-        package_count=row.package_count, gtin=row.gtin,
+        package_count=row.package_count, gtin=row.gtin, coverage=row.coverage,
     )
 
 
@@ -49,7 +49,7 @@ async def resolve_by_name(db: AsyncSession, drug_name: str) -> CatalogRecord | N
     if one exists, else the highest-priced product — so the affordability flow has
     cheaper alternatives to offer. (Policy is configurable: pick min price instead
     to model automatic generic substitution.)"""
-    g = normalize(drug_name)
+    g = canonical_ingredient(normalize(drug_name))
     if not g:
         return None
     rows = (await db.execute(

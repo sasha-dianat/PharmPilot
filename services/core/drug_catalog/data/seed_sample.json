@@ -1,31 +1,314 @@
 [
-  {"irc": "1228000000000001", "name_fa": "آتورواستاتین ۲۰ - تی‌دی", "generic_name": "atorvastatin", "strength": "20mg", "dosage_form": "tablet", "announced_price": "92000", "brand_name": null, "manufacturer": "تی‌دی فارما", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000002", "name_fa": "لیپیتور ۲۰", "generic_name": "atorvastatin", "strength": "20mg", "dosage_form": "tablet", "announced_price": "260000", "last_invoice_price": "275000", "brand_name": "Lipitor", "manufacturer": "Pfizer", "is_generic": false, "category": "drug"},
-  {"irc": "1228000000000003", "name_fa": "آتورواستاتین ۲۰ - سبحان", "generic_name": "atorvastatin", "strength": "20mg", "dosage_form": "tablet", "announced_price": "110000", "brand_name": null, "manufacturer": "سبحان دارو", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000004", "name_fa": "آتورواستاتین ۴۰ - تی‌دی", "generic_name": "atorvastatin", "strength": "40mg", "dosage_form": "tablet", "announced_price": "140000", "brand_name": null, "manufacturer": "تی‌دی فارما", "is_generic": true, "category": "drug"},
-
-  {"irc": "1228000000000010", "name_fa": "متفورمین ۵۰۰ - اوزان", "generic_name": "metformin", "strength": "500mg", "dosage_form": "tablet", "announced_price": "8000", "last_invoice_price": "11000", "brand_name": null, "manufacturer": "اوزان", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000011", "name_fa": "گلوکوفاژ ۵۰۰", "generic_name": "metformin", "strength": "500mg", "dosage_form": "tablet", "announced_price": "45000", "brand_name": "Glucophage", "manufacturer": "Merck", "is_generic": false, "category": "drug"},
-
-  {"irc": "1228000000000020", "name_fa": "آموکسی‌سیلین ۵۰۰ - فارابی", "generic_name": "amoxicillin", "strength": "500mg", "dosage_form": "capsule", "announced_price": "15000", "brand_name": null, "manufacturer": "فارابی", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000021", "name_fa": "آموکسی‌سیلین ۵۰۰ - دانا", "generic_name": "amoxicillin", "strength": "500mg", "dosage_form": "capsule", "announced_price": "18500", "brand_name": null, "manufacturer": "دانا", "is_generic": true, "category": "drug"},
-
-  {"irc": "1228000000000030", "name_fa": "امپرازول ۲۰ - رازک", "generic_name": "omeprazole", "strength": "20mg", "dosage_form": "capsule", "announced_price": "12000", "brand_name": null, "manufacturer": "رازک", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000031", "name_fa": "لوزک ۲۰", "generic_name": "omeprazole", "strength": "20mg", "dosage_form": "capsule", "announced_price": "95000", "brand_name": "Losec", "manufacturer": "AstraZeneca", "is_generic": false, "category": "drug"},
-
-  {"irc": "1228000000000040", "name_fa": "ویتامین D3 ۱۰۰۰ - مکمل", "generic_name": "cholecalciferol", "strength": "1000IU", "dosage_form": "softgel", "announced_price": "120000", "brand_name": null, "manufacturer": "Euro Vital", "is_generic": true, "category": "supplement"},
-  {"irc": "1228000000000041", "name_fa": "امگا ۳ - مکمل", "generic_name": "omega-3", "strength": "1000mg", "dosage_form": "softgel", "announced_price": "350000", "brand_name": null, "manufacturer": "Nature Made", "is_generic": true, "category": "supplement"},
-
-  {"irc": "1228000000000050", "name_fa": "کرم مرطوب‌کننده آردن", "generic_name": "moisturizer", "strength": "-", "dosage_form": "cream", "announced_price": "480000", "brand_name": "Arden", "manufacturer": "Ardene", "is_generic": false, "category": "cosmetic"},
-
-  {"irc": "1228000000000060", "name_fa": "آملودیپین ۵ - الحاوی", "generic_name": "amlodipine", "strength": "5mg", "dosage_form": "tablet", "announced_price": "9000", "brand_name": null, "manufacturer": "الحاوی", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000061", "name_fa": "آملودیپین ۵ - اکسیر", "generic_name": "amlodipine", "strength": "5mg", "dosage_form": "tablet", "announced_price": "14000", "brand_name": null, "manufacturer": "اکسیر", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000062", "name_fa": "نورواسک ۵", "generic_name": "amlodipine", "strength": "5mg", "dosage_form": "tablet", "announced_price": "88000", "brand_name": "Norvasc", "manufacturer": "Pfizer", "is_generic": false, "category": "drug"},
-
-  {"irc": "1228000000000070", "name_fa": "لیزینوپریل ۱۰ - اکسیر", "generic_name": "lisinopril", "strength": "10mg", "dosage_form": "tablet", "announced_price": "13000", "brand_name": null, "manufacturer": "اکسیر", "is_generic": true, "category": "drug"},
-
-  {"irc": "1228000000000080", "name_fa": "وارفارین ۵ - اورینت", "generic_name": "warfarin", "strength": "5mg", "dosage_form": "tablet", "announced_price": "16000", "brand_name": null, "manufacturer": "اورینت", "is_generic": true, "category": "drug"},
-  {"irc": "1228000000000081", "name_fa": "کومادین ۵", "generic_name": "warfarin", "strength": "5mg", "dosage_form": "tablet", "announced_price": "190000", "brand_name": "Coumadin", "manufacturer": "BMS", "is_generic": false, "category": "drug"},
-
-  {"irc": "1228000000000090", "name_fa": "آلپرازولام ۰.۵ - سبحان", "generic_name": "alprazolam", "strength": "0.5mg", "dosage_form": "tablet", "announced_price": "11000", "brand_name": null, "manufacturer": "سبحان", "is_generic": true, "category": "drug"}
+  {
+    "irc": "1228000000000001",
+    "name_fa": "آتورواستاتین ۲۰ - تی‌دی",
+    "generic_name": "atorvastatin",
+    "strength": "20mg",
+    "dosage_form": "tablet",
+    "announced_price": "92000",
+    "brand_name": null,
+    "manufacturer": "تی‌دی فارما",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000002",
+    "name_fa": "لیپیتور ۲۰",
+    "generic_name": "atorvastatin",
+    "strength": "20mg",
+    "dosage_form": "tablet",
+    "announced_price": "260000",
+    "last_invoice_price": "275000",
+    "brand_name": "Lipitor",
+    "manufacturer": "Pfizer",
+    "is_generic": false,
+    "category": "drug",
+    "coverage": {
+      "tamin": {
+        "covered": true,
+        "reference_price": 100000
+      },
+      "salamat": {
+        "covered": true,
+        "reference_price": 100000
+      },
+      "armed_forces": {
+        "covered": true,
+        "reference_price": 100000
+      }
+    }
+  },
+  {
+    "irc": "1228000000000003",
+    "name_fa": "آتورواستاتین ۲۰ - سبحان",
+    "generic_name": "atorvastatin",
+    "strength": "20mg",
+    "dosage_form": "tablet",
+    "announced_price": "110000",
+    "brand_name": null,
+    "manufacturer": "سبحان دارو",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000004",
+    "name_fa": "آتورواستاتین ۴۰ - تی‌دی",
+    "generic_name": "atorvastatin",
+    "strength": "40mg",
+    "dosage_form": "tablet",
+    "announced_price": "140000",
+    "brand_name": null,
+    "manufacturer": "تی‌دی فارما",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000010",
+    "name_fa": "متفورمین ۵۰۰ - اوزان",
+    "generic_name": "metformin",
+    "strength": "500mg",
+    "dosage_form": "tablet",
+    "announced_price": "8000",
+    "last_invoice_price": "11000",
+    "brand_name": null,
+    "manufacturer": "اوزان",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000011",
+    "name_fa": "گلوکوفاژ ۵۰۰",
+    "generic_name": "metformin",
+    "strength": "500mg",
+    "dosage_form": "tablet",
+    "announced_price": "45000",
+    "brand_name": "Glucophage",
+    "manufacturer": "Merck",
+    "is_generic": false,
+    "category": "drug",
+    "coverage": {
+      "tamin": {
+        "covered": true,
+        "reference_price": 11000
+      },
+      "salamat": {
+        "covered": true,
+        "reference_price": 11000
+      },
+      "armed_forces": {
+        "covered": true,
+        "reference_price": 11000
+      }
+    }
+  },
+  {
+    "irc": "1228000000000020",
+    "name_fa": "آموکسی‌سیلین ۵۰۰ - فارابی",
+    "generic_name": "amoxicillin",
+    "strength": "500mg",
+    "dosage_form": "capsule",
+    "announced_price": "15000",
+    "brand_name": null,
+    "manufacturer": "فارابی",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000021",
+    "name_fa": "آموکسی‌سیلین ۵۰۰ - دانا",
+    "generic_name": "amoxicillin",
+    "strength": "500mg",
+    "dosage_form": "capsule",
+    "announced_price": "18500",
+    "brand_name": null,
+    "manufacturer": "دانا",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000030",
+    "name_fa": "امپرازول ۲۰ - رازک",
+    "generic_name": "omeprazole",
+    "strength": "20mg",
+    "dosage_form": "capsule",
+    "announced_price": "12000",
+    "brand_name": null,
+    "manufacturer": "رازک",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000031",
+    "name_fa": "لوزک ۲۰",
+    "generic_name": "omeprazole",
+    "strength": "20mg",
+    "dosage_form": "capsule",
+    "announced_price": "95000",
+    "brand_name": "Losec",
+    "manufacturer": "AstraZeneca",
+    "is_generic": false,
+    "category": "drug",
+    "coverage": {
+      "tamin": {
+        "covered": true,
+        "reference_price": 12000
+      },
+      "salamat": {
+        "covered": true,
+        "reference_price": 12000
+      },
+      "armed_forces": {
+        "covered": true,
+        "reference_price": 12000
+      }
+    }
+  },
+  {
+    "irc": "1228000000000040",
+    "name_fa": "ویتامین D3 ۱۰۰۰ - مکمل",
+    "generic_name": "cholecalciferol",
+    "strength": "1000IU",
+    "dosage_form": "softgel",
+    "announced_price": "120000",
+    "brand_name": null,
+    "manufacturer": "Euro Vital",
+    "is_generic": true,
+    "category": "supplement"
+  },
+  {
+    "irc": "1228000000000041",
+    "name_fa": "امگا ۳ - مکمل",
+    "generic_name": "omega-3",
+    "strength": "1000mg",
+    "dosage_form": "softgel",
+    "announced_price": "350000",
+    "brand_name": null,
+    "manufacturer": "Nature Made",
+    "is_generic": true,
+    "category": "supplement"
+  },
+  {
+    "irc": "1228000000000050",
+    "name_fa": "کرم مرطوب‌کننده آردن",
+    "generic_name": "moisturizer",
+    "strength": "-",
+    "dosage_form": "cream",
+    "announced_price": "480000",
+    "brand_name": "Arden",
+    "manufacturer": "Ardene",
+    "is_generic": false,
+    "category": "cosmetic"
+  },
+  {
+    "irc": "1228000000000060",
+    "name_fa": "آملودیپین ۵ - الحاوی",
+    "generic_name": "amlodipine",
+    "strength": "5mg",
+    "dosage_form": "tablet",
+    "announced_price": "9000",
+    "brand_name": null,
+    "manufacturer": "الحاوی",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000061",
+    "name_fa": "آملودیپین ۵ - اکسیر",
+    "generic_name": "amlodipine",
+    "strength": "5mg",
+    "dosage_form": "tablet",
+    "announced_price": "14000",
+    "brand_name": null,
+    "manufacturer": "اکسیر",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000062",
+    "name_fa": "نورواسک ۵",
+    "generic_name": "amlodipine",
+    "strength": "5mg",
+    "dosage_form": "tablet",
+    "announced_price": "88000",
+    "brand_name": "Norvasc",
+    "manufacturer": "Pfizer",
+    "is_generic": false,
+    "category": "drug",
+    "coverage": {
+      "tamin": {
+        "covered": true,
+        "reference_price": 9000
+      },
+      "salamat": {
+        "covered": true,
+        "reference_price": 9000
+      },
+      "armed_forces": {
+        "covered": true,
+        "reference_price": 9000
+      }
+    }
+  },
+  {
+    "irc": "1228000000000070",
+    "name_fa": "لیزینوپریل ۱۰ - اکسیر",
+    "generic_name": "lisinopril",
+    "strength": "10mg",
+    "dosage_form": "tablet",
+    "announced_price": "13000",
+    "brand_name": null,
+    "manufacturer": "اکسیر",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000080",
+    "name_fa": "وارفارین ۵ - اورینت",
+    "generic_name": "warfarin",
+    "strength": "5mg",
+    "dosage_form": "tablet",
+    "announced_price": "16000",
+    "brand_name": null,
+    "manufacturer": "اورینت",
+    "is_generic": true,
+    "category": "drug"
+  },
+  {
+    "irc": "1228000000000081",
+    "name_fa": "کومادین ۵",
+    "generic_name": "warfarin",
+    "strength": "5mg",
+    "dosage_form": "tablet",
+    "announced_price": "190000",
+    "brand_name": "Coumadin",
+    "manufacturer": "BMS",
+    "is_generic": false,
+    "category": "drug",
+    "coverage": {
+      "tamin": {
+        "covered": true,
+        "reference_price": 16000
+      },
+      "salamat": {
+        "covered": true,
+        "reference_price": 16000
+      },
+      "armed_forces": {
+        "covered": true,
+        "reference_price": 16000
+      }
+    }
+  },
+  {
+    "irc": "1228000000000090",
+    "name_fa": "آلپرازولام ۰.۵ - سبحان",
+    "generic_name": "alprazolam",
+    "strength": "0.5mg",
+    "dosage_form": "tablet",
+    "announced_price": "11000",
+    "brand_name": null,
+    "manufacturer": "سبحان",
+    "is_generic": true,
+    "category": "drug"
+  }
 ]
