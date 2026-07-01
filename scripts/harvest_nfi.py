@@ -215,71 +215,116 @@ _BR_RE = re.compile(r"<(?:br|/tr|/p|/div|/li|/h[1-6]|/td|/th)[^>]*>", re.I)
 _HTML_RE = re.compile(r"<[^>]+>")
 _DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
-# Persian/English labels on the NFI detail page → our feed fields. The parser is
-# label-adjacency based (works for tables, dl/dd and label/span layouts alike),
-# so minor markup changes on their side don't break it.
-_DETAIL_LABELS: dict[str, tuple[str, ...]] = {
-    "irc": ("کد فرآورده", "کد فراورده", "irc", "کد irc"),
-    "name_fa": ("نام فارسی", "نام فرآورده", "نام فراورده", "نام تجاری فارسی"),
-    "brand_name": ("نام تجاری", "نام لاتین", "نام انگلیسی", "brand"),
-    "generic_name": ("نام ژنریک", "ژنریک", "مولکول", "ماده موثره", "ماده مؤثره", "generic"),
-    "dosage_form": ("شکل دارویی", "شکل فرآورده", "dosage form"),
-    "strength": ("دوز", "قدرت", "strength"),
-    "announced_price": ("قیمت هر بسته", "قیمت مصرف کننده", "قیمت مصرف‌کننده", "قیمت", "price"),
-    "manufacturer": ("صاحب پروانه", "تولید کننده", "تولیدکننده", "شرکت سازنده", "صاحب برند"),
-    "gtin": ("کد ژنریک", "gtin", "بارکد"),
-    "atc": ("کد atc", "atc"),
+# The NFI detail page (ASP.NET MVC) renders every fact as
+#   <label class="txtSearch…">LABEL :</label> <span|bdo>VALUE</span|bdo>
+# so we extract label→value pairs directly. Verified against a real page
+# (NFI/Detail/17248, ویکتوزا/liraglutide).
+_PAIR_RE = re.compile(
+    r"<label[^>]*>\s*(.*?)\s*</label>\s*<(span|bdo)[^>]*>(.*?)</\2>", re.S | re.I)
+_TITLE_RE = re.compile(r"<title>\s*(.*?)\s*</title>", re.S | re.I)
+_ATC_RE = re.compile(r'class="graphLabelSearch"[^>]*>\s*([A-Za-z0-9]+)\s*<', re.I)
+_SIMILAR_RE = re.compile(r"محصولات مشابه\s*\(\s*([\d۰-۹]+)")
+
+# page label (colon/whitespace-stripped, lowercased) → intermediate field
+_PAIR_LABELS = {
+    "نام": "brand_name",                       # trade name (Latin), e.g. VICTOZA
+    "نام عمومی": "generic_full",               # generic + form + strength string
+    "شکل دارویی": "dosage_form",
+    "نحوه مصرف": "route",
+    "صاحب پروانه": "license_owner",
+    "صاحب برند": "brand_owner",
+    "تولید کننده": "manufacturer",
+    "قیمت مصرف کننده هر بسته": "package_price",
+    "قیمت واحد": "unit_price",                 # per-unit consumer price (what we quote on)
+    "gtin": "gtin",
+    "irc": "irc",
+    "تعداد در بسته": "package_count",
+    "ترکیبات": "composition",                  # e.g. "LIRAGLUTIDE 6 mg/1mL"
 }
 
 
-def _html_to_lines(html: str) -> list[str]:
-    """Strip scripts/styles, break block tags to newlines, unescape → clean lines."""
+def _clean(fragment: str) -> str:
     import html as _h
-    body = _TAG_RE.sub(" ", html)
-    body = _BR_RE.sub("\n", body)
-    body = _HTML_RE.sub(" ", body)
-    lines = [_h.unescape(l).strip() for l in body.splitlines()]
-    return [re.sub(r"\s+", " ", l) for l in lines if l.strip()]
+    txt = _HTML_RE.sub(" ", fragment)
+    return re.sub(r"\s+", " ", _h.unescape(txt)).strip()
+
+
+def _digits(v) -> str:
+    return re.sub(r"\D", "", str(v).translate(_DIGIT_FIX))
 
 
 def parse_detail(html: str, page_id: int | None = None) -> dict | None:
-    """Extract product fields from a Detail page via label adjacency."""
-    lines = _html_to_lines(html)
-    text = "\n".join(lines)
+    """Extract product fields from a /NFI/Detail/{id} page."""
+    raw: dict[str, str] = {}
+    for m in _PAIR_RE.finditer(html):
+        label = _clean(m.group(1)).strip(" :：").lower()
+        value = _clean(m.group(3))
+        field = _PAIR_LABELS.get(label)
+        if field and value and field not in raw:
+            raw[field] = value
+
     out: dict = {}
-    lowered = [l.lower() for l in lines]
-    for field, labels in _DETAIL_LABELS.items():
-        for label in labels:
-            ll = label.lower()
-            for i, line in enumerate(lowered):
-                if ll in line:
-                    # value on the same line after ':' or on the next line
-                    same = re.split(r"[:：]", lines[i], maxsplit=1)
-                    cand = same[1].strip() if len(same) > 1 and same[1].strip() else \
-                        (lines[i + 1].strip() if i + 1 < len(lines) else "")
-                    # skip if the "value" is itself another label
-                    if cand and not any(x in cand.lower() for xs in _DETAIL_LABELS.values() for x in xs):
-                        out[field] = cand
-                        break
-            if field in out:
-                break
-    # IRC: normalize Persian digits; fall back to any 14–18 digit run on the page
-    if "irc" in out:
-        digits = re.sub(r"\D", "", str(out["irc"]).translate(_DIGIT_FIX))
-        if digits:
-            out["irc"] = digits
-        else:
-            del out["irc"]
-    if "irc" not in out:
-        m = re.search(r"\b(\d{14,18})\b", text.translate(_DIGIT_FIX))
-        if m:
-            out["irc"] = m.group(1)
-    if "announced_price" in out:
-        p = re.sub(r"[^\d]", "", str(out["announced_price"]).translate(_DIGIT_FIX))
-        out["announced_price"] = p or None
+    if raw.get("irc") and _digits(raw["irc"]):
+        out["irc"] = _digits(raw["irc"])
+    if raw.get("gtin") and _digits(raw["gtin"]):
+        out["gtin"] = _digits(raw["gtin"])
+
+    t = _TITLE_RE.search(html)
+    if t and _clean(t.group(1)):
+        out["name_fa"] = _clean(t.group(1))
+    if raw.get("brand_name"):
+        out["brand_name"] = raw["brand_name"]
+        out.setdefault("name_fa", raw["brand_name"])
+
+    # generic + strength: prefer ترکیبات ("LIRAGLUTIDE 6 mg/1mL"), fall back to نام عمومی
+    comp = raw.get("composition") or ""
+    m = re.match(r"^([A-Za-z][A-Za-z \-/+.]*?)\s+([\d.].*)$", comp)
+    if m:
+        out["generic_name"] = m.group(1).strip().lower()
+        out["strength"] = m.group(2).strip()
+    elif raw.get("generic_full"):
+        out["generic_name"] = raw["generic_full"].split()[0].lower()
+    if raw.get("generic_full"):
+        out["generic_full"] = raw["generic_full"]
+
+    if raw.get("dosage_form"):
+        out["dosage_form"] = raw["dosage_form"]
+    if raw.get("route"):
+        out["route"] = raw["route"]
+
+    # per-UNIT price is what the quote engine multiplies by count
+    unit = _digits(raw.get("unit_price", ""))
+    pack = _digits(raw.get("package_price", ""))
+    if unit:
+        out["announced_price"] = unit
+    elif pack:
+        out["announced_price"] = pack
+    if pack:
+        out["package_price"] = pack
+
+    pc = re.match(r"\s*(\d+)", str(raw.get("package_count", "")).translate(_DIGIT_FIX))
+    if pc:
+        out["package_count"] = int(pc.group(1))
+
+    manu = raw.get("manufacturer") or raw.get("brand_owner") or raw.get("license_owner")
+    if manu:
+        out["manufacturer"] = manu
+    if raw.get("license_owner"):
+        out["license_owner"] = raw["license_owner"]
+
+    atc = _ATC_RE.search(html)
+    if atc:
+        out["atc"] = atc.group(1).upper()
+    sim = _SIMILAR_RE.search(html)
+    if sim:
+        out["similar_count"] = int(_digits(sim.group(1)) or 0)
+    out["category"] = "drug"
+
     if page_id is not None:
         out["nfi_id"] = page_id
-    return out if out.get("irc") or out.get("name_fa") else None
+    # every real product page carries an IRC; pages without one are error/search
+    # shells (which still have a <title>), so IRC is the acceptance criterion
+    return out if out.get("irc") else None
 
 
 def probe(page_id: int) -> None:
