@@ -38,11 +38,19 @@ def canonical_ingredient(name: str) -> str:
 def ingredient_key(generic_name: str, strength: str, dosage_form: str) -> str:
     """Canonical grouping key. Normalizes the active ingredient (brand→generic,
     salt-stripping via the shared normalizer, then a synonym map for lay names
-    like 'Vitamin D3' → cholecalciferol) and the strength/form spelling."""
+    like 'Vitamin D3' → cholecalciferol) and the strength/form spelling.
+
+    Multi-ingredient products (multivitamins) produce very long strength strings;
+    keys are capped at 300 chars (DB column width) with a hash suffix so equal
+    compositions still collide onto the same key and unequal ones don't."""
     g = canonical_ingredient(normalize(generic_name) or (generic_name or "").strip().lower())
     s = re.sub(r"\s+", "", (strength or "").lower())
     f = (dosage_form or "").strip().lower()
-    return f"{g}|{s}|{f}"
+    key = f"{g}|{s}|{f}"
+    if len(key) > 300:
+        import hashlib
+        key = key[:266] + "#" + hashlib.sha256(key.encode()).hexdigest()[:32]
+    return key
 
 
 @dataclass(frozen=True)

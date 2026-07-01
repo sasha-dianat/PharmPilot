@@ -124,6 +124,20 @@ def load_seed() -> list[CatalogRecord]:
     return build_records(rows)
 
 
+# DB column widths (shared/models/drug_catalog.py) — clamp so a single oversized
+# row (multivitamin composition strings…) can't abort a bulk ingest.
+_COL_LIMITS = {"irc": 32, "gtin": 20, "name_fa": 300, "generic_name": 200,
+               "ingredient_key": 300, "dosage_form": 80, "strength": 80,
+               "brand_name": 200, "manufacturer": 200, "atc": 16, "source": 40}
+
+
+def _clamp(field: str, v):
+    if v is None or not isinstance(v, str):
+        return v
+    limit = _COL_LIMITS.get(field)
+    return v[:limit] if limit else v
+
+
 async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi") -> int:
     """Upsert CatalogRecords into drug_catalog by IRC, computing ingredient_key.
     Returns the number of rows written."""
@@ -142,6 +156,7 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
             last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
             coverage=r.coverage, source=source,
         )
+        values = {k: _clamp(k, v) for k, v in values.items()}
         stmt = insert(DrugCatalogItem).values(**values)
         update_cols = {k: v for k, v in values.items() if k != "irc"}
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)
