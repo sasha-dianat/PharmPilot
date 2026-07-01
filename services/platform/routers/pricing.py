@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+import os
+import tempfile
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -211,6 +214,34 @@ async def price_sync(body: SyncRequest,
     proposals. Catalog prices are NOT changed until a manager approves."""
     rows = [l.model_dump() for l in body.lines]
     return await sync_service.run_sync(db, rows, source=body.source)
+
+
+@router.post("/catalog/import")
+async def import_catalog(file: UploadFile = File(...),
+                         staff: Staff = Depends(require_permission("inventory:write")),
+                         db: AsyncSession = Depends(get_db)):
+    """Ingest the official فهرست رسمی دارویی / NFI export (.xlsx or .csv) into the
+    catalog. Column headers (Persian/English) are auto-mapped; prices with Persian
+    digits/separators are parsed. Returns rows written + a small sample."""
+    from services.core.drug_catalog.excel_import import records_from_file
+    from services.core.drug_catalog.importer import upsert_catalog
+
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".xlsx"
+    if suffix not in (".xlsx", ".xlsm", ".xls", ".csv", ".tsv"):
+        raise HTTPException(status_code=400, detail="Upload an .xlsx or .csv drug list.")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(await file.read())
+        tmp.close()
+        records = records_from_file(tmp.name)
+        if not records:
+            raise HTTPException(status_code=422, detail="No rows recognized — check the file has an IRC/کد and نام column.")
+        n = await upsert_catalog(db, records, source=f"import:{file.filename}")
+    finally:
+        os.unlink(tmp.name)
+    sample = [{"irc": r.irc, "name": r.name_fa, "generic": r.generic_name,
+               "price": (int(r.effective_price) if r.effective_price else 0)} for r in records[:5]]
+    return {"imported": n, "sample": sample}
 
 
 @router.post("/sync/run")

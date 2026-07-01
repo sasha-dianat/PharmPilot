@@ -8,6 +8,7 @@ persists them, computing the ingredient_key once at ingest.
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable
@@ -16,22 +17,44 @@ from .schema import CatalogRecord
 from services.core.pricing_ir.engine import ItemCategory
 
 # Column aliases tolerated in raw export rows (Persian + English headers).
+# Header keys are normalized (spaces/ZWNJ → "_", lowercased) before lookup, so
+# real FDA/NFI/IRC export headers like "قیمت مصرف‌کننده" match "قیمت_مصرف_کننده".
 _ALIASES: dict[str, tuple[str, ...]] = {
-    "irc": ("irc", "irc_code", "کد", "کد_irc", "code"),
-    "name_fa": ("name_fa", "name", "نام", "نام_فارسی", "title", "product_name"),
-    "generic_name": ("generic_name", "generic", "ژنریک", "ماده_موثره", "active_ingredient", "ingredient"),
-    "strength": ("strength", "dose", "dosage", "قدرت", "دوز"),
-    "dosage_form": ("dosage_form", "form", "شکل", "شکل_دارویی"),
-    "announced_price": ("announced_price", "price", "قیمت", "قیمت_مصرف_کننده", "consumer_price"),
-    "last_invoice_price": ("last_invoice_price", "invoice_price", "قیمت_خرید", "purchase_price"),
-    "brand_name": ("brand_name", "brand", "برند", "نام_تجاری"),
-    "manufacturer": ("manufacturer", "company", "تولیدکننده", "شرکت"),
-    "atc": ("atc", "atc_code"),
-    "package_count": ("package_count", "package", "تعداد_در_بسته", "pack"),
-    "gtin": ("gtin", "barcode", "بارکد"),
-    "category": ("category", "نوع", "type"),
-    "is_generic": ("is_generic", "generic_flag"),
+    "irc": ("irc", "irc_code", "کد", "کد_irc", "code", "کد_فرآورده", "کد_فراورده",
+            "کد_محصول", "uid", "کد_۱۶_رقمی"),
+    "name_fa": ("name_fa", "name", "نام", "نام_فارسی", "title", "product_name",
+                "نام_فرآورده", "نام_فراورده", "نام_دارو", "نام_کالا", "عنوان",
+                "عنوان_فرآورده", "نام_محصول"),
+    "generic_name": ("generic_name", "generic", "ژنریک", "ماده_موثره", "ماده_مؤثره",
+                     "active_ingredient", "ingredient", "نام_ژنریک", "نام_علمی",
+                     "نام_ژنریک_دارو", "generic_code_name"),
+    "strength": ("strength", "dose", "dosage", "قدرت", "دوز", "میزان", "دوز_دارو"),
+    "dosage_form": ("dosage_form", "form", "شکل", "شکل_دارویی", "شکل_فرآورده", "شکل_دارو"),
+    "announced_price": ("announced_price", "price", "قیمت", "قیمت_مصرف_کننده", "consumer_price",
+                        "قیمت_مصوب", "قیمت_عمومی", "قیمت_مصرف‌کننده", "قیمت_فروش",
+                        "قیمت_مصرفکننده", "consumer"),
+    "last_invoice_price": ("last_invoice_price", "invoice_price", "قیمت_خرید", "purchase_price",
+                           "قیمت_فاکتور", "قیمت_خرید_از_پخش"),
+    "brand_name": ("brand_name", "brand", "برند", "نام_تجاری", "نام_برند"),
+    "manufacturer": ("manufacturer", "company", "تولیدکننده", "شرکت", "صاحب_پروانه",
+                     "سازنده", "شرکت_تولیدکننده", "شرکت_سازنده"),
+    "atc": ("atc", "atc_code", "کد_atc"),
+    "package_count": ("package_count", "package", "تعداد_در_بسته", "pack", "بسته_بندی", "تعداد"),
+    "gtin": ("gtin", "barcode", "بارکد", "کد_gtin"),
+    "category": ("category", "نوع", "type", "دسته", "گروه", "نوع_فرآورده", "نوع_محصول"),
+    "is_generic": ("is_generic", "generic_flag", "ژنریک_است"),
+    "coverage": ("coverage",),
 }
+
+# Persian / Arabic-Indic digits → ASCII, and thousands separators → "".
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def normalize_header(h) -> str:
+    """FDA/NFI headers use spaces + ZWNJ (نیم‌فاصله). Fold both to '_' and lower
+    so 'قیمت مصرف‌کننده' → 'قیمت_مصرف_کننده' to match the alias table."""
+    s = str(h).strip().lower().replace("‌", "_")   # ZWNJ → _
+    return re.sub(r"\s+", "_", s)
 
 
 def _pick(row: dict, field: str):
@@ -45,7 +68,9 @@ def _to_decimal(v) -> Decimal | None:
     if v in (None, ""):
         return None
     try:
-        return Decimal(str(v).replace(",", "").strip())
+        s = str(v).translate(_DIGITS)
+        s = re.sub(r"[,٬،\s٬،]", "", s).strip()   # strip grouping separators
+        return Decimal(s) if s else None
     except (InvalidOperation, ValueError):
         return None
 

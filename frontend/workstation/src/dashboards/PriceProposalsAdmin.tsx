@@ -2,7 +2,7 @@
  * PriceProposalsAdmin — manager approval of daily price-sync proposals.
  * Prices never move automatically: the sync proposes, the manager approves.
  */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { pricingApi } from '../lib/api'
 
@@ -22,9 +22,22 @@ const KIND = {
 
 export default function PriceProposalsAdmin() {
   const qc = useQueryClient()
+  const fileRef = useRef<HTMLInputElement>(null)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const importCatalog = async (file: File) => {
+    setBusy(true); setMsg(null)
+    try {
+      const { data: res } = await pricingApi.importCatalog(file)
+      setMsg({ kind: 'ok', text: `${res.imported} قلم از فهرست رسمی وارد کاتالوگ شد.` })
+      qc.invalidateQueries({ queryKey: ['price-proposals'] })
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setMsg({ kind: 'err', text: detail || 'بارگذاری فهرست ناموفق بود.' })
+    } finally { setBusy(false); if (fileRef.current) fileRef.current.value = '' }
+  }
 
   const { data } = useQuery<{ count: number; proposals: Proposal[] }>({
     queryKey: ['price-proposals'],
@@ -69,8 +82,14 @@ export default function PriceProposalsAdmin() {
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-bold">قیمت‌زنی — تأیید تغییرات قیمت</h2>
         <span className="text-xs text-slate-500">پیشنهادهای همگام‌سازی روزانه؛ قیمت‌ها تا تأیید مدیر تغییر نمی‌کنند</span>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.tsv" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) importCatalog(f) }} />
+        <button onClick={() => fileRef.current?.click()} disabled={busy}
+          className="ms-auto px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 text-sm rounded-lg disabled:opacity-50">
+          ⬆ بارگذاری فهرست رسمی (Excel/CSV)
+        </button>
         <button onClick={runSync} disabled={busy}
-          className="ms-auto px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-sm rounded-lg disabled:opacity-50">
+          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-sm rounded-lg disabled:opacity-50">
           ⟳ اجرای همگام‌سازی
         </button>
       </div>

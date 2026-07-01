@@ -112,6 +112,10 @@ export const pricingApi = {
   decideProposals: (ids: string[], approve: boolean) =>
     apiClient.post('/pricing/proposals/decide', { ids, approve }),
   runSync: () => apiClient.post('/pricing/sync/run', {}),
+  importCatalog: (file: File) => {
+    const fd = new FormData(); fd.append('file', file)
+    return apiClient.post('/pricing/catalog/import', fd)
+  },
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────
