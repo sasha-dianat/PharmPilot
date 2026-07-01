@@ -11,6 +11,10 @@ export default function PhysicianLetterModal({
   const [councilId, setCouncilId] = useState('')
   const [letter, setLetter] = useState<string | null>(null)
   const [letterHtml, setLetterHtml] = useState<string | null>(null)
+  const [letterId, setLetterId] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const generate = async () => {
@@ -23,7 +27,21 @@ export default function PhysicianLetterModal({
       })
       setLetter(data.letter_text)
       setLetterHtml(data.letter_html)
+      setLetterId(data.id ?? null)
+      setEditing(false); setSaved(false)
     } catch { setLetter('Could not generate letter — try again.'); setLetterHtml(null) }
+    finally { setLoading(false) }
+  }
+
+  const saveEdit = async () => {
+    if (!letterId || !draft.trim()) return
+    setLoading(true)
+    try {
+      const { data } = await clinicalApi.revisePhysicianLetter(letterId, draft)
+      setLetter(data.letter_text)
+      setLetterHtml(data.letter_html)
+      setEditing(false); setSaved(true)
+    } catch { /* keep editing */ }
     finally { setLoading(false) }
   }
 
@@ -52,16 +70,41 @@ export default function PhysicianLetterModal({
           <input value={councilId} onChange={e => setCouncilId(e.target.value)} placeholder="Council ID"
             className="cd-ui w-32 text-sm bg-surface2 border border-line2 rounded-lg px-3 py-2 text-ink" />
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <button onClick={generate} disabled={loading || !physician.trim() || !councilId.trim()}
             className="cd-ui px-4 py-2 bg-intel text-white text-sm rounded-lg disabled:opacity-50">
-            {loading ? '…' : 'Generate'}</button>
-          {letter && <button onClick={print} className="cd-ui px-4 py-2 bg-[#34d399] text-white text-sm rounded-lg">Print</button>}
+            {loading ? '…' : letter ? 'Regenerate' : 'Generate'}</button>
+          {letter && !editing && (
+            <button onClick={() => { setDraft(letter); setEditing(true); setSaved(false) }}
+              className="cd-ui px-4 py-2 bg-surface2 border border-line2 text-ink2 text-sm rounded-lg">✎ Edit</button>
+          )}
+          {letter && !editing && letterHtml &&
+            <button onClick={print} className="cd-ui px-4 py-2 bg-[#34d399] text-white text-sm rounded-lg">Print</button>}
+          {saved && !editing && <span className="cd-ui text-xs text-safe">✓ Saved to record</span>}
         </div>
-        {letter && (
+
+        {letter && !editing && (
           <div dir={language === 'en' ? 'ltr' : 'rtl'}
             className="cd-narr text-sm text-ink bg-surface2 border border-line rounded-lg p-3 max-h-80 overflow-y-auto whitespace-pre-wrap leading-[1.9]">
             {letter}
+          </div>
+        )}
+
+        {editing && (
+          <div className="space-y-2">
+            <p className="cd-ui text-[11px] text-ink3">
+              Correct any wrong surname / آقا-خانم. Saving overwrites the recorded legal version (the edit is audited).
+            </p>
+            <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={12}
+              dir={language === 'en' ? 'ltr' : 'rtl'}
+              className="cd-narr w-full text-sm text-ink bg-surface2 border border-line2 rounded-lg p-3 leading-[1.9] focus:outline-none focus:ring-2 focus:ring-intel/30" />
+            <div className="flex gap-2">
+              <button onClick={saveEdit} disabled={loading || !draft.trim()}
+                className="cd-ui px-4 py-2 bg-intel text-white text-sm rounded-lg disabled:opacity-50">
+                {loading ? '…' : 'Save edits'}</button>
+              <button onClick={() => setEditing(false)}
+                className="cd-ui px-4 py-2 bg-surface2 border border-line2 text-ink2 text-sm rounded-lg">Cancel</button>
+            </div>
           </div>
         )}
       </div>

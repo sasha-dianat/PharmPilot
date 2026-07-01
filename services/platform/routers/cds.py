@@ -508,6 +508,44 @@ async def generate_physician_letter(
             "language": body.language, "source": source, "content_hash": content_hash}
 
 
+class PhysicianLetterRevision(BaseModel):
+    letter_text: str
+
+
+@router.post("/physician-letter/{letter_id}/revise")
+async def revise_physician_letter(
+    letter_id: UUID,
+    body: PhysicianLetterRevision,
+    staff: Staff = Depends(require_permission("clinical:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a pharmacist's manual edit to a generated letter (e.g. fixing an
+    incorrect surname or آقا/خانم). The edited text becomes the authoritative
+    recorded version; the prior content_hash is preserved in the audit trail."""
+    letter = (await db.execute(select(PhysicianLetter).where(
+        PhysicianLetter.id == letter_id,
+        PhysicianLetter.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if not letter:
+        raise HTTPException(status_code=404, detail="Letter not found")
+    new_text = (body.letter_text or "").strip()
+    if not new_text:
+        raise HTTPException(status_code=400, detail="Letter text cannot be empty")
+    old_hash = letter.content_hash
+    letter.letter_text = new_text
+    letter.content_hash = hashlib.sha256(new_text.encode()).hexdigest()
+    letter.updated_by = staff.id
+    db.add(ClinicalAuditLog(
+        user_id=staff.id, patient_id=letter.patient_id, module="physician_letter_revision",
+        input_snapshot=_jsonable({"previous_content_hash": old_hash}),
+        output_snapshot=_jsonable({"content_hash": letter.content_hash}),
+        rules_triggered=[], model_version=LETTER_VERSION,
+        created_by=staff.id, updated_by=staff.id))
+    await db.flush()
+    return {"id": str(letter.id), "letter_text": letter.letter_text,
+            "letter_html": render_html(letter.letter_text, letter.language),
+            "language": letter.language, "content_hash": letter.content_hash}
+
+
 @router.get("/physician-letter/{letter_id}")
 async def get_physician_letter(
     letter_id: UUID,
