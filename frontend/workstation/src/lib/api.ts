@@ -116,6 +116,11 @@ export const pricingApi = {
     const fd = new FormData(); fd.append('file', file)
     return apiClient.post('/pricing/catalog/import', fd)
   },
+  catalogStats: () => apiClient.get('/pricing/catalog/stats'),
+  nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
+    apiClient.post('/pricing/catalog/nfi/start', body),
+  nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
+  nfiStop: () => apiClient.post('/pricing/catalog/nfi/stop', {}),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────

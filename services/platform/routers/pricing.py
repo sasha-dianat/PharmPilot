@@ -216,6 +216,51 @@ async def price_sync(body: SyncRequest,
     return await sync_service.run_sync(db, rows, source=body.source)
 
 
+@router.get("/catalog/stats")
+async def catalog_stats(staff: Staff = Depends(require_permission("inventory:read")),
+                        db: AsyncSession = Depends(get_db)):
+    """Catalog size + freshness for the admin dashboard."""
+    from sqlalchemy import func, select as _select
+    from shared.models.drug_catalog import DrugCatalogItem as _D
+    total = (await db.execute(_select(func.count()).select_from(_D))).scalar() or 0
+    priced = (await db.execute(_select(func.count()).select_from(_D)
+                               .where(_D.announced_price.isnot(None)))).scalar() or 0
+    ingredients = (await db.execute(_select(func.count(func.distinct(_D.ingredient_key))))).scalar() or 0
+    last = (await db.execute(_select(func.max(_D.updated_at)).select_from(_D))).scalar()
+    return {"total": total, "priced": priced, "ingredient_groups": ingredients,
+            "last_updated": (last.isoformat() if last else None)}
+
+
+class NfiHarvestRequest(BaseModel):
+    start_id: int = 1
+    end_id: int = 60000
+    delay: float = 0.25
+    proxy: str | None = None      # Iran proxy URL (else server HTTPS_PROXY is used)
+
+
+@router.post("/catalog/nfi/start")
+async def nfi_harvest_start(body: NfiHarvestRequest,
+                            staff: Staff = Depends(require_permission("inventory:write"))):
+    """Start a background NFI crawl → catalog. Requires an Iran-reachable proxy."""
+    from services.core.drug_catalog import nfi_harvest_service as svc
+    try:
+        return svc.start(body.start_id, body.end_id, delay=body.delay, proxy=body.proxy)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/catalog/nfi/status")
+async def nfi_harvest_status(staff: Staff = Depends(require_permission("inventory:read"))):
+    from services.core.drug_catalog import nfi_harvest_service as svc
+    return svc.status()
+
+
+@router.post("/catalog/nfi/stop")
+async def nfi_harvest_stop(staff: Staff = Depends(require_permission("inventory:write"))):
+    from services.core.drug_catalog import nfi_harvest_service as svc
+    return {"stopping": svc.request_stop()}
+
+
 @router.post("/catalog/import")
 async def import_catalog(file: UploadFile = File(...),
                          staff: Staff = Depends(require_permission("inventory:write")),

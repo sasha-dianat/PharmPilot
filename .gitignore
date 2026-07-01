@@ -33,3 +33,8 @@ graphify-out/
 
 # Generated interaction knowledge bundle (installed by the admin module, never committed)
 services/ai/clinical_decision_support/interaction/data/bundle.sqlite
+
+# NFI harvest artifacts (local data, not source)
+nfi_pages.jsonl
+nfi_detail_*.html
+nfi_catalog.json
