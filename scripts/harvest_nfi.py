@@ -19,6 +19,17 @@ harvest    Page through the search API (Persian + Latin alphabet probes, then
                announced_price, brand_name, manufacturer, gtin, category}, ...]
            Ingest with:  POST /api/v1/pricing/catalog/import (as .json→convert)
            or:  python scripts/harvest_nfi.py ingest --feed nfi_catalog.json
+probe      Fetch ONE product detail page (https://irc.fda.gov.ir/NFI/Detail/<id>),
+           save the raw HTML next to the script, and print the fields the parser
+           extracted — use this first to sanity-check the parser on a real page:
+             python scripts/harvest_nfi.py probe --id 17248
+crawl      Detail pages are sequentially numbered, so enumerate the whole ID
+           space directly (no search API needed): fetch /NFI/Detail/{id} for
+           id in [--start, --end], parse each page, and append to a JSONL file.
+           Resumable — already-crawled ids are skipped on re-run:
+             python scripts/harvest_nfi.py crawl --start 1 --end 60000 --out nfi_pages.jsonl
+           Convert to the catalog feed / ingest directly:
+             python scripts/harvest_nfi.py ingest --feed nfi_pages.jsonl
 
 Only stdlib is required (urllib honors HTTP(S)_PROXY). Be polite: --delay 0.4s
 default between requests; NFI is a public national service.
@@ -198,6 +209,133 @@ def harvest(endpoint: str | None, out_path: str, delay: float, max_pages: int) -
     print("Ingest with: python scripts/harvest_nfi.py ingest --feed", out_path)
 
 
+# ── detail-page crawl (/NFI/Detail/{id} — sequential ids, no search API) ──────
+_TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
+_BR_RE = re.compile(r"<(?:br|/tr|/p|/div|/li|/h[1-6]|/td|/th)[^>]*>", re.I)
+_HTML_RE = re.compile(r"<[^>]+>")
+_DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+# Persian/English labels on the NFI detail page → our feed fields. The parser is
+# label-adjacency based (works for tables, dl/dd and label/span layouts alike),
+# so minor markup changes on their side don't break it.
+_DETAIL_LABELS: dict[str, tuple[str, ...]] = {
+    "irc": ("کد فرآورده", "کد فراورده", "irc", "کد irc"),
+    "name_fa": ("نام فارسی", "نام فرآورده", "نام فراورده", "نام تجاری فارسی"),
+    "brand_name": ("نام تجاری", "نام لاتین", "نام انگلیسی", "brand"),
+    "generic_name": ("نام ژنریک", "ژنریک", "مولکول", "ماده موثره", "ماده مؤثره", "generic"),
+    "dosage_form": ("شکل دارویی", "شکل فرآورده", "dosage form"),
+    "strength": ("دوز", "قدرت", "strength"),
+    "announced_price": ("قیمت هر بسته", "قیمت مصرف کننده", "قیمت مصرف‌کننده", "قیمت", "price"),
+    "manufacturer": ("صاحب پروانه", "تولید کننده", "تولیدکننده", "شرکت سازنده", "صاحب برند"),
+    "gtin": ("کد ژنریک", "gtin", "بارکد"),
+    "atc": ("کد atc", "atc"),
+}
+
+
+def _html_to_lines(html: str) -> list[str]:
+    """Strip scripts/styles, break block tags to newlines, unescape → clean lines."""
+    import html as _h
+    body = _TAG_RE.sub(" ", html)
+    body = _BR_RE.sub("\n", body)
+    body = _HTML_RE.sub(" ", body)
+    lines = [_h.unescape(l).strip() for l in body.splitlines()]
+    return [re.sub(r"\s+", " ", l) for l in lines if l.strip()]
+
+
+def parse_detail(html: str, page_id: int | None = None) -> dict | None:
+    """Extract product fields from a Detail page via label adjacency."""
+    lines = _html_to_lines(html)
+    text = "\n".join(lines)
+    out: dict = {}
+    lowered = [l.lower() for l in lines]
+    for field, labels in _DETAIL_LABELS.items():
+        for label in labels:
+            ll = label.lower()
+            for i, line in enumerate(lowered):
+                if ll in line:
+                    # value on the same line after ':' or on the next line
+                    same = re.split(r"[:：]", lines[i], maxsplit=1)
+                    cand = same[1].strip() if len(same) > 1 and same[1].strip() else \
+                        (lines[i + 1].strip() if i + 1 < len(lines) else "")
+                    # skip if the "value" is itself another label
+                    if cand and not any(x in cand.lower() for xs in _DETAIL_LABELS.values() for x in xs):
+                        out[field] = cand
+                        break
+            if field in out:
+                break
+    # IRC: normalize Persian digits; fall back to any 14–18 digit run on the page
+    if "irc" in out:
+        digits = re.sub(r"\D", "", str(out["irc"]).translate(_DIGIT_FIX))
+        if digits:
+            out["irc"] = digits
+        else:
+            del out["irc"]
+    if "irc" not in out:
+        m = re.search(r"\b(\d{14,18})\b", text.translate(_DIGIT_FIX))
+        if m:
+            out["irc"] = m.group(1)
+    if "announced_price" in out:
+        p = re.sub(r"[^\d]", "", str(out["announced_price"]).translate(_DIGIT_FIX))
+        out["announced_price"] = p or None
+    if page_id is not None:
+        out["nfi_id"] = page_id
+    return out if out.get("irc") or out.get("name_fa") else None
+
+
+def probe(page_id: int) -> None:
+    url = f"{BASE}/NFI/Detail/{page_id}"
+    print(f"fetching {url} …")
+    status, ctype, html = _get(url)
+    print(f"  status={status} type={ctype} bytes={len(html)}")
+    if status != 200 or not html:
+        print("Cannot fetch — check your Iran proxy (HTTPS_PROXY).", file=sys.stderr)
+        sys.exit(2)
+    dump = f"nfi_detail_{page_id}.html"
+    with open(dump, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    print(f"  raw HTML saved → {dump}")
+    parsed = parse_detail(html, page_id)
+    print("\nparsed fields:")
+    print(json.dumps(parsed, ensure_ascii=False, indent=2) if parsed
+          else "  (nothing recognized — send me the saved HTML and I'll tune the parser)")
+
+
+def crawl(start: int, end: int, out_path: str, delay: float) -> None:
+    done: set[int] = set()
+    try:
+        with open(out_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    done.add(json.loads(line).get("nfi_id"))
+                except json.JSONDecodeError:
+                    pass
+        print(f"resuming — {len(done)} ids already crawled in {out_path}")
+    except FileNotFoundError:
+        pass
+
+    hits = misses = 0
+    with open(out_path, "a", encoding="utf-8") as fh:
+        for pid in range(start, end + 1):
+            if pid in done:
+                continue
+            status, _, html = _get(f"{BASE}/NFI/Detail/{pid}", timeout=25)
+            if status == 200 and html:
+                parsed = parse_detail(html, pid)
+                if parsed:
+                    fh.write(json.dumps(parsed, ensure_ascii=False) + "\n")
+                    fh.flush()
+                    hits += 1
+                else:
+                    misses += 1
+            else:
+                misses += 1
+            if (hits + misses) % 100 == 0:
+                print(f"  id {pid}: {hits} products, {misses} empty/miss")
+            time.sleep(delay)
+    print(f"\ncrawl done: {hits} products appended → {out_path} ({misses} empty ids)")
+    print("Ingest with: python scripts/harvest_nfi.py ingest --feed", out_path)
+
+
 # ── ingest (local, no proxy needed) ───────────────────────────────────────────
 def ingest(feed_path: str) -> None:
     import asyncio
@@ -206,7 +344,12 @@ def ingest(feed_path: str) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from services.core.drug_catalog.importer import build_records, upsert_catalog
 
-    rows = json.load(open(feed_path, encoding="utf-8"))
+    text = open(feed_path, encoding="utf-8").read()
+    try:
+        data = json.loads(text)
+        rows = data if isinstance(data, list) else [data]
+    except json.JSONDecodeError:           # JSONL (one object per line, e.g. crawl output)
+        rows = [json.loads(l) for l in text.splitlines() if l.strip()]
     records = build_records(rows)
     print(f"{len(rows)} rows → {len(records)} valid records")
 
@@ -230,6 +373,13 @@ def main() -> None:
     h.add_argument("--out", default="nfi_catalog.json")
     h.add_argument("--delay", type=float, default=0.4)
     h.add_argument("--max-pages", type=int, default=50)
+    p = sub.add_parser("probe", help="fetch + parse ONE /NFI/Detail/<id> page")
+    p.add_argument("--id", type=int, required=True)
+    c = sub.add_parser("crawl", help="enumerate /NFI/Detail/{id} over an id range")
+    c.add_argument("--start", type=int, default=1)
+    c.add_argument("--end", type=int, default=60000)
+    c.add_argument("--out", default="nfi_pages.jsonl")
+    c.add_argument("--delay", type=float, default=0.25)
     i = sub.add_parser("ingest", help="load a harvested feed into the drug catalog")
     i.add_argument("--feed", required=True)
     args = ap.parse_args()
@@ -238,6 +388,10 @@ def main() -> None:
         discover()
     elif args.mode == "harvest":
         harvest(args.endpoint, args.out, args.delay, args.max_pages)
+    elif args.mode == "probe":
+        probe(args.id)
+    elif args.mode == "crawl":
+        crawl(args.start, args.end, args.out, args.delay)
     else:
         ingest(args.feed)
 
