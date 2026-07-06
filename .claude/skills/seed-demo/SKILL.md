@@ -7,7 +7,7 @@ description: Seed or reset a realistic demo patient with a multi-drug basket (Rx
 
 Create (idempotently) the demo patient `dddddddd-0000-4000-8000-000000000001`
 in pharmacy `a331c018-5904-4e50-a58d-c6343bcf2e17` on the dev DB
-(psql: PGPASSWORD=change_in_production, host 127.0.0.1:5433, db pharmpilot).
+(psql: PGPASSWORD=$PGPASSWORD, host 127.0.0.1:5433, db pharmpilot).
 
 Steps:
 1. Delete existing rows for that patient id from lab_results, medications,

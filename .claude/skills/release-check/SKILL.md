@@ -15,7 +15,7 @@ end. Do not stop at the first failure — run everything, then summarize.
    Pre-existing failures in DashboardShell.tsx / useAIProvider.ts /
    MedReconciliationPage.tsx are BASELINE — only report NEW errors beyond those.
 3. **Migration chain**: exactly one Alembic head —
-   `DATABASE_URL="postgresql+asyncpg://pharmpilot:change_in_production@127.0.0.1:5433/pharmpilot" /Users/sashad85/miniforge3/bin/python -m alembic heads`
+   `DATABASE_URL="$PHARMPILOT_DB_URL_ASYNC" /Users/sashad85/miniforge3/bin/python -m alembic heads`
    must print a single revision; also `alembic upgrade head` applies cleanly.
 4. **Pricing conservation smoke**: quote a basket via
    POST /api/v1/pricing/quote (login as pharmacist Pharmacist2024! or admin

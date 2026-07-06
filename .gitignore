@@ -38,3 +38,8 @@ services/ai/clinical_decision_support/interaction/data/bundle.sqlite
 nfi_pages.jsonl
 nfi_detail_*.html
 nfi_catalog.json
+
+# local-only files (must never be committed)
+.env.bak
+.env.*.bak
+.claude/settings.local.json

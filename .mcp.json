@@ -5,7 +5,7 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-postgres",
-        "postgresql://pharmpilot:change_in_production@127.0.0.1:5433/pharmpilot"
+        "${PHARMPILOT_DB_URL}"
       ]
     },
     "context7": {

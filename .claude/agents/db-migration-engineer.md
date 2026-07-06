@@ -17,9 +17,9 @@ Facts:
   postgresql.UUID server_default uuid_generate_v4(), explicit indexes, plain
   upgrade()/downgrade().
 - Apply with:
-  DATABASE_URL="postgresql+asyncpg://pharmpilot:change_in_production@127.0.0.1:5433/pharmpilot" \
+  DATABASE_URL="$PHARMPILOT_DB_URL_ASYNC" \
     /Users/sashad85/miniforge3/bin/python -m alembic upgrade head
-- Verify with psql: PGPASSWORD=change_in_production psql -h 127.0.0.1 -p 5433 \
+- Verify with psql: PGPASSWORD=$PGPASSWORD psql -h 127.0.0.1 -p 5433 \
     -U pharmpilot -d pharmpilot -c "\\d <table>"
 - Money columns are Numeric(14,0) Rial. Persian text needs generous String
   lengths (names 200–300).

@@ -14,7 +14,7 @@ Report the live state of PharmPilot's Iranian drug-data pipeline:
    PharmPilot2024!) — running/scanned/products/ingested/ETA.
 3. **Catalog**: GET /api/v1/pricing/catalog/stats — total / priced /
    ingredient_groups / last_updated. Cross-check with
-   `PGPASSWORD=change_in_production psql -h 127.0.0.1 -p 5433 -U pharmpilot -d pharmpilot -t -c "SELECT count(*), count(coverage) FROM drug_catalog;"`
+   `PGPASSWORD=$PGPASSWORD psql -h 127.0.0.1 -p 5433 -U pharmpilot -d pharmpilot -t -c "SELECT count(*), count(coverage) FROM drug_catalog;"`
 4. **Coverage**: per-insurer counts —
    `SELECT key, count(*) FROM drug_catalog, jsonb_object_keys(coverage) key GROUP BY key;`
 5. **Price proposals**: pending count via GET /api/v1/pricing/proposals.
