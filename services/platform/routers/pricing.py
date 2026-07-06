@@ -289,6 +289,48 @@ async def import_catalog(file: UploadFile = File(...),
     return {"imported": n, "sample": sample}
 
 
+@router.post("/coverage/import")
+async def import_coverage(file: UploadFile = File(...),
+                          insurer: str = "tamin",
+                          min_confidence: float = 0.75,
+                          staff: Staff = Depends(require_permission("inventory:write")),
+                          db: AsyncSession = Depends(get_db)):
+    """Smart دارونامه import: infer column roles (headers or value distributions),
+    fuzzy-link rows to catalog products (salt-stripped ingredient + strength/form
+    scoring, Persian trade-name fallback), spread coverage across each ingredient
+    group, auto-apply high-confidence links and report the rest for review."""
+    from services.core.drug_catalog.excel_import import read_table
+    from services.core.drug_catalog.coverage_import import (
+        infer_columns, normalize_rows, link_rows, build_coverage, apply_coverage,
+    )
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".xlsx"
+    if suffix not in (".xlsx", ".xlsm", ".xls", ".csv", ".tsv", ".html", ".htm"):
+        raise HTTPException(status_code=400, detail="Upload the دارونامه as .xlsx, .csv or a saved .html page.")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(await file.read())
+        tmp.close()
+        raw = read_table(tmp.name)
+    finally:
+        os.unlink(tmp.name)
+    if not raw:
+        raise HTTPException(status_code=422, detail="No table rows recognized in the file.")
+    roles = infer_columns(raw)
+    if "drug_name" not in roles.values() and "irc" not in roles.values():
+        raise HTTPException(status_code=422,
+                            detail=f"Could not locate a drug-name or IRC column. Columns: {list(raw[0].keys())[:12]}")
+    rows = normalize_rows(raw, roles)
+    catalog = await repo.fetch_all(db)
+    links = link_rows(rows, catalog)
+    cov = build_coverage(links, insurer=insurer, min_confidence=min_confidence, catalog=catalog)
+    updated = await apply_coverage(db, cov.applied)
+    return {
+        "insurer": insurer, "columns": roles, "stats": {**cov.stats, "db_products_updated": updated},
+        "review": cov.review[:50],
+        "unmatched_sample": cov.unmatched[:20],
+    }
+
+
 @router.post("/sync/run")
 async def price_sync_run(staff: Staff = Depends(require_permission("inventory:write")),
                          db: AsyncSession = Depends(get_db)):

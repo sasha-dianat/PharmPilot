@@ -21,8 +21,10 @@ def read_table(path: str | Path) -> list[dict]:
         rows = _read_excel(path)
     elif suffix in (".csv", ".tsv", ".txt"):
         rows = _read_csv(path, sep="\t" if suffix == ".tsv" else None)
+    elif suffix in (".html", ".htm"):
+        rows = _read_html(path)
     else:
-        raise ValueError(f"Unsupported catalog file type: {suffix} (use .xlsx or .csv)")
+        raise ValueError(f"Unsupported catalog file type: {suffix} (use .xlsx, .csv or .html)")
     out: list[dict] = []
     for r in rows:
         norm = {}
@@ -56,6 +58,27 @@ def _read_csv(path: Path, sep=None) -> list[dict]:
         import csv
         with path.open(encoding="utf-8-sig", newline="") as fh:
             return list(csv.DictReader(fh, delimiter=sep or ","))
+
+
+def _read_html(path: Path) -> list[dict]:
+    """Extract the largest <table> from a saved HTML page (insurer دارونامه pages)."""
+    try:
+        import pandas as pd
+        tables = pd.read_html(path, flavor="lxml" if _has_lxml() else None)
+        if not tables:
+            return []
+        df = max(tables, key=len).astype(str)
+        return df.to_dict(orient="records")
+    except Exception:
+        return []
+
+
+def _has_lxml() -> bool:
+    try:
+        import lxml  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def records_from_file(path: str | Path) -> list[CatalogRecord]:

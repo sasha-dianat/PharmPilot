@@ -35,6 +35,11 @@ async def fetch_by_irc(db: AsyncSession, ircs: list[str]) -> dict[str, CatalogRe
     return {r.irc: _to_record(r) for r in rows}
 
 
+async def fetch_all(db: AsyncSession) -> list[CatalogRecord]:
+    rows = (await db.execute(select(DrugCatalogItem))).scalars().all()
+    return [_to_record(r) for r in rows]
+
+
 async def fetch_by_ingredient_keys(db: AsyncSession, keys: list[str]) -> list[CatalogRecord]:
     if not keys:
         return []

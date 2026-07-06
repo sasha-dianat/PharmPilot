@@ -30,6 +30,9 @@ export default function DrugCatalogAdmin() {
   const [delay, setDelay] = useState(0.25)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const covRef = useRef<HTMLInputElement>(null)
+  const [covInsurer, setCovInsurer] = useState('tamin')
+  const [covResult, setCovResult] = useState<{ stats: Record<string, number>; review: unknown[]; columns: Record<string, string> } | null>(null)
 
   const { data: stats } = useQuery<Stats>({
     queryKey: ['catalog-stats'],
@@ -63,6 +66,18 @@ export default function DrugCatalogAdmin() {
     } catch (e: unknown) {
       setMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || 'بارگذاری فایل ناموفق بود.' })
     } finally { setBusy(false); if (fileRef.current) fileRef.current.value = '' }
+  }
+
+  const importCoverage = async (file: File) => {
+    setBusy(true); setMsg(null); setCovResult(null)
+    try {
+      const { data } = await pricingApi.importCoverage(file, covInsurer)
+      setCovResult(data)
+      setMsg({ kind: 'ok', text: `پوشش بیمه برای ${fa(data.stats.products_updated)} قلم اعمال شد (${fa(data.stats.review)} مورد نیازمند بازبینی، ${fa(data.stats.unmatched)} نامنطبق).` })
+      qc.invalidateQueries({ queryKey: ['catalog-stats'] })
+    } catch (e: unknown) {
+      setMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || 'بارگذاری دارونامه ناموفق بود.' })
+    } finally { setBusy(false); if (covRef.current) covRef.current.value = '' }
   }
 
   return (
@@ -129,6 +144,37 @@ export default function DrugCatalogAdmin() {
         <p className="text-[11px] text-slate-500">اگر خروجی رسمی سازمان غذا و دارو را دارید، مستقیماً بارگذاری کنید — ستون‌های فارسی/انگلیسی خودکار نگاشت می‌شوند.</p>
         <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.tsv" className="text-sm text-slate-300"
           onChange={e => { const f = e.target.files?.[0]; if (f) importCatalog(f) }} disabled={busy} />
+      </div>
+
+      {/* ── Insurance coverage import (smart دارونامه extractor) ───────────── */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
+        <p className="font-semibold text-sm">بارگذاری دارونامه بیمه (تعهدات)</p>
+        <p className="text-[11px] text-slate-500">
+          فایل دارونامه هر بیمه‌گر (Excel/CSV یا صفحه HTML ذخیره‌شده) — ستون‌ها هوشمند شناسایی می‌شوند،
+          هر ردیف با تطبیق فازی به اقلام کاتالوگ متصل و پوشش به کل گروه هم‌مولکول تعمیم می‌یابد.
+          موارد کم‌اطمینان اعمال نمی‌شوند و برای بازبینی فهرست می‌شوند.
+        </p>
+        <div className="flex items-center gap-3 text-sm">
+          <select value={covInsurer} onChange={e => setCovInsurer(e.target.value)} disabled={busy}
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
+            <option value="tamin">تأمین اجتماعی</option>
+            <option value="salamat">بیمه سلامت</option>
+            <option value="armed_forces">نیروهای مسلح</option>
+          </select>
+          <input ref={covRef} type="file" accept=".xlsx,.xls,.csv,.tsv,.html,.htm" className="text-sm text-slate-300"
+            onChange={e => { const f = e.target.files?.[0]; if (f) importCoverage(f) }} disabled={busy} />
+        </div>
+        {covResult && (
+          <div className="text-[11px] font-mono text-slate-400 space-y-1">
+            <div>ستون‌های شناسایی‌شده: {Object.entries(covResult.columns).map(([c, r]) => `${c}→${r}`).join(' · ')}</div>
+            <div>
+              ردیف‌ها: {fa(covResult.stats.rows)} · اعمال‌شده: <span className="text-emerald-300">{fa(covResult.stats.applied)}</span> ·
+              بازبینی: <span className="text-amber-300">{fa(covResult.stats.review)}</span> ·
+              نامنطبق: <span className="text-red-300">{fa(covResult.stats.unmatched)}</span> ·
+              اقلام به‌روزشده: <span className="text-indigo-300">{fa(covResult.stats.db_products_updated ?? covResult.stats.products_updated)}</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
