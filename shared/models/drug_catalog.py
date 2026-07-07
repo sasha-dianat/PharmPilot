@@ -47,4 +47,12 @@ class DrugCatalogItem(TimestampedBase):
     # Per-insurer coverage: {"tamin": {"covered": true, "reference_price": 90000}, ...}
     coverage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # NFI enrichment (full detail-page extraction)
+    country: Mapped[str | None] = mapped_column(String(80), index=True, nullable=True)
+    license_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    brand_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    license_valid_until: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Jalali as printed
+    # everything else the NFI page offers: clinical sections + composition + brands table
+    monograph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     source: Mapped[str | None] = mapped_column(String(40), nullable=True)   # "nfi" | "manual" | ...
