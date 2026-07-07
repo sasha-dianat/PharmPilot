@@ -12,6 +12,7 @@ interface HarvestStatus {
   running: boolean; scanned: number; products: number; ingested: number
   last_id: number; start_id: number; end_id: number; progress_pct: number
   elapsed_sec: number; eta_sec: number | null; message: string; error: string | null
+  diagnostics?: { failed: number; worst_category: string | null; top_hint: string | null }
 }
 
 const fa = (n: number) => new Intl.NumberFormat('fa-IR').format(n)
@@ -118,6 +119,9 @@ export default function DrugCatalogAdmin() {
               <span>سپری‌شده: {hms(hs.elapsed_sec)}</span>
               <span>باقی‌مانده: {hms(hs.eta_sec)}</span>
               <span className={hs.error ? 'text-red-400' : ''}>{hs.error || hs.message}</span>
+              {hs.diagnostics && hs.diagnostics.failed > 0 && (
+                <span className="text-amber-300">تشخیص: {hs.diagnostics.worst_category} — {hs.diagnostics.top_hint}</span>
+              )}
             </div>
           </div>
         )}

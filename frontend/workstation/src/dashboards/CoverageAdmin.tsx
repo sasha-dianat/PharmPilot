@@ -65,7 +65,14 @@ export default function CoverageAdmin() {
     try {
       const { data } = await pricingApi.coverageProbe(s.id)
       setProbe({ sourceId: s.id, data })
-    } catch (e) { err(e, 'تشخیص ناموفق بود.') }
+    } catch (e: any) {
+      const d = e?.response?.data?.detail
+      if (d && typeof d === 'object' && d.diagnostics?.summary) {
+        setMsg({ kind: 'err', text: `تشخیص ناموفق [${d.diagnostics.summary.worst_category || '—'}]: ${d.diagnostics.summary.top_hint || d.message}` })
+      } else {
+        setMsg({ kind: 'err', text: (typeof d === 'string' ? d : 'تشخیص ناموفق بود.') })
+      }
+    }
   }
   const doHarvest = async (s: Source) => {
     setMsg(null)
@@ -268,6 +275,25 @@ function RunPreview({ runId, onDone, onError }: {
               {c.irc}: {c.fields.map((f: any) => `${f.field} ${f.old ?? '—'}→${f.new ?? '—'}`).join(' · ')}
             </div>))}
         </div>)}
+      {run.diagnostics?.summary && (run.diagnostics.summary.failed > 0 || (run.diagnostics.attempts||[]).length > 0) && (
+        <details className="border border-slate-700 rounded p-2">
+          <summary className="cursor-pointer text-slate-300">
+            تشخیص خطاها — {fa(run.diagnostics.summary.failed)} ناموفق از {fa(run.diagnostics.summary.total)}
+            {run.diagnostics.summary.worst_category && ` · ${run.diagnostics.summary.worst_category}`}
+          </summary>
+          {run.diagnostics.summary.top_hint && <p className="text-amber-300 mt-1">{run.diagnostics.summary.top_hint}</p>}
+          <div className="max-h-48 overflow-y-auto space-y-1 mt-1">
+            {(run.diagnostics.attempts || []).filter((a: any) => a.severity !== 'ok').map((a: any, i: number) => (
+              <div key={i} className="font-mono text-[11px] text-slate-400 border-b border-slate-700/50 pb-1">
+                <span className={a.severity === 'error' ? 'text-red-300' : 'text-amber-300'}>[{a.category}]</span>{' '}
+                HTTP {a.status} · {a.url}
+                {a.exception && <div className="text-red-400">{a.exception}</div>}
+                <div className="text-slate-500">{a.hint}</div>
+                {a.body_snippet && <details><summary className="cursor-pointer text-slate-600">بدنهٔ پاسخ</summary>
+                  <pre className="whitespace-pre-wrap text-slate-500">{a.body_snippet.slice(0, 500)}</pre></details>}
+              </div>))}
+          </div>
+        </details>)}
       {(run.review || []).length > 0 && (
         <div className="max-h-40 overflow-y-auto space-y-0.5">
           <p className="font-semibold">موارد نیازمند بازبینی — تأیید هر مورد آن را همراه اجرا اعمال می‌کند:</p>
