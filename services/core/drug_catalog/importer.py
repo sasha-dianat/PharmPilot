@@ -44,6 +44,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "category": ("category", "نوع", "type", "دسته", "گروه", "نوع_فرآورده", "نوع_محصول"),
     "is_generic": ("is_generic", "generic_flag", "ژنریک_است"),
     "coverage": ("coverage",),
+    "country": ("country", "کشور", "کشور_تولیدکننده"),
+    "license_owner": ("license_owner",),
+    "brand_owner": ("brand_owner",),
+    "license_valid_until": ("license_valid_until",),
 }
 
 # Persian / Arabic-Indic digits → ASCII, and thousands separators → "".
@@ -95,6 +99,9 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
         cat_raw = (str(_pick(row, "category") or "drug")).strip().lower()
         category = _CATEGORY_MAP.get(cat_raw, ItemCategory.DRUG)
         gen_flag = _pick(row, "is_generic")
+        mono_keys = ("indications", "mechanism", "pharmacokinetics", "warnings",
+                     "side_effects", "interactions_text", "advice", "composition", "brands")
+        mono = {k: row[k] for k in mono_keys if row.get(k)}
         out.append(CatalogRecord(
             irc=str(irc).strip(),
             name_fa=str(name).strip(),
@@ -111,6 +118,11 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
             package_count=(int(_pick(row, "package_count")) if str(_pick(row, "package_count") or "").isdigit() else None),
             gtin=(str(_pick(row, "gtin")).strip() if _pick(row, "gtin") else None),
             coverage=(row.get("coverage") if isinstance(row.get("coverage"), dict) else None),
+            country=(str(_pick(row, "country")).strip() if _pick(row, "country") else None),
+            license_owner=(str(_pick(row, "license_owner")).strip() if _pick(row, "license_owner") else None),
+            brand_owner=(str(_pick(row, "brand_owner")).strip() if _pick(row, "brand_owner") else None),
+            license_valid_until=(str(_pick(row, "license_valid_until")).strip() if _pick(row, "license_valid_until") else None),
+            monograph=(mono or None),
         ))
     return out
 
@@ -128,7 +140,9 @@ def load_seed() -> list[CatalogRecord]:
 # row (multivitamin composition strings…) can't abort a bulk ingest.
 _COL_LIMITS = {"irc": 32, "gtin": 20, "name_fa": 300, "generic_name": 200,
                "ingredient_key": 300, "dosage_form": 80, "strength": 80,
-               "brand_name": 200, "manufacturer": 200, "atc": 16, "source": 40}
+               "brand_name": 200, "manufacturer": 200, "atc": 16, "source": 40,
+               "country": 80, "license_owner": 200, "brand_owner": 200,
+               "license_valid_until": 20}
 
 
 def _clamp(field: str, v):
@@ -136,6 +150,32 @@ def _clamp(field: str, v):
         return v
     limit = _COL_LIMITS.get(field)
     return v[:limit] if limit else v
+
+
+# Nullable enrichment a source may not carry — omit from the UPDATE when None so
+# e.g. an Excel price import can't wipe NFI monographs or insurer coverage.
+_STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
+                  "brand_owner", "license_valid_until")
+
+
+def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
+    """(insert values, on-conflict update columns) for one record."""
+    values = dict(
+        irc=r.irc, name_fa=r.name_fa, generic_name=r.generic_name,
+        ingredient_key=r.ingredient_key, dosage_form=r.dosage_form, strength=r.strength,
+        brand_name=r.brand_name, manufacturer=r.manufacturer, atc=r.atc,
+        package_count=r.package_count, gtin=r.gtin, is_generic=r.is_generic,
+        category=r.category.value,
+        announced_price=(int(r.announced_price) if r.announced_price is not None else None),
+        last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
+        coverage=r.coverage, source=source,
+        country=r.country, license_owner=r.license_owner, brand_owner=r.brand_owner,
+        license_valid_until=r.license_valid_until, monograph=r.monograph,
+    )
+    values = {k: _clamp(k, v) for k, v in values.items()}
+    update_cols = {k: v for k, v in values.items()
+                   if k != "irc" and not (k in _STICKY_FIELDS and v is None)}
+    return values, update_cols
 
 
 async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi") -> int:
@@ -146,19 +186,8 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
 
     n = 0
     for r in records:
-        values = dict(
-            irc=r.irc, name_fa=r.name_fa, generic_name=r.generic_name,
-            ingredient_key=r.ingredient_key, dosage_form=r.dosage_form, strength=r.strength,
-            brand_name=r.brand_name, manufacturer=r.manufacturer, atc=r.atc,
-            package_count=r.package_count, gtin=r.gtin, is_generic=r.is_generic,
-            category=r.category.value,
-            announced_price=(int(r.announced_price) if r.announced_price is not None else None),
-            last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
-            coverage=r.coverage, source=source,
-        )
-        values = {k: _clamp(k, v) for k, v in values.items()}
+        values, update_cols = upsert_values(r, source=source)
         stmt = insert(DrugCatalogItem).values(**values)
-        update_cols = {k: v for k, v in values.items() if k != "irc"}
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)
         await session.execute(stmt)
         n += 1

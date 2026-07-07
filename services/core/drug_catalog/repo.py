@@ -25,6 +25,9 @@ def _to_record(row: DrugCatalogItem) -> CatalogRecord:
         brand_name=row.brand_name, manufacturer=row.manufacturer,
         is_generic=row.is_generic, category=category, atc=row.atc,
         package_count=row.package_count, gtin=row.gtin, coverage=row.coverage,
+        country=row.country, license_owner=row.license_owner,
+        brand_owner=row.brand_owner, license_valid_until=row.license_valid_until,
+        monograph=row.monograph,
     )
 
 

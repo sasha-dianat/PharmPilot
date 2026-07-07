@@ -71,6 +71,12 @@ class CatalogRecord:
     gtin: str | None = None
     # {"tamin": {"covered": true, "reference_price": 110000}, "salamat": {...}, ...}
     coverage: dict | None = None
+    country: str | None = None                # کشور تولیدکننده (from the NFI brands table)
+    license_owner: str | None = None          # صاحب پروانه
+    brand_owner: str | None = None            # صاحب برند
+    license_valid_until: str | None = None    # تاریخ اعتبار پروانه (Jalali, as printed)
+    # everything else the NFI page offers: clinical sections + composition + brands
+    monograph: dict | None = None
 
     @property
     def ingredient_key(self) -> str:
