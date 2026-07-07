@@ -52,7 +52,9 @@ _FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "�
 
 
 def _norm_header(h: str) -> str:
-    return re.sub(r"\s+", " ", str(h).replace("‌", " ").strip().lower())
+    # fold ZWNJ and underscores (excel_import.read_table already turns spaces/ZWNJ
+    # into "_") back to spaces so exact-alias matching survives either input shape
+    return re.sub(r"\s+", " ", str(h).replace("‌", " ").replace("_", " ").strip().lower())
 
 
 def _num(v) -> float | None:
