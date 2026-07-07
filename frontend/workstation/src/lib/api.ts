@@ -125,6 +125,21 @@ export const pricingApi = {
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
   nfiStop: () => apiClient.post('/pricing/catalog/nfi/stop', {}),
+  // دارونامه coverage sources & staged runs
+  coverageSources: () => apiClient.get('/pricing/coverage/sources'),
+  coverageSourceSave: (id: string | null, body: Record<string, unknown>) =>
+    id ? apiClient.put(`/pricing/coverage/sources/${id}`, body)
+       : apiClient.post('/pricing/coverage/sources', body),
+  coverageSourceDelete: (id: string) => apiClient.delete(`/pricing/coverage/sources/${id}`),
+  coverageProbe: (id: string) => apiClient.post(`/pricing/coverage/sources/${id}/probe`, {}),
+  coverageHarvest: (id: string) => apiClient.post(`/pricing/coverage/sources/${id}/harvest`, {}),
+  coverageHarvestStatus: () => apiClient.get('/pricing/coverage/harvest/status'),
+  coverageRuns: (sourceId?: string) =>
+    apiClient.get('/pricing/coverage/runs', { params: sourceId ? { source_id: sourceId } : {} }),
+  coverageRun: (id: string) => apiClient.get(`/pricing/coverage/runs/${id}`),
+  coverageApprove: (id: string, body: { remove_missing: boolean; accepted_review_ids: number[] }) =>
+    apiClient.post(`/pricing/coverage/runs/${id}/approve`, body),
+  coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────
