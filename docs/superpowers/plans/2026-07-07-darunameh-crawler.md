@@ -61,6 +61,14 @@ mv nfi_detail_17248.html tests/fixtures/nfi/nfi_detail_17248.html
 rm "ویکتوزا.html"
 ```
 
+`.gitignore` has `nfi_detail_*.html` (unscoped — matches at any depth), which would silently ignore the tracked fixture. Add a negation so the fixture is trackable. Edit `.gitignore`, immediately after the `nfi_detail_*.html` line, add:
+
+```gitignore
+!tests/fixtures/nfi/*.html
+```
+
+Verify: `git check-ignore tests/fixtures/nfi/nfi_detail_17248.html` prints nothing (no longer ignored).
+
 - [ ] **Step 1.2: Write the failing tests**
 
 Create `tests/unit/test_nfi_full_extraction.py`:
@@ -95,7 +103,15 @@ def test_new_scalar_fields():
     assert out["license_owner"]                     # صاحب پروانه
     assert out["license_valid_until"]               # تاریخ اعتبار پروانه (Jalali string)
     assert "LIRAGLUTIDE" in out["composition"].upper()   # raw ترکیبات text kept
-    assert out["pharmacokinetics"]                  # فارماکوکینتیک joins clinical set
+    # NOTE: فارماکوکینتیک/مکانیسم اثر are empty on THIS real page (NFI left them
+    # blank for Victoza), so we don't assert their presence here — the label
+    # mapping is exercised with populated data by Task 2's importer test. We only
+    # assert the label is *wired* (present in _PAIR_LABELS), checked below.
+
+
+def test_pharmacokinetics_label_is_mapped():
+    from services.core.drug_catalog.nfi import _PAIR_LABELS
+    assert _PAIR_LABELS.get("فارماکوکینتیک") == "pharmacokinetics"
 
 
 def test_brands_table_extracted_with_country():
@@ -209,7 +225,7 @@ And before `out["category"] = "drug"`:
 - [ ] **Step 1.5: Run to verify pass**
 
 Run: `python3 -m pytest tests/unit/test_nfi_full_extraction.py -q`
-Expected: 5 passed.
+Expected: 6 passed.
 
 - [ ] **Step 1.6: Commit**
 
@@ -659,7 +675,7 @@ python3 -m pytest tests/unit/test_nfi_full_extraction.py -q
 ./.venv/bin/python -c "import sys; sys.path.insert(0,'.'); import scripts.harvest_nfi as s; print('OK', s.parse_detail.__module__)"
 ```
 
-Expected: 6 passed; `OK services.core.drug_catalog.nfi`.
+Expected: 7 passed; `OK services.core.drug_catalog.nfi`.
 
 - [ ] **Step 4.4: Commit**
 
