@@ -331,6 +331,197 @@ async def import_coverage(file: UploadFile = File(...),
     }
 
 
+# ── دارونامه coverage sources & staged runs ───────────────────────────────────
+class CoverageSourceIn(BaseModel):
+    insurer: str
+    name: str
+    url: str | None = None
+    strategy: str = "auto"
+    settings: dict | None = None
+    check_interval_days: int = 7
+    enabled: bool = True
+
+
+class ApproveRunRequest(BaseModel):
+    remove_missing: bool = False
+    accepted_review_ids: list[int] = []
+
+
+def _source_json(s, lock_holder: str | None) -> dict:
+    from datetime import datetime, timezone
+    due = bool(s.enabled and (
+        s.last_run_at is None or
+        (datetime.now(timezone.utc) - s.last_run_at).days >= s.check_interval_days))
+    return {"id": str(s.id), "insurer": s.insurer, "name": s.name, "url": s.url,
+            "strategy": s.strategy, "settings": s.settings or {},
+            "check_interval_days": s.check_interval_days, "enabled": s.enabled,
+            "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+            "last_run_status": s.last_run_status, "due": due,
+            "lock_holder": lock_holder}
+
+
+@router.get("/coverage/sources")
+async def list_coverage_sources(staff: Staff = Depends(require_permission("inventory:read")),
+                                db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageSource
+    from services.core.drug_catalog import harvest_lock
+    rows = (await db.execute(select(CoverageSource)
+                             .order_by(CoverageSource.created_at))).scalars().all()
+    return {"sources": [_source_json(s, harvest_lock.holder()) for s in rows]}
+
+
+@router.post("/coverage/sources")
+async def create_coverage_source(body: CoverageSourceIn,
+                                 staff: Staff = Depends(require_permission("inventory:write")),
+                                 db: AsyncSession = Depends(get_db)):
+    from shared.models.coverage import CoverageSource
+    from services.core.drug_catalog import harvest_lock
+    s = CoverageSource(**body.model_dump())
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return _source_json(s, harvest_lock.holder())
+
+
+@router.put("/coverage/sources/{source_id}")
+async def update_coverage_source(source_id: UUID, body: CoverageSourceIn,
+                                 staff: Staff = Depends(require_permission("inventory:write")),
+                                 db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageSource
+    from services.core.drug_catalog import harvest_lock
+    s = (await db.execute(select(CoverageSource)
+                          .where(CoverageSource.id == source_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="Source not found")
+    for k, v in body.model_dump().items():
+        setattr(s, k, v)
+    await db.commit()
+    await db.refresh(s)
+    return _source_json(s, harvest_lock.holder())
+
+
+@router.delete("/coverage/sources/{source_id}")
+async def delete_coverage_source(source_id: UUID,
+                                 staff: Staff = Depends(require_permission("inventory:write")),
+                                 db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete as sa_delete, select
+    from shared.models.coverage import CoverageRun, CoverageSource
+    s = (await db.execute(select(CoverageSource)
+                          .where(CoverageSource.id == source_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="Source not found")
+    await db.execute(sa_delete(CoverageRun).where(CoverageRun.source_id == source_id))
+    await db.delete(s)
+    await db.commit()
+    return {"deleted": True}
+
+
+@router.post("/coverage/sources/{source_id}/probe")
+async def probe_coverage_source(source_id: UUID,
+                                staff: Staff = Depends(require_permission("inventory:write")),
+                                db: AsyncSession = Depends(get_db)):
+    import asyncio
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageSource
+    from services.core.drug_catalog import coverage_harvest as ch
+    s = (await db.execute(select(CoverageSource)
+                          .where(CoverageSource.id == source_id))).scalar_one_or_none()
+    if not s or not s.url:
+        raise HTTPException(status_code=404, detail="Source (or its URL) not found")
+    fetch = ch.make_fetcher((s.settings or {}).get("proxy"))
+    try:
+        return await asyncio.to_thread(ch.probe_payload, s.url,
+                                       settings=s.settings or {}, fetch=fetch)
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/coverage/sources/{source_id}/harvest")
+async def start_coverage_harvest(source_id: UUID,
+                                 staff: Staff = Depends(require_permission("inventory:write")),
+                                 db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageSource
+    from services.core.drug_catalog import coverage_harvest as ch
+    s = (await db.execute(select(CoverageSource)
+                          .where(CoverageSource.id == source_id))).scalar_one_or_none()
+    if not s or not s.url:
+        raise HTTPException(status_code=404, detail="Source (or its URL) not found")
+    try:
+        return ch.start_harvest(s.id, s.insurer)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/coverage/harvest/status")
+async def coverage_harvest_status(staff: Staff = Depends(require_permission("inventory:read"))):
+    from services.core.drug_catalog import coverage_harvest as ch
+    return ch.status()
+
+
+@router.get("/coverage/runs")
+async def list_coverage_runs(source_id: UUID | None = None, limit: int = 20,
+                             staff: Staff = Depends(require_permission("inventory:read")),
+                             db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    q = select(CoverageRun).order_by(CoverageRun.started_at.desc()).limit(min(limit, 100))
+    if source_id:
+        q = q.where(CoverageRun.source_id == source_id)
+    rows = (await db.execute(q)).scalars().all()
+    return {"runs": [{"id": str(r.id), "source_id": str(r.source_id), "insurer": r.insurer,
+                      "status": r.status,
+                      "started_at": r.started_at.isoformat() if r.started_at else None,
+                      "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                      "stats": r.stats, "diff_counts": {k: (r.diff or {}).get(k)
+                                                        for k in ("added", "changed", "removed")},
+                      "error": r.error} for r in rows]}
+
+
+@router.get("/coverage/runs/{run_id}")
+async def get_coverage_run(run_id: UUID,
+                           staff: Staff = Depends(require_permission("inventory:read")),
+                           db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    r = (await db.execute(select(CoverageRun)
+                          .where(CoverageRun.id == run_id))).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"id": str(r.id), "source_id": str(r.source_id), "insurer": r.insurer,
+            "status": r.status, "stats": r.stats, "diff": r.diff,
+            "review": r.review, "unmatched": r.unmatched, "error": r.error,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None}
+
+
+@router.post("/coverage/runs/{run_id}/approve")
+async def approve_coverage_run(run_id: UUID, body: ApproveRunRequest,
+                               staff: Staff = Depends(require_permission("inventory:write")),
+                               db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog import coverage_harvest as ch
+    try:
+        return await ch.apply_run(db, run_id, remove_missing=body.remove_missing,
+                                  accepted_review_ids=body.accepted_review_ids,
+                                  staff_id=staff.id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/coverage/runs/{run_id}/reject")
+async def reject_coverage_run(run_id: UUID,
+                              staff: Staff = Depends(require_permission("inventory:write")),
+                              db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog import coverage_harvest as ch
+    try:
+        await ch.reject_run(db, run_id)
+        return {"rejected": True}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.post("/sync/run")
 async def price_sync_run(staff: Staff = Depends(require_permission("inventory:write")),
                          db: AsyncSession = Depends(get_db)):
