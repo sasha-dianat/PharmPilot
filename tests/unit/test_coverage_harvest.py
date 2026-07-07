@@ -136,3 +136,47 @@ def test_diff_samples_capped_at_50():
     staged = {str(i): {"tamin": {"covered": True}} for i in range(80)}
     d = compute_diff(staged, {}, insurer="tamin")
     assert d["added"] == 80 and len(d["samples"]["added"]) == 50
+
+
+# ── service-layer pure pieces ────────────────────────────────────────────────
+from services.core.drug_catalog import harvest_lock
+from services.core.drug_catalog.coverage_harvest import (
+    probe_payload, stage_run_payload, CoverageHarvestState,
+)
+
+
+def test_probe_payload_detects_and_samples():
+    fetch = _fake_fetcher({"https://x/l": HTML_TABLE})
+    p = probe_payload("https://x/l", settings={}, fetch=fetch)
+    assert p["detected_strategy"] == "html_table"
+    assert p["sample_rows"] and p["inferred_columns"]
+    assert p["row_count_sampled"] == 1
+
+
+def test_probe_payload_unreachable_raises():
+    fetch = _fake_fetcher({})
+    with pytest.raises(RuntimeError):
+        probe_payload("https://x/nope", settings={}, fetch=fetch)
+
+
+def test_stage_run_payload_builds_stats_review_ids_and_diff():
+    from services.core.drug_catalog.schema import CatalogRecord
+    from decimal import Decimal
+    catalog = [CatalogRecord(irc="123", name_fa="استامینوفن", generic_name="acetaminophen",
+                             dosage_form="TABLET", strength="500 mg",
+                             announced_price=Decimal("8000"))]
+    rows = [{"کد فرآورده": "123", "نام دارو": "استامینوفن", "درصد تعهد": "70"}]
+    payload = stage_run_payload(rows, catalog, insurer="tamin",
+                                overrides=None, current={},
+                                min_confidence=0.75)
+    assert payload["stats"]["rows"] == 1 and payload["stats"]["applied"] == 1
+    assert payload["staged"]["123"]["tamin"]["share_pct"] == 70
+    assert payload["diff"]["added"] == 1
+    assert all("id" in item for item in payload["review"])
+
+
+def test_harvest_state_snapshot_has_lock_holder():
+    harvest_lock.force_release()
+    st = CoverageHarvestState(running=True, insurer="tamin", phase="fetching")
+    snap = st.snapshot()
+    assert snap["insurer"] == "tamin" and "lock_holder" in snap

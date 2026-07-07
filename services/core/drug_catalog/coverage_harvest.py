@@ -183,3 +183,239 @@ def compute_diff(staged: dict, current: dict[str, dict], *, insurer: str) -> dic
                     "changed": changed[:_SAMPLE_CAP],
                     "removed": removed[:_SAMPLE_CAP]},
     }
+
+
+# ── probe (synchronous, one fetch, persists nothing) ─────────────────────────
+def probe_payload(url: str, *, settings: dict, fetch) -> dict:
+    status, body, ct = fetch(url)
+    if status != 200 or not body:
+        raise RuntimeError(f"HTTP {status} از مقصد — پروکسی ایران در دسترس نیست یا آدرس اشتباه است")
+    strategy = sniff_strategy(body, ct, url)
+    if strategy == "json_api":
+        rows = _descend(json.loads(body), (settings or {}).get("record_path", ""))[:20]
+    else:
+        rows = _rows_from_bytes(body, ct, url)[:20]
+    return {
+        "detected_strategy": strategy,
+        "proposed_settings": {"page_start": 1, "max_pages": 500, "delay_sec": 0.5},
+        "sample_rows": rows[:20],
+        "row_count_sampled": len(rows),
+        "inferred_columns": resolve_roles(rows, (settings or {}).get("column_overrides")),
+    }
+
+
+# ── staging (pure: rows + catalog + current coverage → run payload) ──────────
+def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
+                      overrides: dict | None, current: dict[str, dict],
+                      min_confidence: float = 0.75) -> dict:
+    roles = resolve_roles(rows, overrides)
+    if "drug_name" not in roles.values() and "irc" not in roles.values():
+        raise RuntimeError(
+            f"ستون نام دارو یا IRC شناسایی نشد — ستون‌ها: {list(rows[0].keys())[:12] if rows else []}")
+    normalized = normalize_rows(rows, roles)
+    links = link_rows(normalized, catalog)
+    cov = build_coverage(links, insurer=insurer, min_confidence=min_confidence,
+                         catalog=catalog)
+    review = [{"id": i, **item, "accepted": False} for i, item in enumerate(cov.review)]
+    return {
+        "stats": {**cov.stats, "columns": roles},
+        "staged": cov.applied,
+        "review": review,
+        "unmatched": cov.unmatched[:200],
+        "diff": compute_diff(cov.applied, current, insurer=insurer),
+    }
+
+
+# ── background run state (mirrors nfi_harvest_service) ───────────────────────
+@dataclass
+class CoverageHarvestState:
+    running: bool = False
+    source_id: str = ""
+    insurer: str = ""
+    phase: str = ""              # fetching | linking | diffing | saving | done | failed
+    pages: int = 0
+    rows: int = 0
+    run_id: str | None = None
+    error: str | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+
+    def snapshot(self) -> dict:
+        d = asdict(self)
+        d["lock_holder"] = harvest_lock.holder()
+        d["elapsed_sec"] = round((self.finished_at or time.time()) - self.started_at, 1) if self.started_at else 0.0
+        return d
+
+
+_STATE = CoverageHarvestState()
+
+
+def status() -> dict:
+    return _STATE.snapshot()
+
+
+async def _current_coverage(db, insurer: str) -> dict[str, dict]:
+    from sqlalchemy import select
+    from shared.models.drug_catalog import DrugCatalogItem
+    rows = (await db.execute(
+        select(DrugCatalogItem.irc, DrugCatalogItem.coverage)
+        .where(DrugCatalogItem.coverage.isnot(None)))).all()
+    out = {}
+    for irc, cov in rows:
+        if isinstance(cov, dict) and insurer in cov:
+            out[irc] = cov[insurer]
+    return out
+
+
+async def _run(source_id) -> None:
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from services.platform.database import AsyncSessionLocal
+    from shared.models.coverage import CoverageRun, CoverageSource
+    from . import repo
+
+    owner = f"coverage:{_STATE.insurer}"
+    run_id = None
+    try:
+        async with AsyncSessionLocal() as db:
+            src = (await db.execute(select(CoverageSource)
+                                    .where(CoverageSource.id == source_id))).scalar_one()
+            run = CoverageRun(source_id=src.id, insurer=src.insurer, status="running",
+                              started_at=datetime.now(timezone.utc))
+            db.add(run)
+            await db.commit()
+            await db.refresh(run)
+            run_id = run.id
+            _STATE.run_id = str(run_id)
+
+            settings = src.settings or {}
+            fetch = make_fetcher(settings.get("proxy"))
+            strategy = src.strategy
+            if strategy == "auto":
+                s, body, ct = fetch(src.url)
+                if s != 200 or not body:
+                    raise RuntimeError(f"HTTP {s} از مقصد — پروکسی ایران در دسترس نیست یا آدرس اشتباه است")
+                strategy = sniff_strategy(body, ct, src.url)
+
+            _STATE.phase = "fetching"
+            import asyncio
+            rows, pages = await asyncio.to_thread(fetch_rows, src.url, strategy, settings, fetch)
+            _STATE.pages, _STATE.rows = pages, len(rows)
+
+            _STATE.phase = "linking"
+            catalog = await repo.fetch_all(db)
+            current = await _current_coverage(db, src.insurer)
+            _STATE.phase = "diffing"
+            payload = await asyncio.to_thread(
+                stage_run_payload, rows, catalog,
+                insurer=src.insurer, overrides=settings.get("column_overrides"),
+                current=current)
+
+            _STATE.phase = "saving"
+            run.status = "parsed"
+            run.finished_at = datetime.now(timezone.utc)
+            run.stats, run.staged = payload["stats"], payload["staged"]
+            run.review, run.unmatched, run.diff = payload["review"], payload["unmatched"], payload["diff"]
+            src.last_run_at, src.last_run_status = run.finished_at, "parsed"
+            await db.commit()
+            _STATE.phase = "done"
+    except Exception as e:
+        _STATE.error = f"{type(e).__name__}: {e}"
+        _STATE.phase = "failed"
+        try:
+            async with AsyncSessionLocal() as db:
+                from shared.models.coverage import CoverageRun as CR, CoverageSource as CS
+                from sqlalchemy import select as _sel
+                if run_id is not None:
+                    r = (await db.execute(_sel(CR).where(CR.id == run_id))).scalar_one_or_none()
+                    if r:
+                        r.status, r.error = "failed", _STATE.error
+                s = (await db.execute(_sel(CS).where(CS.id == source_id))).scalar_one_or_none()
+                if s:
+                    from datetime import datetime as _dt, timezone as _tz
+                    s.last_run_at, s.last_run_status = _dt.now(_tz.utc), "failed"
+                await db.commit()
+        except Exception:
+            pass
+    finally:
+        harvest_lock.release(owner)
+        _STATE.running = False
+        _STATE.finished_at = time.time()
+
+
+def start_harvest(source_id, insurer: str) -> dict:
+    """Kick off a background دارونامه harvest. Raises RuntimeError if the global
+    harvest lock is held (NFI crawl or another coverage job)."""
+    global _STATE
+    import asyncio
+    if _STATE.running:
+        raise RuntimeError("یک برداشت پوشش در حال اجراست.")
+    owner = f"coverage:{insurer}"
+    if not harvest_lock.acquire(owner):
+        raise RuntimeError(f"قفل برداشت در اختیار دیگری است: {harvest_lock.holder()}")
+    _STATE = CoverageHarvestState(running=True, source_id=str(source_id),
+                                  insurer=insurer, phase="starting",
+                                  started_at=time.time())
+    asyncio.create_task(_run(source_id))
+    return _STATE.snapshot()
+
+
+# ── approve / reject ─────────────────────────────────────────────────────────
+async def apply_run(db, run_id, *, remove_missing: bool = False,
+                    accepted_review_ids: list[int] | None = None,
+                    staff_id=None) -> dict:
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    from shared.models.drug_catalog import DrugCatalogItem
+    from .coverage_import import apply_coverage
+
+    run = (await db.execute(select(CoverageRun).where(CoverageRun.id == run_id))).scalar_one()
+    if run.status != "parsed":
+        raise RuntimeError(f"فقط اجرای parsed قابل اعمال است (وضعیت فعلی: {run.status})")
+
+    staged = dict(run.staged or {})
+    accepted = set(accepted_review_ids or [])
+    review_applied = 0
+    for item in (run.review or []):
+        if item["id"] in accepted:
+            # spread the accepted entry across the matched product's ingredient group
+            target = (await db.execute(select(DrugCatalogItem).where(
+                DrugCatalogItem.irc == item["irc"]))).scalar_one_or_none()
+            if not target:
+                continue
+            group = (await db.execute(select(DrugCatalogItem.irc).where(
+                DrugCatalogItem.ingredient_key == target.ingredient_key))).scalars().all()
+            for irc in group or [item["irc"]]:
+                staged.setdefault(irc, {})[run.insurer] = item["entry"]
+            review_applied += 1
+
+    updated = await apply_coverage(db, staged)
+
+    removed_cleared = 0
+    if remove_missing:
+        for irc in (run.diff or {}).get("samples", {}).get("removed", []):
+            row = (await db.execute(select(DrugCatalogItem).where(
+                DrugCatalogItem.irc == irc))).scalar_one_or_none()
+            if row and isinstance(row.coverage, dict) and run.insurer in row.coverage:
+                cov = dict(row.coverage)
+                cov.pop(run.insurer)
+                row.coverage = cov or None
+                removed_cleared += 1
+
+    run.status = "approved"
+    run.applied_by = staff_id
+    run.applied_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"products_updated": updated, "review_applied": review_applied,
+            "removed_cleared": removed_cleared}
+
+
+async def reject_run(db, run_id) -> None:
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    run = (await db.execute(select(CoverageRun).where(CoverageRun.id == run_id))).scalar_one()
+    if run.status != "parsed":
+        raise RuntimeError(f"فقط اجرای parsed قابل رد است (وضعیت فعلی: {run.status})")
+    run.status = "rejected"
+    await db.commit()
