@@ -21,6 +21,7 @@ from .coverage_import import build_coverage, infer_columns, link_rows, normalize
 from .excel_import import read_table
 from .nfi import UA, make_opener
 from . import harvest_lock
+from .harvest_diagnostics import DiagnosticRecorder, wrap_fetch
 
 # entry fields that constitute a real coverage change (match metadata excluded)
 _DIFF_FIELDS = ("covered", "share_pct", "reference_price", "ceiling")
@@ -30,22 +31,28 @@ STRATEGIES = ("auto", "file_url", "html_table", "paginated_html", "json_api")
 
 
 # ── fetching ─────────────────────────────────────────────────────────────────
-def make_fetcher(proxy: str | None = None, timeout: int = 30):
-    """fetch(url) -> (status, body_bytes, content_type). Proxy falls back to the
-    server's HTTPS_PROXY (the Iran system proxy)."""
+def make_raw_fetch(proxy: str | None = None, timeout: int = 30):
+    """raw_fetch(url) -> (status, body, ct, headers). Raises on transport failure;
+    KEEPS the HTTP-error response body (the diagnostic payload)."""
     opener = make_opener(proxy or os.getenv("HTTPS_PROXY"))
 
-    def fetch(url: str) -> tuple[int, bytes, str]:
+    def raw_fetch(url: str):
         req = urllib.request.Request(url, headers={
             "User-Agent": UA, "Accept": "*/*", "Accept-Language": "fa,en;q=0.8"})
         try:
             with opener.open(req, timeout=timeout) as resp:
-                return resp.status, resp.read(), resp.headers.get("Content-Type", "")
+                return resp.status, resp.read(), resp.headers.get_content_type(), dict(resp.headers)
         except urllib.error.HTTPError as e:
-            return e.code, b"", ""
-        except Exception:
-            return 0, b"", ""
-    return fetch
+            body = e.read() if hasattr(e, "read") else b""
+            ct = e.headers.get_content_type() if hasattr(e.headers, "get_content_type") else ""
+            return e.code, body, ct, dict(e.headers or {})
+    return raw_fetch
+
+
+def make_fetcher(proxy: str | None = None, recorder=None, timeout: int = 30):
+    """fetch(url) -> (status, body, ct). Records every attempt when a recorder is
+    given; preserves the (0, b'', '') transport-failure contract either way."""
+    return wrap_fetch(make_raw_fetch(proxy, timeout), recorder)
 
 
 # ── strategy sniffing ────────────────────────────────────────────────────────
@@ -275,6 +282,7 @@ async def _run(source_id) -> None:
     from . import repo
 
     owner = f"coverage:{_STATE.insurer}"
+    recorder = None
     run_id = None
     try:
         async with AsyncSessionLocal() as db:
@@ -289,7 +297,8 @@ async def _run(source_id) -> None:
             _STATE.run_id = str(run_id)
 
             settings = src.settings or {}
-            fetch = make_fetcher(settings.get("proxy"))
+            recorder = DiagnosticRecorder("coverage", src.insurer, mode="all")
+            fetch = make_fetcher(settings.get("proxy"), recorder=recorder)
             strategy = src.strategy
             if strategy == "auto":
                 s, body, ct = fetch(src.url)
@@ -301,21 +310,29 @@ async def _run(source_id) -> None:
             import asyncio
             rows, pages = await asyncio.to_thread(fetch_rows, src.url, strategy, settings, fetch)
             _STATE.pages, _STATE.rows = pages, len(rows)
+            if not rows:
+                recorder.note("empty_result", "دریافت شد ولی هیچ ردیفی استخراج نشد.")
 
             _STATE.phase = "linking"
             catalog = await repo.fetch_all(db)
             current = await _current_coverage(db, src.insurer)
             _STATE.phase = "diffing"
-            payload = await asyncio.to_thread(
-                stage_run_payload, rows, catalog,
-                insurer=src.insurer, overrides=settings.get("column_overrides"),
-                current=current)
+            try:
+                payload = await asyncio.to_thread(
+                    stage_run_payload, rows, catalog,
+                    insurer=src.insurer, overrides=settings.get("column_overrides"),
+                    current=current)
+            except Exception as pe:
+                recorder.note("parse_fail", f"{type(pe).__name__}: {pe}")
+                raise
 
             _STATE.phase = "saving"
             run.status = "parsed"
             run.finished_at = datetime.now(timezone.utc)
             run.stats, run.staged = payload["stats"], payload["staged"]
             run.review, run.unmatched, run.diff = payload["review"], payload["unmatched"], payload["diff"]
+            recorder.close()
+            run.diagnostics = recorder.to_db()
             src.last_run_at, src.last_run_status = run.finished_at, "parsed"
             await db.commit()
             _STATE.phase = "done"
@@ -330,6 +347,12 @@ async def _run(source_id) -> None:
                     r = (await db.execute(_sel(CR).where(CR.id == run_id))).scalar_one_or_none()
                     if r:
                         r.status, r.error = "failed", _STATE.error
+                    if r and recorder:
+                        try:
+                            recorder.close()
+                            r.diagnostics = recorder.to_db()
+                        except Exception:
+                            pass
                 s = (await db.execute(_sel(CS).where(CS.id == source_id))).scalar_one_or_none()
                 if s:
                     from datetime import datetime as _dt, timezone as _tz

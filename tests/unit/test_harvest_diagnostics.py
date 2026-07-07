@@ -110,3 +110,27 @@ def test_recorder_note_adds_synthetic_attempt(tmp_path):
     rec = _rec(tmp_path)
     rec.note("empty_result", "no rows", url="https://x/l")
     assert rec.summary()["categories"]["empty_result"] == 1
+
+
+def test_coverage_make_raw_fetch_keeps_http_error_body(monkeypatch):
+    """make_raw_fetch must return (code, error-body, ct, headers) on HTTPError,
+    not swallow it — that body is the diagnostic payload."""
+    import io, urllib.error
+    from services.core.drug_catalog import coverage_harvest as ch
+
+    class FakeResp(io.BytesIO):
+        status = 200
+        class headers:
+            @staticmethod
+            def get_content_type(): return "text/html"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class FakeOpener:
+        def open(self, req, timeout=30):
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden",
+                                         {"Server": "cloudflare"}, io.BytesIO(b"Access Denied"))
+    monkeypatch.setattr(ch, "make_opener", lambda proxy=None: FakeOpener())
+    raw = ch.make_raw_fetch()
+    status, body, ct, headers = raw("https://x/l")
+    assert status == 403 and body == b"Access Denied"
