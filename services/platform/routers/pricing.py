@@ -426,16 +426,21 @@ async def probe_coverage_source(source_id: UUID,
     from sqlalchemy import select
     from shared.models.coverage import CoverageSource
     from services.core.drug_catalog import coverage_harvest as ch
+    from services.core.drug_catalog.harvest_diagnostics import DiagnosticRecorder
     s = (await db.execute(select(CoverageSource)
                           .where(CoverageSource.id == source_id))).scalar_one_or_none()
     if not s or not s.url:
         raise HTTPException(status_code=404, detail="Source (or its URL) not found")
-    fetch = ch.make_fetcher((s.settings or {}).get("proxy"))
+    recorder = DiagnosticRecorder("coverage", f"{s.insurer}-probe", mode="all")
+    fetch = ch.make_fetcher((s.settings or {}).get("proxy"), recorder=recorder)
     try:
         return await asyncio.to_thread(ch.probe_payload, s.url,
                                        settings=s.settings or {}, fetch=fetch)
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail={
+            "message": str(e), "diagnostics": recorder.to_db()})
+    finally:
+        recorder.close()
 
 
 @router.post("/coverage/sources/{source_id}/harvest")
@@ -477,6 +482,7 @@ async def list_coverage_runs(source_id: UUID | None = None, limit: int = 20,
                       "finished_at": r.finished_at.isoformat() if r.finished_at else None,
                       "stats": r.stats, "diff_counts": {k: (r.diff or {}).get(k)
                                                         for k in ("added", "changed", "removed")},
+                      "diag_summary": (r.diagnostics or {}).get("summary") if r.diagnostics else None,
                       "error": r.error} for r in rows]}
 
 
@@ -493,6 +499,7 @@ async def get_coverage_run(run_id: UUID,
     return {"id": str(r.id), "source_id": str(r.source_id), "insurer": r.insurer,
             "status": r.status, "stats": r.stats, "diff": r.diff,
             "review": r.review, "unmatched": r.unmatched, "error": r.error,
+            "diagnostics": r.diagnostics,
             "started_at": r.started_at.isoformat() if r.started_at else None,
             "finished_at": r.finished_at.isoformat() if r.finished_at else None}
 
