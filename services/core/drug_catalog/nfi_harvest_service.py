@@ -11,6 +11,7 @@ import os
 import time
 from dataclasses import dataclass, field, asdict
 
+from . import harvest_lock
 from .importer import build_records, upsert_catalog
 from .nfi import fetch_detail, make_opener, parse_detail
 
@@ -49,7 +50,9 @@ _TASK: asyncio.Task | None = None
 
 
 def status() -> dict:
-    return _STATE.snapshot()
+    d = _STATE.snapshot()
+    d["lock_holder"] = harvest_lock.holder()
+    return d
 
 
 def is_running() -> bool:
@@ -102,6 +105,7 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
         _STATE.error = f"{type(e).__name__}: {e}"
         _STATE.message = "failed"
     finally:
+        harvest_lock.release("nfi")
         _STATE.running = False
         _STATE.finished_at = time.time()
 
@@ -112,6 +116,8 @@ def start(start_id: int, end_id: int, *, delay: float = 0.25,
     global _TASK, _STATE
     if _STATE.running:
         raise RuntimeError("A harvest is already running.")
+    if not harvest_lock.acquire("nfi"):
+        raise RuntimeError(f"قفل برداشت در اختیار دیگری است: {harvest_lock.holder()}")
     _STATE = HarvestState(running=True, start_id=start_id, end_id=end_id,
                           last_id=start_id - 1, started_at=time.time(),
                           message="running")
