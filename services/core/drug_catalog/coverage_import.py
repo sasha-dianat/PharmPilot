@@ -98,10 +98,20 @@ def infer_columns(rows: list[dict]) -> dict[str, str]:
     cols = list(rows[0].keys())
     roles: dict[str, str] = {}
     taken: set[str] = set()
-    for col in cols:                                   # pass 1: header aliases
-        h = _norm_header(col)
+    headers = {col: _norm_header(col) for col in cols}
+    for col in cols:                                   # pass 1a: exact header==alias wins
+        h = headers[col]
         for role, aliases in _HEADER_ALIASES.items():
-            if role not in taken and any(a == h or a in h for a in aliases):
+            if role not in taken and any(a == h for a in aliases):
+                roles[col] = role
+                taken.add(role)
+                break
+    for col in cols:                                   # pass 1b: substring alias match
+        if col in roles:
+            continue
+        h = headers[col]
+        for role, aliases in _HEADER_ALIASES.items():
+            if role not in taken and any(a in h for a in aliases):
                 roles[col] = role
                 taken.add(role)
                 break

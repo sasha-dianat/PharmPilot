@@ -40,6 +40,18 @@ def test_infer_columns_from_persian_headers():
     assert roles["سقف تجویز"] == "ceiling"
 
 
+def test_infer_columns_exact_header_wins_over_substring():
+    # "درصد تعهد" (org share %) contains "تعهد" — must NOT be grabbed by `covered`,
+    # even when it appears BEFORE the "تعهد بیمه" covered flag. The exact share_pct
+    # alias has to win so the flag column still resolves to `covered`.
+    rows = [{"نام دارو": "METFORMIN 500MG TAB", "درصد تعهد": "70",
+             "قیمت مورد تعهد": "8000", "تعهد بیمه": "دارد"}]
+    roles = infer_columns(rows)
+    assert roles["درصد تعهد"] == "share_pct"
+    assert roles["تعهد بیمه"] == "covered"
+    assert roles["قیمت مورد تعهد"] == "reference_price"
+
+
 def test_infer_columns_from_values_when_headers_are_junk():
     # headers carry no signal → infer from value distributions
     rows = [
