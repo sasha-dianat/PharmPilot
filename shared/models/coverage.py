@@ -47,6 +47,7 @@ class CoverageRun(TimestampedBase):
     staged: Mapped[dict | None] = mapped_column(JSONB, nullable=True)     # irc → {insurer: entry}
     review: Mapped[list | None] = mapped_column(JSONB, nullable=True)     # [{id, row, irc, name, confidence, entry}]
     unmatched: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # capped sample
+    diagnostics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)   # {attempts:[…], summary:{…}}
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     applied_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
