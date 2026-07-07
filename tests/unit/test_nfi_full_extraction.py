@@ -57,3 +57,12 @@ def test_country_falls_back_to_first_row_without_page_id():
     html = FIXTURE.read_text(encoding="utf-8")
     out = parse_detail(html, page_id=None)
     assert out["country"]                           # still populated
+
+
+def test_script_uses_the_service_parser():
+    import sys
+    sys.path.insert(0, ".")
+    import importlib
+    script = importlib.import_module("scripts.harvest_nfi")
+    from services.core.drug_catalog import nfi
+    assert script.parse_detail is nfi.parse_detail
