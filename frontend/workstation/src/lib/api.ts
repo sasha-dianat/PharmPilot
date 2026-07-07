@@ -50,6 +50,30 @@ apiClient.interceptors.response.use(
   }
 )
 
+/**
+ * Coerce any API error into a display string. FastAPI `detail` can be a string,
+ * a request-validation array `[{type,loc,msg,input}]`, or an object (e.g. the
+ * probe's `{message, diagnostics}`) — rendering any non-string as a React child
+ * throws "Objects are not valid as a React child". Always run errors through this.
+ */
+export function apiErrorText(e: unknown, fallback = 'خطای ناشناخته'): string {
+  const d = (e as any)?.response?.data?.detail
+  if (d == null) return (e as any)?.message || fallback
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) {
+    const msgs = d.map((x: any) => (x?.loc ? `${x.loc.slice(-1)[0]}: ` : '') + (x?.msg || JSON.stringify(x)))
+    return msgs.join(' · ') || fallback
+  }
+  if (typeof d === 'object') {
+    if (d.diagnostics?.summary) {
+      const s = d.diagnostics.summary
+      return `[${s.worst_category || '—'}] ${s.top_hint || d.message || fallback}`
+    }
+    return d.message || JSON.stringify(d)
+  }
+  return String(d) || fallback
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 export const authApi = {
   login: (username: string, password: string, workstationId?: string) =>
@@ -114,12 +138,16 @@ export const pricingApi = {
   runSync: () => apiClient.post('/pricing/sync/run', {}),
   importCatalog: (file: File) => {
     const fd = new FormData(); fd.append('file', file)
-    return apiClient.post('/pricing/catalog/import', fd)
+    // Content-Type: undefined lets axios set multipart/form-data + boundary,
+    // overriding the instance's default application/json (else the file field
+    // is dropped and FastAPI returns a 422 "file required").
+    return apiClient.post('/pricing/catalog/import', fd, { headers: { 'Content-Type': undefined } })
   },
   catalogStats: () => apiClient.get('/pricing/catalog/stats'),
   importCoverage: (file: File, insurer: string) => {
     const fd = new FormData(); fd.append('file', file)
-    return apiClient.post('/pricing/coverage/import', fd, { params: { insurer } })
+    return apiClient.post('/pricing/coverage/import', fd,
+      { params: { insurer }, headers: { 'Content-Type': undefined } })
   },
   nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),

@@ -6,7 +6,7 @@
  */
 import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { pricingApi } from '../lib/api'
+import { pricingApi, apiErrorText } from '../lib/api'
 
 const fa = (n: number | null | undefined) =>
   n == null ? '—' : new Intl.NumberFormat('fa-IR').format(n)
@@ -58,20 +58,16 @@ export default function CoverageAdmin() {
   })
 
   const err = (e: unknown, fallback: string) =>
-    setMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || fallback })
+    setMsg({ kind: 'err', text: apiErrorText(e, fallback) })
 
   const doProbe = async (s: Source) => {
     setMsg(null)
     try {
       const { data } = await pricingApi.coverageProbe(s.id)
       setProbe({ sourceId: s.id, data })
-    } catch (e: any) {
-      const d = e?.response?.data?.detail
-      if (d && typeof d === 'object' && d.diagnostics?.summary) {
-        setMsg({ kind: 'err', text: `تشخیص ناموفق [${d.diagnostics.summary.worst_category || '—'}]: ${d.diagnostics.summary.top_hint || d.message}` })
-      } else {
-        setMsg({ kind: 'err', text: (typeof d === 'string' ? d : 'تشخیص ناموفق بود.') })
-      }
+    } catch (e) {
+      // apiErrorText renders the classified probe failure ([category] hint) too
+      err(e, 'تشخیص ناموفق بود.')
     }
   }
   const doHarvest = async (s: Source) => {
@@ -330,7 +326,7 @@ function UploadCard({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string }
       onMsg({ kind: 'ok', text: `پوشش بیمه برای ${fa(data.stats.products_updated)} قلم اعمال شد (${fa(data.stats.review)} بازبینی، ${fa(data.stats.unmatched)} نامنطبق).` })
       qc.invalidateQueries({ queryKey: ['coverage-runs'] })
     } catch (e: unknown) {
-      onMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || 'بارگذاری دارونامه ناموفق بود.' })
+      onMsg({ kind: 'err', text: apiErrorText(e, 'بارگذاری دارونامه ناموفق بود.') })
     } finally { setBusy(false); if (covRef.current) covRef.current.value = '' }
   }
   return (

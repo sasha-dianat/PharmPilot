@@ -5,7 +5,7 @@
  */
 import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { pricingApi } from '../lib/api'
+import { pricingApi, apiErrorText } from '../lib/api'
 
 interface Stats { total: number; priced: number; ingredient_groups: number; last_updated: string | null }
 interface HarvestStatus {
@@ -50,7 +50,7 @@ export default function DrugCatalogAdmin() {
       await pricingApi.nfiStart({ start_id: startId, end_id: endId, delay, proxy: proxy || undefined })
       qc.invalidateQueries({ queryKey: ['nfi-status'] })
     } catch (e: unknown) {
-      setMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || 'شروع برداشت ناموفق بود.' })
+      setMsg({ kind: 'err', text: apiErrorText(e, 'شروع برداشت ناموفق بود.') })
     } finally { setBusy(false) }
   }
   const stop = async () => { await pricingApi.nfiStop(); qc.invalidateQueries({ queryKey: ['nfi-status'] }) }
@@ -62,7 +62,7 @@ export default function DrugCatalogAdmin() {
       setMsg({ kind: 'ok', text: `${fa(data.imported)} قلم از فایل وارد شد.` })
       qc.invalidateQueries({ queryKey: ['catalog-stats'] })
     } catch (e: unknown) {
-      setMsg({ kind: 'err', text: (e as any)?.response?.data?.detail || 'بارگذاری فایل ناموفق بود.' })
+      setMsg({ kind: 'err', text: apiErrorText(e, 'بارگذاری فایل ناموفق بود.') })
     } finally { setBusy(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
