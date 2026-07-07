@@ -134,3 +134,16 @@ def test_coverage_make_raw_fetch_keeps_http_error_body(monkeypatch):
     raw = ch.make_raw_fetch()
     status, body, ct, headers = raw("https://x/l")
     assert status == 403 and body == b"Access Denied"
+
+
+def test_nfi_fetch_detail_raw_keeps_error_body(monkeypatch):
+    import io, urllib.error
+    from services.core.drug_catalog import nfi
+
+    class FakeOpener:
+        def open(self, req, timeout=25):
+            raise urllib.error.HTTPError(req.full_url, 500, "err", {"Server": "iis"},
+                                         io.BytesIO(b"server boom"))
+    monkeypatch.setattr(nfi, "make_opener", lambda proxy=None: FakeOpener())
+    status, body, headers = nfi.fetch_detail_raw(17248, FakeOpener())
+    assert status == 500 and body == b"server boom" and headers.get("Server") == "iis"

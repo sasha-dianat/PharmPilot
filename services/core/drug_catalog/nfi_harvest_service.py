@@ -12,8 +12,9 @@ import time
 from dataclasses import dataclass, field, asdict
 
 from . import harvest_lock
+from .harvest_diagnostics import DiagnosticRecorder
 from .importer import build_records, upsert_catalog
-from .nfi import fetch_detail, make_opener, parse_detail
+from .nfi import BASE, fetch_detail, fetch_detail_raw, make_opener, parse_detail
 
 
 @dataclass
@@ -30,6 +31,7 @@ class HarvestState:
     finished_at: float | None = None
     error: str | None = None
     message: str = ""
+    diagnostics: dict = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         d = asdict(self)
@@ -67,6 +69,18 @@ def request_stop() -> bool:
     return False
 
 
+def _fetch_and_record(page_id: int, opener, recorder) -> tuple[int, str]:
+    url = f"{BASE}/NFI/Detail/{page_id}"
+    t = time.time()
+    try:
+        status, body, headers = fetch_detail_raw(page_id, opener)
+    except Exception as e:
+        recorder.record(url, 0, {}, b"", int((time.time() - t) * 1000), repr(e))
+        return 0, ""
+    recorder.record(url, status, headers, body, int((time.time() - t) * 1000), None)
+    return status, body.decode("utf-8", "replace") if body else ""
+
+
 async def _flush(batch: list[dict], source: str) -> int:
     from services.platform.database import AsyncSessionLocal
     records = build_records(batch)
@@ -78,13 +92,15 @@ async def _flush(batch: list[dict], source: str) -> int:
 
 async def _run(start: int, end: int, delay: float, proxy: str | None, source: str) -> None:
     opener = make_opener(proxy or os.getenv("HTTPS_PROXY"))
+    recorder = DiagnosticRecorder("nfi", "nfi", mode="errors_only")
     batch: list[dict] = []
     try:
         for pid in range(start, end + 1):
             if _STATE.cancel:
                 _STATE.message = "cancelled"
                 break
-            status_code, html = await asyncio.to_thread(fetch_detail, pid, opener)
+            status_code, html = await asyncio.to_thread(_fetch_and_record, pid, opener, recorder)
+            _STATE.diagnostics = recorder.summary()
             _STATE.scanned += 1
             _STATE.last_id = pid
             if status_code == 200 and html:
@@ -105,6 +121,11 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
         _STATE.error = f"{type(e).__name__}: {e}"
         _STATE.message = "failed"
     finally:
+        try:
+            recorder.close()
+            _STATE.diagnostics = recorder.summary()
+        except Exception:
+            pass
         harvest_lock.release("nfi")
         _STATE.running = False
         _STATE.finished_at = time.time()

@@ -208,3 +208,18 @@ def fetch_detail(page_id: int, opener: urllib.request.OpenerDirector | None = No
         return e.code, ""
     except Exception:
         return 0, ""
+
+
+def fetch_detail_raw(page_id: int, opener: urllib.request.OpenerDirector | None = None,
+                     timeout: int = 25) -> tuple[int, bytes, dict]:
+    """Like fetch_detail but returns raw bytes + headers and KEEPS the HTTP-error
+    body; raises on transport failure. For the diagnostics-recording crawl path."""
+    opener = opener or make_opener()
+    req = urllib.request.Request(f"{BASE}/NFI/Detail/{page_id}", headers={
+        "User-Agent": UA, "Accept": "text/html", "Accept-Language": "fa,en;q=0.8",
+        "Referer": f"{BASE}/nfi"})
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read(), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, (e.read() if hasattr(e, "read") else b""), dict(e.headers or {})
