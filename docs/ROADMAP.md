@@ -16,8 +16,8 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started
 
 ## Phase 1 — Real national data loaded (DATA)  🟡
 The engine is done; it needs the full dataset behind it.
-- 🟡 Finish NFI crawl (≈10% done) → ingest full catalog (~50–60k products)
-- ⬜ Load per-insurer دارونامه (تأمین / سلامت / نیروهای مسلح) via the coverage extractor; clear the review queue
+- 🟡 Finish NFI crawl (~65% by count; ~39k ingested) → re-crawl for full extraction (country/producer/monograph now captured) + finish ids 53,642–60,000
+- 🟡 Load per-insurer دارونامه (تأمین / سلامت / نیروهای مسلح) — config-driven crawler + staged-review GUI built (probe→harvest→diff→approve, global proxy lock); needs real source URLs behind the Iran proxy
 - ⬜ Verify pricing/مابه‌التفاوت on a sample of real prescriptions vs a real pharmacy receipt
 - ⬜ Confirm the 30/70 franchise, حق فنی amount, VAT exemptions with the domain expert (tariffs in pricing_ir/config.py)
 **Exit:** a pharmacist can quote any real Rx and the numbers match a real receipt.
