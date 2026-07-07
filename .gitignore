@@ -44,3 +44,6 @@ nfi_catalog.json
 .env.bak
 .env.*.bak
 .claude/settings.local.json
+
+# harvest diagnostics logs (runtime)
+logs/
