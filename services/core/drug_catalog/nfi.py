@@ -39,6 +39,8 @@ _PAIR_LABELS = {
     "irc": "irc",
     "تعداد در بسته": "package_count",
     "ترکیبات": "composition",                  # e.g. "LIRAGLUTIDE 6 mg/1mL"
+    "تاریخ اعتبار پروانه": "license_valid_until",
+    "فارماکوکینتیک": "pharmacokinetics",
     # clinical free-text (kept in the harvested feed for future enrichment; not
     # stored in the catalog table today)
     "موارد مصرف": "indications",
@@ -58,6 +60,44 @@ def _clean(fragment: str) -> str:
 
 def _digits(v) -> str:
     return re.sub(r"\D", "", str(v).translate(_DIGIT_FIX))
+
+
+_TABLE_RE = re.compile(r"<table[^>]*>(.*?)</table>", re.S | re.I)
+_TR_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
+_TD_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S | re.I)
+_TITLE_ATTR_RE = re.compile(r'title="([^"]+)"')
+_FLAG_ISO_RE = re.compile(r"CountriesFlag/([A-Za-z]{2})\.", re.I)
+_DETAIL_LINK_RE = re.compile(r"/NFI/Detail/(\d+)")
+
+
+def _parse_brands(html: str) -> list[dict]:
+    """The محصولات مشابه table (نام دارو/صاحب نام تجاری/کشور/صاحب امتیاز/وضعیت):
+    every registered brand of this generic, incl. this product's own row.
+    کشور renders as a flag <img>; the name is its title attr, ISO its filename."""
+    for tbl in _TABLE_RE.findall(html):
+        if "کشور" not in tbl:
+            continue
+        rows: list[dict] = []
+        for tr in _TR_RE.findall(tbl):
+            tds = _TD_RE.findall(tr)
+            if len(tds) < 6:
+                continue                      # header row / malformed
+            title = _TITLE_ATTR_RE.search(tds[3])
+            iso = _FLAG_ISO_RE.search(tds[3])
+            link = _DETAIL_LINK_RE.search(tds[1])
+            status_title = _TITLE_ATTR_RE.search(tds[5])
+            rows.append({
+                "name": _clean(tds[1]) or None,
+                "trade_owner": _clean(tds[2]) or None,
+                "country": (title.group(1) if title else _clean(tds[3])) or None,
+                "country_code": iso.group(1).upper() if iso else None,
+                "licensee": _clean(tds[4]) or None,
+                "status": _clean(tds[5]) or (status_title.group(1) if status_title else None),
+                "nfi_id": int(link.group(1)) if link else None,
+            })
+        if rows:
+            return rows
+    return []
 
 
 def parse_detail(html: str, page_id: int | None = None) -> dict | None:
@@ -114,8 +154,9 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
     manu = raw.get("manufacturer") or raw.get("brand_owner") or raw.get("license_owner")
     if manu:
         out["manufacturer"] = manu
-    if raw.get("license_owner"):
-        out["license_owner"] = raw["license_owner"]
+    for k in ("license_owner", "brand_owner", "license_valid_until", "composition"):
+        if raw.get(k):
+            out[k] = raw[k]
 
     atc = _ATC_RE.search(html)
     if atc:
@@ -125,9 +166,18 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
         out["similar_count"] = int(_digits(sim.group(1)) or 0)
 
     # clinical free-text (optional; retained in the JSONL feed for later use)
-    for k in ("indications", "interactions_text", "warnings", "side_effects", "advice", "mechanism"):
+    for k in ("indications", "interactions_text", "warnings", "side_effects",
+              "advice", "mechanism", "pharmacokinetics"):
         if raw.get(k):
             out[k] = raw[k]
+
+    brands = _parse_brands(html)
+    if brands:
+        out["brands"] = brands
+        own = next((b for b in brands if page_id is not None and b["nfi_id"] == page_id),
+                   brands[0])
+        if own.get("country"):
+            out["country"] = own["country"]
 
     out["category"] = "drug"
     if page_id is not None:

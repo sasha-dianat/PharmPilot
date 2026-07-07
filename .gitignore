@@ -37,6 +37,7 @@ services/ai/clinical_decision_support/interaction/data/bundle.sqlite
 # NFI harvest artifacts (local data, not source)
 nfi_pages.jsonl
 nfi_detail_*.html
+!tests/fixtures/nfi/*.html
 nfi_catalog.json
 
 # local-only files (must never be committed)
