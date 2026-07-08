@@ -172,3 +172,23 @@ def test_blocking_scales_linearly_not_quadratically():
     elapsed = time.time() - t0
     assert elapsed < 20, f"link_rows took {elapsed:.1f}s — blocking not effective"
     assert sum(1 for l in links if l.matched) >= 900   # same-prefix rows still link
+
+
+def test_real_salamat_headers_map_price_not_brand_code():
+    # the REAL salamat .xls headers (post read_table normalization): the Arabic-yeh
+    # 'قيمت' column must claim reference_price via the folded alias, so the numeric
+    # brand-code column can't steal it through value inference.
+    rows = [
+        {"رديف": "1", "کد_ژنريک": "00001", "کد_برند": "14083",
+         "عنوان": "ABCIXIMAB VIAL 10MG", "شرايط_تعهد": "",
+         "سهم_سازمان": "70%", "قيمت": "3,100,000"},
+        {"رديف": "2", "کد_ژنريک": "00522", "کد_برند": "20991",
+         "عنوان": "ACETAMINOPHEN TAB 500MG", "شرايط_تعهد": "بيمارستاني",
+         "سهم_سازمان": "70%", "قيمت": "29,250"},
+    ]
+    roles = infer_columns(rows)
+    assert roles["قيمت"] == "reference_price"
+    assert roles.get("کد_برند") != "reference_price"
+    assert roles["سهم_سازمان"] == "share_pct"
+    assert roles["عنوان"] == "drug_name"
+    assert roles["کد_ژنريک"] == "generic_code"

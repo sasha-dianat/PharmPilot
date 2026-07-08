@@ -59,6 +59,14 @@ def _norm_header(h: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
 
 
+# Aliases must survive the same folding as headers (Arabic yeh/kaf → Persian),
+# else an Arabic-yeh alias like "قيمت" can never match a folded header "قیمت".
+_ALIASES_NORM: dict[str, tuple[str, ...]] = {
+    role: tuple(_norm_header(a) for a in aliases)
+    for role, aliases in _HEADER_ALIASES.items()
+}
+
+
 def _num(v) -> float | None:
     s = re.sub(r"[,٬،%\s]", "", str(v).translate(_DIGIT_FIX))
     try:
@@ -105,7 +113,7 @@ def infer_columns(rows: list[dict]) -> dict[str, str]:
     headers = {col: _norm_header(col) for col in cols}
     for col in cols:                                   # pass 1a: exact header==alias wins
         h = headers[col]
-        for role, aliases in _HEADER_ALIASES.items():
+        for role, aliases in _ALIASES_NORM.items():
             if role not in taken and any(a == h for a in aliases):
                 roles[col] = role
                 taken.add(role)
@@ -114,7 +122,7 @@ def infer_columns(rows: list[dict]) -> dict[str, str]:
         if col in roles:
             continue
         h = headers[col]
-        for role, aliases in _HEADER_ALIASES.items():
+        for role, aliases in _ALIASES_NORM.items():
             if role not in taken and any(a in h for a in aliases):
                 roles[col] = role
                 taken.add(role)
