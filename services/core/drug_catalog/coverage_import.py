@@ -198,6 +198,23 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult
     by_gtin = {r.gtin: r for r in catalog if r.gtin}
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
 
+    # ── blocking indexes ──────────────────────────────────────────────────────
+    # Fuzzy comparison is expensive (SequenceMatcher); comparing every row to
+    # every product is O(rows×catalog) and melts on real inputs (4k rows × 39k
+    # products ≈ 143M ratios). Classic record-linkage blocking: only candidates
+    # sharing a cheap prefix key get the expensive treatment. Both sides pass
+    # through canonical_ingredient() first, so lay-name synonyms already align;
+    # a typo INSIDE the first 3 latin chars (rare) is the accepted trade-off —
+    # such rows fall to `unmatched` and land in the human-review lane.
+    latin_block: dict[str, list] = {}
+    fa_block: dict[str, list] = {}
+    for item in cat_sig:
+        rec, c_canon, _c_str, _c_form = item
+        if c_canon:
+            latin_block.setdefault(c_canon[:3], []).append(item)
+        if rec.name_fa:
+            fa_block.setdefault(rec.name_fa[:2], []).append(item)
+
     out: list[LinkResult] = []
     for row in rows:
         irc = re.sub(r"\D", "", str(row.get("irc", "")).translate(_DIGIT_FIX))
@@ -216,19 +233,19 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult
         canon, strengths, form, fa = _row_signals(name)
 
         best: tuple[float, CatalogRecord | None, str] = (0.0, None, "none")
-        for rec, c_canon, c_str, c_form in cat_sig:
-            if canon and c_canon:
-                name_sim = SequenceMatcher(None, canon, c_canon).ratio()
-                has_extra = bool(strengths) or bool(form)
-                if has_extra:
-                    s_score = 1.0 if (strengths and strengths & c_str) else 0.0
-                    f_score = 1.0 if (form and form == c_form) else 0.0
-                    score = 0.6 * name_sim + 0.25 * s_score + 0.15 * f_score
-                else:
-                    score = name_sim
-                if score > best[0]:
-                    best = (score, rec, "ingredient")
-            if fa and rec.name_fa:                      # persian trade-name path
+        for rec, c_canon, c_str, c_form in (latin_block.get(canon[:3], []) if canon else []):
+            name_sim = SequenceMatcher(None, canon, c_canon).ratio()
+            has_extra = bool(strengths) or bool(form)
+            if has_extra:
+                s_score = 1.0 if (strengths and strengths & c_str) else 0.0
+                f_score = 1.0 if (form and form == c_form) else 0.0
+                score = 0.6 * name_sim + 0.25 * s_score + 0.15 * f_score
+            else:
+                score = name_sim
+            if score > best[0]:
+                best = (score, rec, "ingredient")
+        if fa:                                          # persian trade-name path
+            for rec, _c_canon, _c_str, _c_form in fa_block.get(fa[:2], []):
                 fa_sim = SequenceMatcher(None, fa, rec.name_fa).ratio()
                 if fa_sim > best[0]:
                     best = (fa_sim, rec, "persian_name")

@@ -141,3 +141,26 @@ def test_empty_covered_cell_means_covered():
     links = link_rows(rows, CATALOG)
     cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
     assert cov.applied["111"]["salamat"]["covered"] is True
+
+
+def test_blocking_still_links_typos_within_prefix():
+    # blocking keys on the first 3 latin chars — "ATORVASTATINE" (typo) and
+    # "atorvastatin" share "ato", so fuzzy linkage must still find it
+    rows = [{"drug_name": "ATORVASTATINE 20MG TAB"}]
+    links = link_rows(rows, CATALOG)
+    assert links[0].matched and links[0].record.irc == "222"
+
+
+def test_blocking_scales_linearly_not_quadratically():
+    # 1000 rows × 5000 products must finish in seconds, not minutes
+    import time
+    big_catalog = [
+        _cat(f"C{i:05d}", f"drug{i:05d}yl", "10 mg", "TABLET", 1000 + i)
+        for i in range(5000)
+    ]
+    rows = [{"drug_name": f"DRUG{i%5000:05d}YL 10 MG TABLET"} for i in range(1000)]
+    t0 = time.time()
+    links = link_rows(rows, big_catalog)
+    elapsed = time.time() - t0
+    assert elapsed < 20, f"link_rows took {elapsed:.1f}s — blocking not effective"
+    assert sum(1 for l in links if l.matched) >= 900   # same-prefix rows still link
