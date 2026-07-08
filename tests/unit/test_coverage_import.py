@@ -152,13 +152,21 @@ def test_blocking_still_links_typos_within_prefix():
 
 
 def test_blocking_scales_linearly_not_quadratically():
-    # 1000 rows × 5000 products must finish in seconds, not minutes
+    # 1000 rows × 5000 products must finish in seconds, not minutes. Names get
+    # DIVERSE 3-letter prefixes (like real ingredients) so the blocking index
+    # actually partitions the catalog — a single shared prefix would collapse
+    # everything into one bucket and measure brute force instead.
     import time
+
+    def name(i: int) -> str:
+        p = chr(97 + (i // 676) % 26) + chr(97 + (i // 26) % 26) + chr(97 + i % 26)
+        return f"{p}statin{i:05d}"
+
     big_catalog = [
-        _cat(f"C{i:05d}", f"drug{i:05d}yl", "10 mg", "TABLET", 1000 + i)
+        _cat(f"C{i:05d}", name(i), "10 mg", "TABLET", 1000 + i)
         for i in range(5000)
     ]
-    rows = [{"drug_name": f"DRUG{i%5000:05d}YL 10 MG TABLET"} for i in range(1000)]
+    rows = [{"drug_name": f"{name(i % 5000).upper()} 10 MG TABLET"} for i in range(1000)]
     t0 = time.time()
     links = link_rows(rows, big_catalog)
     elapsed = time.time() - t0
