@@ -38,6 +38,12 @@ def test_classify_404_and_429_and_5xx():
 def test_classify_login_redirect():
     assert classify(302, {"Location": "https://x/Account/Login?ret=/nfi"}, b"", None)[0] == "login_redirect"
 
+def test_classify_plain_redirect_is_redirect_loop_not_unknown():
+    from services.core.drug_catalog.harvest_diagnostics import classify
+    cat, sev, hint = classify(302, {"Location": "https://ihio.gov.ir/"},
+                              b"<html>Object moved</html>", None)
+    assert cat == "redirect_loop" and sev == "error" and hint
+
 def test_classify_js_shell_no_table():
     body = b'<html><body><div id="root"></div><script src="/app.js"></script></body></html>'
     assert classify(200, {}, body, None)[0] == "js_shell_no_table"
@@ -147,3 +153,10 @@ def test_nfi_fetch_detail_raw_keeps_error_body(monkeypatch):
     monkeypatch.setattr(nfi, "make_opener", lambda proxy=None: FakeOpener())
     status, body, headers = nfi.fetch_detail_raw(17248, FakeOpener())
     assert status == 500 and body == b"server boom" and headers.get("Server") == "iis"
+
+
+def test_make_opener_includes_cookie_processor():
+    import urllib.request
+    from services.core.drug_catalog.nfi import make_opener
+    opener = make_opener()
+    assert any(isinstance(h, urllib.request.HTTPCookieProcessor) for h in opener.handlers)

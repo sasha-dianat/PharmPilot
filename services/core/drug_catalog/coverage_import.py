@@ -38,9 +38,9 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "irc": ("irc", "کد irc", "کد فرآورده"),
     "gtin": ("gtin", "بارکد"),
     "generic_code": ("کد ژنریک", "کد ملی", "کد ملي", "generalcode", "generic code", "کد عمومی"),
-    "drug_name": ("نام ژنریک", "نام دارو", "شرح", "نام", "drug", "generic name", "name", "شرح دارو"),
+    "drug_name": ("نام ژنریک", "نام دارو", "شرح", "نام", "drug", "generic name", "name", "شرح دارو", "عنوان"),
     "covered": ("تعهد بیمه", "بيمه", "بیمه", "مورد تعهد", "تعهد", "covered", "isbimeh", "پوشش"),
-    "share_pct": ("درصد سازمان", "درصد تعهد", "سهم سازمان", "درصد", "percent", "share"),
+    "share_pct": ("درصد سازمان", "درصد تعهد", "سهم سازمان", "درصد", "percent", "share", "درصد سهم سازمان", "درصد سهم"),
     "reference_price": ("قیمت مورد تعهد", "قیمت تعهد", "مبلغ مورد قبول", "جمع مورد قبول سازمان",
                         "قیمت بیمه", "orgprice", "reference price", "قيمت"),
     "ceiling": ("سقف تجویز", "سقف تجويز", "سقف", "ceiling", "prescribedceiling"),
@@ -48,17 +48,19 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _TRUE_WORDS = {"1", "true", "yes", "بله", "دارد", "فعال", "دارای تعهد", "مورد تعهد", "*", "✓"}
-_FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-", ""}
+_FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-"}
 
 
 def _norm_header(h: str) -> str:
     # fold ZWNJ and underscores (excel_import.read_table already turns spaces/ZWNJ
-    # into "_") back to spaces so exact-alias matching survives either input shape
-    return re.sub(r"\s+", " ", str(h).replace("‌", " ").replace("_", " ").strip().lower())
+    # into "_") back to spaces, and Arabic yeh/kaf to Persian, so exact-alias
+    # matching survives real-world files (e.g. the salamat .xls uses ي not ی)
+    s = str(h).replace("‌", " ").replace("_", " ").replace("ي", "ی").replace("ك", "ک")
+    return re.sub(r"\s+", " ", s.strip().lower())
 
 
 def _num(v) -> float | None:
-    s = re.sub(r"[,٬،\s]", "", str(v).translate(_DIGIT_FIX))
+    s = re.sub(r"[,٬،%\s]", "", str(v).translate(_DIGIT_FIX))
     try:
         return float(s) if s else None
     except ValueError:

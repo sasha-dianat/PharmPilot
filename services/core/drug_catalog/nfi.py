@@ -186,8 +186,12 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
 
 
 def make_opener(proxy: str | None = None) -> urllib.request.OpenerDirector:
-    """Build a urllib opener, optionally routing through an Iran proxy."""
-    handlers = []
+    """Build a urllib opener, optionally routing through an Iran proxy. Includes
+    cookie support — several Iranian gov portals (e.g. ihio.gov.ir) set a session
+    cookie then redirect to the SAME url; without cookies urllib sees an infinite
+    redirect loop and surfaces a raw 302."""
+    handlers: list[urllib.request.BaseHandler] = [
+        urllib.request.HTTPCookieProcessor()]
     if proxy:
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     return urllib.request.build_opener(*handlers)

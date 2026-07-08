@@ -115,3 +115,29 @@ def test_build_coverage_not_covered_row():
     links = link_rows(rows, CATALOG)
     cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
     assert cov.applied["444"]["salamat"]["covered"] is False
+
+
+def test_infer_columns_folds_arabic_yeh_in_headers():
+    # the real salamat .xls uses Arabic ي: 'کد ژنريک' must still match 'کد ژنریک'
+    rows = [{"کد ژنريک": "14083", "عنوان": "ABCIXIMAB VIAL 10MG",
+             "درصد سهم سازمان": "71.693", "قيمت": "3,100,000"}]
+    roles = infer_columns(rows)
+    assert roles["کد ژنريک"] == "generic_code"
+    assert roles["عنوان"] == "drug_name"
+    assert roles["درصد سهم سازمان"] == "share_pct"
+    assert roles["قيمت"] == "reference_price"
+
+
+def test_share_pct_with_percent_sign_and_float():
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "share_pct": "70%",
+             "reference_price": "8,000"}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
+    assert cov.applied["111"]["salamat"]["share_pct"] == 70
+
+
+def test_empty_covered_cell_means_covered():
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "covered": ""}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
+    assert cov.applied["111"]["salamat"]["covered"] is True

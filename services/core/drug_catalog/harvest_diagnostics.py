@@ -31,6 +31,7 @@ HINTS = {
     "http_403_waf": "۴۰۳ با نشانهٔ WAF/Cloudflare — IP خروجی پروکسی مسدود است؛ exit دیگری امتحان کنید.",
     "http_403": "۴۰۳ ممنوع — نیازمند احراز هویت یا کوکی نشست است.",
     "login_redirect": "تغییرمسیر به صفحهٔ ورود — منبع پشت لاگین است؛ URL دادهٔ پس از ورود را ثبت کنید.",
+    "redirect_loop": "تغییرمسیر حل‌نشده (احتمالاً کوکی‌محور) — پشتیبانی کوکی فعال است؛ دوباره امتحان کنید یا آدرس نهایی را مستقیم بگذارید.",
     "server_error": "خطای سرور مقصد (۵xx) — بعداً دوباره امتحان کنید.",
     "js_shell_no_table": "صفحه بارگذاری شد ولی جدولی نیست و ظاهراً SPA/JS است — احتمالاً API پشت‌صحنه (json_api) لازم است.",
     "login_wall": "فرم ورود بازگشت — منبع عمومی نیست؛ اعتبارنامه/نشست لازم است.",
@@ -68,6 +69,8 @@ def classify(status: int, headers: dict, body: bytes, exception: str | None) -> 
         return ("http_403", "error", HINTS["http_403"])
     if status in (301, 302, 303, 307, 308) and any(k in loc for k in ("login", "account", "sso", "auth")):
         return ("login_redirect", "error", HINTS["login_redirect"])
+    if status in (301, 302, 303, 307, 308):
+        return ("redirect_loop", "error", HINTS["redirect_loop"])
     if status >= 500:
         return ("server_error", "error", HINTS["server_error"])
     if status == 200:
