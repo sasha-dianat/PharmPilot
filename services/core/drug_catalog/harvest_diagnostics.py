@@ -153,7 +153,7 @@ class DiagnosticRecorder:
             content_type=headers.get("Content-Type") or headers.get("content-type"),
             server=headers.get("Server") or headers.get("server"),
             location=headers.get("Location") or headers.get("location"),
-            body_snippet=body[:SNIPPET_BYTES].decode("utf-8", "replace"),
+            body_snippet=body[:SNIPPET_BYTES].decode("utf-8", "replace").replace("\x00", ""),
             body_bytes=len(body), elapsed_ms=elapsed_ms, exception=exception,
             category=cat, severity=sev, hint=hint,
         )

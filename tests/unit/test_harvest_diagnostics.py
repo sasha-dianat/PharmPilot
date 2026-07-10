@@ -160,3 +160,11 @@ def test_make_opener_includes_cookie_processor():
     from services.core.drug_catalog.nfi import make_opener
     opener = make_opener()
     assert any(isinstance(h, urllib.request.HTTPCookieProcessor) for h in opener.handlers)
+
+
+def test_body_snippet_strips_nul_bytes(tmp_path):
+    rec = DiagnosticRecorder("coverage", "salamat", log_dir=str(tmp_path))
+    att = rec.record("https://x/f.xls", 200, {}, b"\xd0\xcf\x11\xe0\x00\x00binary\x00xls", 3, None)
+    assert "\x00" not in att.body_snippet
+    import json
+    assert "\\u0000" not in json.dumps(rec.to_db(), ensure_ascii=False)

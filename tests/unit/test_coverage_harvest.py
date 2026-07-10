@@ -180,3 +180,13 @@ def test_harvest_state_snapshot_has_lock_holder():
     st = CoverageHarvestState(running=True, insurer="tamin", phase="fetching")
     snap = st.snapshot()
     assert snap["insurer"] == "tamin" and "lock_holder" in snap
+
+
+def test_read_table_strips_nul_bytes(tmp_path):
+    # legacy .xls exports pad strings with NULs; Postgres JSONB rejects \x00
+    p = tmp_path / "nul.csv"
+    p.write_bytes("drug_name,share\nACETAMIN\x00OPHEN,70\x00\n".encode("utf-8"))
+    from services.core.drug_catalog.excel_import import read_table
+    rows = read_table(p)
+    assert rows and "\x00" not in rows[0]["drug_name"]
+    assert all("\x00" not in v for r in rows for v in r.values())

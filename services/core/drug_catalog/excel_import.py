@@ -31,10 +31,12 @@ def read_table(path: str | Path) -> list[dict]:
         for k, v in r.items():
             if k is None:
                 continue
-            val = "" if v is None else str(v).strip()
+            # NUL bytes (legacy .xls padding) are rejected by Postgres JSONB —
+            # strip them here so every ingestion path is safe to persist.
+            val = "" if v is None else str(v).replace("\x00", "").strip()
             if val.lower() in ("nan", "none"):
                 val = ""
-            norm[normalize_header(k)] = val
+            norm[normalize_header(str(k).replace("\x00", ""))] = val
         out.append(norm)
     return out
 
