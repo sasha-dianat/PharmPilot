@@ -246,6 +246,10 @@ function RunPreview({ runId, onDone, onError }: {
   })
   if (!run) return <p className="text-[12px] text-slate-500">در حال بارگذاری…</p>
   const decide = async (approve: boolean) => {
+    // رد discards the WHOLE run (checked review items are NOT applied) — this
+    // was mis-clicked as "apply the checked items" once, hence the guard.
+    if (!approve && !window.confirm(
+      'کل این اجرا رد می‌شود و هیچ پوششی اعمال نمی‌شود — حتی موارد تأییدشده. ادامه؟')) return
     setBusy(true)
     try {
       if (approve) await pricingApi.coverageApprove(runId,
@@ -304,11 +308,14 @@ function RunPreview({ runId, onDone, onError }: {
         <input type="checkbox" checked={removeMissing} onChange={e => setRemoveMissing(e.target.checked)} />
         حذف پوشش اقلامی که در فهرست جدید نیستند (حداکثر ۵۰ مورد نمونه‌گیری‌شده — با احتیاط)
       </label>
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <button onClick={() => decide(true)} disabled={busy}
-          className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">اعمال</button>
+          className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">
+          اعمال اجرا{accepted.size > 0 ? ` (+${fa(accepted.size)} مورد تأییدشده)` : ''}
+        </button>
         <button onClick={() => decide(false)} disabled={busy}
-          className="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded disabled:opacity-50">رد</button>
+          className="px-4 py-1.5 bg-red-600/70 hover:bg-red-500 rounded disabled:opacity-50">رد کل اجرا</button>
+        <span className="text-[11px] text-slate-500">موارد تأییدشده فقط همراه «اعمال اجرا» اعمال می‌شوند.</span>
       </div>
     </div>
   )
