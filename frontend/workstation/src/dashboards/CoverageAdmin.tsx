@@ -296,7 +296,15 @@ function RunPreview({ runId, onDone, onError }: {
         </details>)}
       {(run.review || []).length > 0 && (
         <div className="max-h-40 overflow-y-auto space-y-0.5">
-          <p className="font-semibold">موارد نیازمند بازبینی — تأیید هر مورد آن را همراه اجرا اعمال می‌کند:</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-semibold">موارد نیازمند بازبینی — تأیید هر مورد آن را همراه اجرا اعمال می‌کند:</p>
+            <button onClick={() => setAccepted(new Set((run.review || []).map((i: any) => i.id)))}
+              className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px]">
+              تأیید همه ({fa((run.review || []).length)})
+            </button>
+            <button onClick={() => setAccepted(new Set())}
+              className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px]">لغو همه</button>
+          </div>
           {run.review.map((item: any) => (
             <label key={item.id} className="flex items-center gap-2 font-mono text-slate-400">
               <input type="checkbox" checked={accepted.has(item.id)}
