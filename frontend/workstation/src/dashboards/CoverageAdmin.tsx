@@ -4,7 +4,7 @@
  * global proxy lock, staged runs with a diff vs live coverage, and preview→اعمال.
  * The one-shot upload card (instant apply) also lives here, moved from DrugCatalogAdmin.
  */
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { pricingApi, apiErrorText } from '../lib/api'
 
@@ -38,6 +38,7 @@ export default function CoverageAdmin() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [probe, setProbe] = useState<{ sourceId: string; data: any } | null>(null)
   const [openRun, setOpenRun] = useState<string | null>(null)
+  const [showIncons, setShowIncons] = useState(false)
 
   const { data: sources } = useQuery<{ sources: Source[] }>({
     queryKey: ['coverage-sources'],
@@ -94,8 +95,18 @@ export default function CoverageAdmin() {
 
   return (
     <div className="p-4 space-y-4 text-slate-100" dir="rtl">
-      <h2 className="text-lg font-bold">پوشش بیمه — دارونامه بیمه‌گرها</h2>
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-lg font-bold">پوشش بیمه — دارونامه بیمه‌گرها</h2>
+        <button onClick={() => setShowIncons(v => !v)}
+          className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+            showIncons ? 'bg-indigo-600 border-indigo-500 hover:bg-indigo-500'
+                       : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
+          بازبینی ناسازگاری‌ها
+        </button>
+      </div>
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
+
+      {showIncons && <InconsistenciesPanel onError={err} />}
 
       {/* live harvest strip */}
       {hs?.running && (
@@ -358,6 +369,201 @@ function UploadCard({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string }
         <input ref={covRef} type="file" accept=".xlsx,.xls,.csv,.tsv,.html,.htm" className="text-sm text-slate-300"
           onChange={e => { const f = e.target.files?.[0]; if (f) importCoverage(f) }} disabled={busy} />
       </div>
+    </div>
+  )
+}
+
+// ── Inconsistencies review (read-only data-quality surface) ──────────────────
+interface IncData {
+  insurer: string
+  coverage: {
+    counts: { unmatched: number; review: number; price_conflicts: number }
+    unmatched: any[]
+    review: any[]
+    price_conflicts: { irc: string; name_fa: string; announced_price: number;
+                       reference_price: number; gap_pct: number }[]
+  }
+  nfi: {
+    counts: { no_price: number; no_generic: number; no_country: number;
+              no_atc: number; total: number }
+    no_price: { irc: string; name_fa: string }[]
+    no_generic: { irc: string; name_fa: string }[]
+    no_country: { irc: string; name_fa: string }[]
+    no_atc: { irc: string; name_fa: string }[]
+  }
+}
+
+const INSURERS = [['tamin', 'تأمین اجتماعی'], ['salamat', 'بیمه سلامت'],
+                  ['armed_forces', 'نیروهای مسلح']] as const
+
+function Badge({ n, active }: { n: number; active?: boolean }) {
+  const tone = n === 0 ? 'bg-emerald-500/15 text-emerald-300'
+             : active ? 'bg-slate-900/40 text-slate-100' : 'bg-slate-700 text-slate-200'
+  return <span className={`text-xs px-2 py-0.5 rounded-full tabular-nums ${tone}`}>{fa(n)}</span>
+}
+
+function Empty({ text = 'هیچ ناسازگاری‌ای یافت نشد ✓' }: { text?: string }) {
+  return (
+    <div className="text-sm text-emerald-300 bg-emerald-500/5 border border-emerald-500/20 rounded-md px-3 py-2.5">
+      {text}
+    </div>
+  )
+}
+
+function Section({ title, count, children, empty }:
+  { title: string; count: number; children: ReactNode; empty?: string }) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h4 className="text-sm font-semibold text-slate-200">{title}</h4>
+        <Badge n={count} />
+      </div>
+      {count > 0 ? children : <Empty text={empty} />}
+    </section>
+  )
+}
+
+function ScrollTable({ head, children }: { head: ReactNode; children: ReactNode }) {
+  return (
+    <div className="max-h-72 overflow-y-auto rounded-md border border-slate-700/60">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 bg-slate-800 text-xs text-slate-400 shadow-sm">{head}</thead>
+        <tbody className="divide-y divide-slate-700/40">{children}</tbody>
+      </table>
+    </div>
+  )
+}
+
+// generic IRC | نام table (used by every NFI section)
+function IrcNameTable({ items }: { items: { irc: string; name_fa: string }[] }) {
+  return (
+    <ScrollTable head={
+      <tr><th className="px-3 py-2 text-right font-medium">IRC</th>
+          <th className="px-3 py-2 text-right font-medium">نام</th></tr>}>
+      {items.map((it, i) => (
+        <tr key={`${it.irc}-${i}`} className="hover:bg-slate-700/20">
+          <td className="px-3 py-2 text-right tabular-nums font-mono text-slate-400 whitespace-nowrap">{it.irc}</td>
+          <td className="px-3 py-2 text-right text-slate-200">{it.name_fa}</td>
+        </tr>))}
+    </ScrollTable>
+  )
+}
+
+function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) => void }) {
+  const [insurer, setInsurer] = useState('salamat')
+  const [threshold, setThreshold] = useState(25)
+  const [tab, setTab] = useState<'coverage' | 'nfi'>('coverage')
+
+  const { data, isFetching, isError, error } = useQuery<IncData>({
+    queryKey: ['inconsistencies', insurer, threshold],
+    queryFn: () => pricingApi.inconsistencies(insurer, threshold).then(r => r.data),
+  })
+  if (isError) onError(error, 'دریافت ناسازگاری‌ها ناموفق بود.')
+
+  const cov = data?.coverage
+  const nfi = data?.nfi
+  const covTotal = cov ? cov.counts.unmatched + cov.counts.review + cov.counts.price_conflicts : 0
+  const nfiTotal = nfi ? nfi.counts.no_price + nfi.counts.no_generic + nfi.counts.no_country + nfi.counts.no_atc : 0
+  const gapTone = (g: number) =>
+    Math.abs(g) >= 50 ? 'text-red-300' : Math.abs(g) >= 25 ? 'text-amber-300' : 'text-slate-300'
+
+  return (
+    <div className="bg-slate-800/50 border border-indigo-500/30 rounded-lg p-4 space-y-3">
+      {/* controls */}
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 text-sm text-slate-400">بیمه‌گر
+          <select value={insurer} onChange={e => setInsurer(e.target.value)}
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-100">
+            {INSURERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-slate-400">آستانهٔ اختلاف قیمت (٪)
+          <input type="number" min={0} value={threshold}
+            onChange={e => setThreshold(Math.max(0, +e.target.value))}
+            className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-100 tabular-nums" />
+        </label>
+        {isFetching && <span className="text-xs text-indigo-300">در حال بارگذاری…</span>}
+      </div>
+
+      {/* tabs */}
+      <div className="flex items-center gap-2 border-b border-slate-700">
+        {([['coverage', 'پوشش بیمه', covTotal], ['nfi', 'کاتالوگ NFI', nfiTotal]] as const).map(([key, label, n]) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-3 py-2 text-sm rounded-t-md border-b-2 -mb-px transition-colors ${
+              tab === key ? 'border-indigo-400 text-slate-100' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
+            {label} <Badge n={n} active={tab === key} />
+          </button>))}
+      </div>
+
+      {!data ? <p className="text-sm text-slate-500 py-4">در حال بارگذاری…</p> : tab === 'coverage' ? (
+        <div className="space-y-5">
+          <Section title="نامنطبق (بدون تطبیق در کاتالوگ)" count={cov!.counts.unmatched}
+                   empty="همهٔ ردیف‌های دارونامه تطبیق داده شدند ✓">
+            <ScrollTable head={
+              <tr><th className="px-3 py-2 text-right font-medium">نام در دارونامه</th>
+                  <th className="px-3 py-2 text-left font-medium">اطمینان</th></tr>}>
+              {cov!.unmatched.map((it, i) => (
+                <tr key={i} className="hover:bg-slate-700/20">
+                  <td className="px-3 py-2 text-right text-slate-200">{String(it.row?.drug_name ?? it.row?.name ?? '—')}</td>
+                  <td className="px-3 py-2 text-left tabular-nums text-slate-400">{fa(it.confidence)}</td>
+                </tr>))}
+            </ScrollTable>
+          </Section>
+
+          <Section title="نیازمند بازبینی (تطبیق کم‌اطمینان)" count={cov!.counts.review}
+                   empty="موردی برای بازبینی نیست ✓">
+            <ScrollTable head={
+              <tr><th className="px-3 py-2 text-right font-medium">کاندیدای کاتالوگ</th>
+                  <th className="px-3 py-2 text-right font-medium">نام در دارونامه</th>
+                  <th className="px-3 py-2 text-left font-medium">اطمینان</th></tr>}>
+              {cov!.review.map((it, i) => (
+                <tr key={it.id ?? i} className="hover:bg-slate-700/20">
+                  <td className="px-3 py-2 text-right text-slate-200">{String(it.name ?? '—')}</td>
+                  <td className="px-3 py-2 text-right text-slate-400">{String(it.row?.drug_name ?? '—')}</td>
+                  <td className="px-3 py-2 text-left tabular-nums text-slate-400">{fa(it.confidence)}</td>
+                </tr>))}
+            </ScrollTable>
+          </Section>
+
+          <Section title="مغایرت قیمت (قیمت مرجع بیمه در برابر قیمت اعلامی)" count={cov!.counts.price_conflicts}
+                   empty="هیچ مغایرت قیمتی بالاتر از آستانه یافت نشد ✓">
+            <ScrollTable head={
+              <tr><th className="px-3 py-2 text-right font-medium">نام</th>
+                  <th className="px-3 py-2 text-left font-medium">قیمت اعلامی</th>
+                  <th className="px-3 py-2 text-left font-medium">قیمت مرجع بیمه</th>
+                  <th className="px-3 py-2 text-left font-medium">اختلاف٪</th></tr>}>
+              {cov!.price_conflicts.map((c, i) => (
+                <tr key={`${c.irc}-${i}`} className="hover:bg-slate-700/20">
+                  <td className="px-3 py-2 text-right text-slate-200">{c.name_fa}</td>
+                  <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(c.announced_price)}</td>
+                  <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(c.reference_price)}</td>
+                  <td className={`px-3 py-2 text-left tabular-nums font-semibold whitespace-nowrap ${gapTone(c.gap_pct)}`}>
+                    {c.gap_pct > 0 ? '+' : ''}{fa(c.gap_pct)}٪
+                  </td>
+                </tr>))}
+            </ScrollTable>
+          </Section>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <p className="text-xs text-slate-500">
+            مجموع اقلام کاتالوگ: <span className="tabular-nums text-slate-300">{fa(nfi!.counts.total)}</span>
+            {' '}· نمونهٔ حداکثر ۱۰۰ مورد در هر بخش
+          </p>
+          <Section title="بدون قیمت اعلامی" count={nfi!.counts.no_price} empty="همهٔ اقلام قیمت اعلامی دارند ✓">
+            <IrcNameTable items={nfi!.no_price} />
+          </Section>
+          <Section title="بدون نام ژنریک" count={nfi!.counts.no_generic} empty="همهٔ اقلام نام ژنریک دارند ✓">
+            <IrcNameTable items={nfi!.no_generic} />
+          </Section>
+          <Section title="بدون کشور سازنده" count={nfi!.counts.no_country} empty="همهٔ اقلام کشور سازنده دارند ✓">
+            <IrcNameTable items={nfi!.no_country} />
+          </Section>
+          <Section title="بدون کد ATC" count={nfi!.counts.no_atc} empty="همهٔ اقلام کد ATC دارند ✓">
+            <IrcNameTable items={nfi!.no_atc} />
+          </Section>
+        </div>
+      )}
     </div>
   )
 }

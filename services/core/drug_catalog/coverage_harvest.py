@@ -192,6 +192,35 @@ def compute_diff(staged: dict, current: dict[str, dict], *, insurer: str) -> dic
     }
 
 
+# ── data-quality: reference-vs-announced price divergence ────────────────────
+def price_conflict(irc, name_fa, announced, reference, threshold_pct):
+    """Flag an insurer reference price that diverges from the announced (NFI)
+    price by at least ``threshold_pct``.
+
+    Returns ``{irc, name_fa, announced_price:int, reference_price:int,
+    gap_pct:float}`` when ``abs((reference-announced)/announced*100) >=
+    threshold_pct``, else ``None``. ``gap_pct`` is signed and rounded to 1 dp.
+    Returns ``None`` when ``announced`` is falsy/<=0, ``reference`` is None, or
+    either value is non-numeric. Pure — no I/O."""
+    if not announced:
+        return None
+    try:
+        if reference is None:
+            return None
+        a = float(announced)
+        r = float(reference)
+    except (TypeError, ValueError):
+        return None
+    if a <= 0:
+        return None
+    gap = (r - a) / a * 100.0
+    if abs(gap) < float(threshold_pct):
+        return None
+    return {"irc": irc, "name_fa": name_fa,
+            "announced_price": int(a), "reference_price": int(r),
+            "gap_pct": round(gap, 1)}
+
+
 # ── probe (synchronous, one fetch, persists nothing) ─────────────────────────
 def probe_payload(url: str, *, settings: dict, fetch) -> dict:
     status, body, ct = fetch(url)

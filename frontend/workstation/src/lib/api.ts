@@ -168,6 +168,8 @@ export const pricingApi = {
   coverageApprove: (id: string, body: { remove_missing: boolean; accepted_review_ids: number[] }) =>
     apiClient.post(`/pricing/coverage/runs/${id}/approve`, body),
   coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
+  inconsistencies: (insurer: string, threshold: number) =>
+    apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────

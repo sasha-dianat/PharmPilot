@@ -529,6 +529,92 @@ async def reject_coverage_run(run_id: UUID,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@router.get("/inconsistencies")
+async def pricing_inconsistencies(
+        insurer: str = "salamat", price_threshold_pct: float = 25.0,
+        staff: Staff = Depends(require_permission("inventory:read")),
+        db: AsyncSession = Depends(get_db)):
+    """Read-only data-quality review surface. Surfaces, for one insurer:
+    coverage problems (the latest non-failed run's unmatched + uncertain-review
+    queues, plus catalog rows where the insurer reference price diverges from
+    the announced NFI price) and NFI catalog gaps (missing price/generic/
+    country/atc). No writes."""
+    from sqlalchemy import select, func
+    from shared.models.coverage import CoverageRun
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.coverage_harvest import price_conflict
+
+    # ── coverage: latest non-failed run's staged unmatched + review queues ──
+    run = (await db.execute(
+        select(CoverageRun)
+        .where(CoverageRun.insurer == insurer)
+        .where(CoverageRun.status.in_(("parsed", "approved")))
+        .order_by(CoverageRun.started_at.desc())
+        .limit(1))).scalar_one_or_none()
+    unmatched = list(run.unmatched or [])[:200] if run else []
+    review = list(run.review or []) if run else []
+
+    # ── coverage: reference-vs-announced price conflicts across the catalog ──
+    rows = (await db.execute(
+        select(DrugCatalogItem.irc, DrugCatalogItem.name_fa,
+               DrugCatalogItem.announced_price, DrugCatalogItem.coverage)
+        .where(DrugCatalogItem.coverage.has_key(insurer))
+        .where(DrugCatalogItem.announced_price.isnot(None))
+        .where(DrugCatalogItem.coverage[insurer].has_key("reference_price")))).all()
+    conflicts = []
+    for irc, name_fa, announced, coverage in rows:
+        entry = (coverage or {}).get(insurer) or {}
+        c = price_conflict(irc, name_fa, announced, entry.get("reference_price"),
+                           price_threshold_pct)
+        if c:
+            conflicts.append(c)
+    conflicts.sort(key=lambda c: abs(c["gap_pct"]), reverse=True)
+    conflicts = conflicts[:500]
+
+    # ── nfi: catalog completeness gaps ──
+    async def _count(cond):
+        return int((await db.execute(
+            select(func.count()).select_from(DrugCatalogItem).where(cond))).scalar() or 0)
+
+    async def _sample(cond):
+        rs = (await db.execute(
+            select(DrugCatalogItem.irc, DrugCatalogItem.name_fa)
+            .where(cond).limit(100))).all()
+        return [{"irc": i, "name_fa": n} for i, n in rs]
+
+    no_price_c = DrugCatalogItem.announced_price.is_(None)
+    no_generic_c = (DrugCatalogItem.generic_name.is_(None)) | (
+        func.btrim(DrugCatalogItem.generic_name) == "")
+    no_country_c = DrugCatalogItem.country.is_(None)
+    no_atc_c = DrugCatalogItem.atc.is_(None)
+    total = int((await db.execute(
+        select(func.count()).select_from(DrugCatalogItem))).scalar() or 0)
+
+    return {
+        "insurer": insurer,
+        "coverage": {
+            "counts": {"unmatched": len(unmatched), "review": len(review),
+                       "price_conflicts": len(conflicts)},
+            "unmatched": unmatched,
+            "review": review,
+            "price_conflicts": conflicts,
+        },
+        "nfi": {
+            "counts": {
+                "no_price": await _count(no_price_c),
+                "no_generic": await _count(no_generic_c),
+                "no_country": await _count(no_country_c),
+                "no_atc": await _count(no_atc_c),
+                "total": total,
+            },
+            "no_price": await _sample(no_price_c),
+            "no_generic": await _sample(no_generic_c),
+            "no_country": await _sample(no_country_c),
+            "no_atc": await _sample(no_atc_c),
+        },
+    }
+
+
 @router.post("/sync/run")
 async def price_sync_run(staff: Staff = Depends(require_permission("inventory:write")),
                          db: AsyncSession = Depends(get_db)):

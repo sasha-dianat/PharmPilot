@@ -182,6 +182,55 @@ def test_harvest_state_snapshot_has_lock_holder():
     assert snap["insurer"] == "tamin" and "lock_holder" in snap
 
 
+# ── price_conflict (reference-vs-announced divergence) ───────────────────────
+from decimal import Decimal
+from services.core.drug_catalog.coverage_harvest import price_conflict
+
+
+def test_price_conflict_below_threshold_is_none():
+    # 10% gap, threshold 25 → no conflict
+    assert price_conflict("1", "دارو", 100_000, 110_000, 25) is None
+
+
+def test_price_conflict_above_threshold_returns_signed_rounded_dict():
+    # reference above announced → positive gap
+    c = price_conflict("1", "دارو", 30_000, 40_000, 25)
+    assert c == {"irc": "1", "name_fa": "دارو", "announced_price": 30_000,
+                 "reference_price": 40_000, "gap_pct": 33.3}
+
+
+def test_price_conflict_negative_gap_when_reference_below_announced():
+    # reference below announced → signed negative gap; abs(-30) >= 25 → conflict
+    c = price_conflict("2", "دارو", 100_000, 70_000, 25)
+    assert c["gap_pct"] == -30.0
+    assert c["announced_price"] == 100_000 and c["reference_price"] == 70_000
+
+
+def test_price_conflict_at_threshold_boundary_is_conflict():
+    # exactly 25% → included (>=)
+    assert price_conflict("3", "د", 100_000, 125_000, 25)["gap_pct"] == 25.0
+
+
+def test_price_conflict_announced_zero_or_falsy_is_none():
+    assert price_conflict("4", "د", 0, 40_000, 25) is None
+    assert price_conflict("4", "د", None, 40_000, 25) is None
+    assert price_conflict("4", "د", Decimal("0"), 40_000, 25) is None
+
+
+def test_price_conflict_negative_announced_is_none():
+    assert price_conflict("5", "د", -100, 40_000, 25) is None
+
+
+def test_price_conflict_reference_none_is_none():
+    assert price_conflict("6", "د", 100_000, None, 25) is None
+
+
+def test_price_conflict_accepts_decimal_and_string_numerics():
+    c = price_conflict("7", "د", Decimal("30000"), "40000", 25)
+    assert c["announced_price"] == 30_000 and c["reference_price"] == 40_000
+    assert c["gap_pct"] == 33.3
+
+
 def test_read_table_strips_nul_bytes(tmp_path):
     # legacy .xls exports pad strings with NULs; Postgres JSONB rejects \x00
     p = tmp_path / "nul.csv"
