@@ -221,6 +221,78 @@ def price_conflict(irc, name_fa, announced, reference, threshold_pct):
             "gap_pct": round(gap, 1)}
 
 
+def _as_num(v):
+    """Coerce to float, tolerating Decimal/str; None/non-numeric → None."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def diagnose_discrepancy(catalog: dict, entry: dict, siblings: list) -> list[str]:
+    """Human Persian root-cause hints for one drug's coverage entry. Pure.
+
+    ``catalog``: {announced_price, strength, country, generic_name, atc, ...}
+    ``entry``:   the insurer coverage dict {reference_price, match_confidence,
+                 match_method, ...} or {} when the drug has no entry for the insurer.
+    ``siblings``:[{name_fa, strength, announced_price, reference_price}] — same
+                 generic, other products (reference_price is this insurer's ref).
+
+    Appends a hint per condition that holds; returns [] when everything is clean.
+    """
+    catalog = catalog or {}
+    entry = entry or {}
+    siblings = siblings or []
+    hints: list[str] = []
+
+    announced = _as_num(catalog.get("announced_price"))
+    reference = _as_num(entry.get("reference_price"))
+    strength = catalog.get("strength")
+
+    # ── price conflict: reference diverges from the announced NFI price ──
+    if announced and announced > 0 and reference is not None:
+        ratio = reference / announced
+        if ratio > 2 or ratio < 0.5:
+            ratio_s = round(ratio, 1)
+            ref_s = f"{int(reference):,}"
+            cross = None
+            for sib in siblings:
+                sib_ref = _as_num(sib.get("reference_price"))
+                if sib_ref is None or sib_ref <= 0:
+                    continue
+                if abs(sib_ref - reference) / reference <= 0.05 \
+                        and sib.get("strength") != strength:
+                    cross = sib
+                    break
+            conf = _as_num(entry.get("match_confidence"))
+            if cross is not None:
+                hints.append(
+                    f"مرجع بیمه با هم‌مولکول {cross.get('strength')} یکسان است "
+                    f"({ref_s}) ولی قدرت این قلم {strength} است — احتمال تطبیق بین‌قدرتی.")
+            elif conf is not None and conf < 0.75:
+                hints.append(
+                    f"تطبیق کم‌اطمینان ({entry.get('match_confidence')}، "
+                    f"{entry.get('match_method')}) — بازبینی شود.")
+            else:
+                ann_s = f"{int(announced):,}"
+                hints.append(
+                    f"مرجع بیمه {ref_s} در برابر قیمت اعلامی {ann_s} ({ratio_s}× ) "
+                    f"با تطبیق دقیق — احتمالاً قیمت اعلامی قدیمی است یا ردیف منبع خراب.")
+
+    # ── catalog completeness gaps ──
+    if catalog.get("country") is None:
+        hints.append("کشور نامشخص — نیازمند خزش کامل NFI.")
+    gen = catalog.get("generic_name")
+    if gen is None or (isinstance(gen, str) and gen.strip() == ""):
+        hints.append("ژنریک نامشخص.")
+    if catalog.get("atc") is None:
+        hints.append("کد ATC موجود نیست.")
+
+    return hints
+
+
 # ── probe (synchronous, one fetch, persists nothing) ─────────────────────────
 def probe_payload(url: str, *, settings: dict, fetch) -> dict:
     status, body, ct = fetch(url)

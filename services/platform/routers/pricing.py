@@ -615,6 +615,89 @@ async def pricing_inconsistencies(
     }
 
 
+@router.get("/inconsistencies/drug/{irc}")
+async def inconsistency_drug_detail(
+        irc: str, insurer: str = "salamat",
+        staff: Staff = Depends(require_permission("inventory:read")),
+        db: AsyncSession = Depends(get_db)):
+    """Read-only per-drug workbench detail: the NFI catalog record joined to ALL
+    insurers' coverage entries + same-generic siblings + Persian root-cause hints
+    for the selected insurer's entry. Diagnoses price conflicts (e.g. a reference
+    price inherited from a different-strength sibling). Selects only, no writes.
+    Unknown IRC → 200 with catalog null and empty coverage/siblings/analysis."""
+    from sqlalchemy import select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.coverage_harvest import diagnose_discrepancy
+
+    def _int(v):
+        return int(v) if v is not None else None
+
+    item = (await db.execute(
+        select(DrugCatalogItem).where(DrugCatalogItem.irc == irc))).scalar_one_or_none()
+    if item is None:
+        return {"irc": irc, "catalog": None, "coverage": {},
+                "siblings": [], "analysis": []}
+
+    catalog = {
+        "irc": item.irc,
+        "name_fa": item.name_fa,
+        "name_en": item.name_en,
+        "generic_name": item.generic_name,
+        "ingredient_key": item.ingredient_key,
+        "strength": item.strength,
+        "dosage_form": item.dosage_form,
+        "brand_name": item.brand_name,
+        "manufacturer": item.manufacturer,
+        "country": item.country,
+        "atc": item.atc,
+        "announced_price": _int(item.announced_price),
+        "package_count": item.package_count,
+        "gtin": item.gtin,
+        "source": item.source,
+    }
+
+    # ── coverage: every insurer entry present on this drug, normalized ──
+    coverage = {}
+    for ins, entry in (item.coverage or {}).items():
+        entry = entry or {}
+        coverage[ins] = {
+            "covered": entry.get("covered"),
+            "share_pct": entry.get("share_pct"),
+            "reference_price": entry.get("reference_price"),
+            "ceiling": entry.get("ceiling"),
+            "inpatient": entry.get("inpatient"),
+            "match_confidence": entry.get("match_confidence"),
+            "match_method": entry.get("match_method"),
+        }
+
+    # ── siblings: same generic, other IRCs — reveals cross-strength mislinks ──
+    siblings = []
+    if item.generic_name:
+        sib_rows = (await db.execute(
+            select(DrugCatalogItem.irc, DrugCatalogItem.name_fa,
+                   DrugCatalogItem.strength, DrugCatalogItem.dosage_form,
+                   DrugCatalogItem.announced_price, DrugCatalogItem.coverage)
+            .where(DrugCatalogItem.generic_name == item.generic_name)
+            .where(DrugCatalogItem.irc != item.irc)
+            .order_by(DrugCatalogItem.announced_price.desc().nullslast())
+            .limit(25))).all()
+        for s_irc, s_name, s_strength, s_form, s_ann, s_cov in sib_rows:
+            s_ref = ((s_cov or {}).get(insurer) or {}).get("reference_price")
+            siblings.append({
+                "irc": s_irc,
+                "name_fa": s_name,
+                "strength": s_strength,
+                "dosage_form": s_form,
+                "announced_price": _int(s_ann),
+                "reference_price": _int(s_ref),
+            })
+
+    analysis = diagnose_discrepancy(catalog, coverage.get(insurer) or {}, siblings)
+
+    return {"irc": irc, "catalog": catalog, "coverage": coverage,
+            "siblings": siblings, "analysis": analysis}
+
+
 @router.post("/sync/run")
 async def price_sync_run(staff: Staff = Depends(require_permission("inventory:write")),
                          db: AsyncSession = Depends(get_db)):

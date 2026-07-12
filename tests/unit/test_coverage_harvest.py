@@ -239,3 +239,64 @@ def test_read_table_strips_nul_bytes(tmp_path):
     rows = read_table(p)
     assert rows and "\x00" not in rows[0]["drug_name"]
     assert all("\x00" not in v for r in rows for v in r.values())
+
+
+# ── diagnose_discrepancy (Persian root-cause hints) ─────────────────────────
+from services.core.drug_catalog.coverage_harvest import diagnose_discrepancy
+
+
+def test_diagnose_cross_strength_sibling():
+    # octreotide 50mcg: reference 66M inherited from the 30mg sibling → cross-strength
+    catalog = {"announced_price": 1_000_000, "strength": "50mcg/ml",
+               "country": "ایران", "generic_name": "octreotide", "atc": "H01CB02"}
+    entry = {"reference_price": 66_000_000, "match_confidence": 1.0,
+             "match_method": "exact"}
+    siblings = [{"name_fa": "ساندوستاتین لار", "strength": "30mg",
+                 "announced_price": 60_000_000, "reference_price": 66_000_000}]
+    hints = diagnose_discrepancy(catalog, entry, siblings)
+    assert any("بین‌قدرتی" in h for h in hints)       # names the cross-strength cause
+    assert any("30mg" in h for h in hints)             # names the sibling strength
+    assert not any("قیمت اعلامی قدیمی" in h for h in hints)  # not the stale hint
+
+
+def test_diagnose_stale_price_exact_match_no_matching_sibling():
+    # big ratio, exact/high-confidence match, no sibling with a matching reference
+    catalog = {"announced_price": 1_000_000, "strength": "50mcg/ml",
+               "country": "ایران", "generic_name": "octreotide", "atc": "H01CB02"}
+    entry = {"reference_price": 66_000_000, "match_confidence": 1.0,
+             "match_method": "exact"}
+    siblings = [{"name_fa": "قلم دیگر", "strength": "100mcg",
+                 "announced_price": 2_000_000, "reference_price": 2_100_000}]
+    hints = diagnose_discrepancy(catalog, entry, siblings)
+    assert any("قیمت اعلامی قدیمی" in h for h in hints)
+    assert any("66,000,000" in h for h in hints)       # money formatted with commas
+    assert not any("بین‌قدرتی" in h for h in hints)
+
+
+def test_diagnose_low_confidence_match():
+    # conflict with a low-confidence match and no cross-strength sibling
+    catalog = {"announced_price": 1_000_000, "strength": "50mcg/ml",
+               "country": "ایران", "generic_name": "octreotide", "atc": "H01CB02"}
+    entry = {"reference_price": 66_000_000, "match_confidence": 0.6,
+             "match_method": "fuzzy"}
+    hints = diagnose_discrepancy(catalog, entry, [])
+    assert any("کم‌اطمینان" in h and "0.6" in h and "fuzzy" in h for h in hints)
+
+
+def test_diagnose_clean_entry_returns_empty():
+    catalog = {"announced_price": 1_000_000, "strength": "500mg",
+               "country": "ایران", "generic_name": "metformin", "atc": "A10BA02"}
+    entry = {"reference_price": 950_000, "match_confidence": 1.0,
+             "match_method": "exact"}
+    assert diagnose_discrepancy(catalog, entry, []) == []
+
+
+def test_diagnose_catalog_gaps_appended():
+    # ratio clean, but missing country/generic/atc each add a hint
+    catalog = {"announced_price": 1_000_000, "strength": "500mg",
+               "country": None, "generic_name": "  ", "atc": None}
+    entry = {"reference_price": 950_000}
+    hints = diagnose_discrepancy(catalog, entry, [])
+    assert any("کشور نامشخص" in h for h in hints)
+    assert any("ژنریک نامشخص" in h for h in hints)
+    assert any("کد ATC" in h for h in hints)
