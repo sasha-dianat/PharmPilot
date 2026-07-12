@@ -155,6 +155,26 @@ _FORM_WORDS = {
 }
 
 
+_UNIT_MG = {"µg": 0.001, "ug": 0.001, "mcg": 0.001, "microgram": 0.001,
+            "milligram": 1.0, "mg": 1.0, "gram": 1000.0, "gr": 1000.0, "g": 1000.0}
+_MG_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(µg|ug|mcg|microgram|milligram|mg|gram|gr|g)\b", re.I)
+
+
+def _strength_mg(text) -> set[float]:
+    """Milligram-equivalents of every '<num> <mass-unit>' in text (mcg/g folded
+    to mg), so 0.05 mg == 50 microgram compare EQUAL. IU/mL/% carry no mass unit
+    and yield an empty set — those drugs keep the legacy raw-token behavior."""
+    out: set[float] = set()
+    for num, unit in _MG_RE.findall(str(text).translate(_DIGIT_FIX)):
+        out.add(round(float(num) * _UNIT_MG[unit.lower()], 6))
+    return out
+
+
+def _mg_agree(a: set[float], b: set[float], tol: float = 0.01) -> bool:
+    """Any mg-dose in `a` within 1% of any in `b` (tolerates float/rounding)."""
+    return any(abs(x - y) <= tol * max(x, y, 1e-9) for x in a for y in b)
+
+
 def _row_signals(text: str) -> tuple[str, set[str], str | None, str]:
     """(canonical ingredient, strength digit-tokens, form, persian part)."""
     t = str(text)
@@ -178,15 +198,16 @@ def _row_signals(text: str) -> tuple[str, set[str], str | None, str]:
     return canon, strengths, form, fa
 
 
-def _cat_signals(rec: CatalogRecord) -> tuple[str, set[str], str | None]:
+def _cat_signals(rec: CatalogRecord) -> tuple[str, set[str], str | None, set[float]]:
     canon = canonical_ingredient(normalize(rec.generic_name))
     strengths = set(re.findall(r"\d+(?:\.\d+)?", str(rec.strength or "")))
+    mg = _strength_mg(rec.strength or "")
     form = None
     for tok in re.findall(r"[A-Za-z]+", str(rec.dosage_form or "").lower()):
         if tok in _FORM_WORDS:
             form = _FORM_WORDS[tok]
             break
-    return canon, strengths, form
+    return canon, strengths, form, mg
 
 
 @dataclass
@@ -217,7 +238,7 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult
     latin_block: dict[str, list] = {}
     fa_block: dict[str, list] = {}
     for item in cat_sig:
-        rec, c_canon, _c_str, _c_form = item
+        rec, c_canon, _c_str, _c_form, _c_mg = item
         if c_canon:
             latin_block.setdefault(c_canon[:3], []).append(item)
         if rec.name_fa:
@@ -239,21 +260,31 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult
             out.append(LinkResult(row, None, 0.0, "none"))
             continue
         canon, strengths, form, fa = _row_signals(name)
+        row_mg = _strength_mg(name)
 
         best: tuple[float, CatalogRecord | None, str] = (0.0, None, "none")
-        for rec, c_canon, c_str, c_form in (latin_block.get(canon[:3], []) if canon else []):
+        for rec, c_canon, c_str, c_form, c_mg in (latin_block.get(canon[:3], []) if canon else []):
             name_sim = SequenceMatcher(None, canon, c_canon).ratio()
             has_extra = bool(strengths) or bool(form)
             if has_extra:
-                s_score = 1.0 if (strengths and strengths & c_str) else 0.0
+                # strength agreement: mg-normalized (0.05 mg == 50 microgram),
+                # falling back to raw digit-token overlap for unit-less strengths
+                s_match = _mg_agree(row_mg, c_mg) or bool(strengths and c_str and (strengths & c_str))
+                s_score = 1.0 if s_match else 0.0
                 f_score = 1.0 if (form and form == c_form) else 0.0
                 score = 0.6 * name_sim + 0.25 * s_score + 0.15 * f_score
+                # DEFINITE strength conflict (both give mg doses, none agree) ⇒ a
+                # different product of the same generic; hold below the auto-apply
+                # line so it goes to human review, never silently spreading a
+                # wrong-strength reference price (e.g. octreotide 30mg → 50mcg).
+                if row_mg and c_mg and not _mg_agree(row_mg, c_mg):
+                    score = min(score, 0.6)
             else:
                 score = name_sim
             if score > best[0]:
                 best = (score, rec, "ingredient")
         if fa:                                          # persian trade-name path
-            for rec, _c_canon, _c_str, _c_form in fa_block.get(fa[:2], []):
+            for rec, _c_canon, _c_str, _c_form, _c_mg in fa_block.get(fa[:2], []):
                 fa_sim = SequenceMatcher(None, fa, rec.name_fa).ratio()
                 if fa_sim > best[0]:
                     best = (fa_sim, rec, "persian_name")

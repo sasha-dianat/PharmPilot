@@ -174,6 +174,44 @@ def test_blocking_scales_linearly_not_quadratically():
     assert sum(1 for l in links if l.matched) >= 900   # same-prefix rows still link
 
 
+def test_strength_mg_normalizes_units():
+    # 0.05 mg and 50 microgram are the SAME dose in different units
+    from services.core.drug_catalog.coverage_import import _strength_mg, _mg_agree
+    assert _strength_mg("OCTREOTIDE 0.05 mg") == {0.05}
+    assert _strength_mg("50 microgram") == {0.05}
+    assert _strength_mg("OCTREOTIDE 30MG") == {30.0}
+    assert _strength_mg("6 mg/1mL") == {6.0}          # concentration → the mg part
+    assert _strength_mg("500IU") == set()             # non-mass units ignored
+    assert _mg_agree({0.05}, {0.05}) and not _mg_agree({30.0}, {0.05})
+
+
+# same-generic products of DIFFERENT strength must not silently share coverage
+_OCTREO = [
+    _cat("O50", "octreotide", "50 microgram", "INJECTION", 32600, "اکتروتاید ۵۰"),
+    _cat("O30", "octreotide", "30 mg", "INJECTION", 66000000, "اکتروتاید ۳۰"),
+]
+
+
+def test_cross_strength_row_not_autoapplied():
+    # a formulary row for octreotide 30MG must NOT auto-apply onto the 50mcg
+    # product; with no 30mg-token confusion it links to O30, and even if it
+    # reaches O50 the confidence stays below the 0.75 auto-apply line.
+    links = link_rows([{"drug_name": "OCTREOTIDE 30 mg", "reference_price": "66000000"}], _OCTREO)
+    l = links[0]
+    assert l.record is not None and l.record.irc == "O30"     # picks the right strength
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.75)
+    # the cheap 50mcg product must NOT receive the 66M reference
+    assert "O50" not in cov.applied
+
+
+def test_microgram_milligram_equivalent_still_matches():
+    # 0.05 mg row ↔ 50 microgram catalog: same dose, must match with the
+    # strength bonus (not demoted by the conflict rule)
+    links = link_rows([{"drug_name": "OCTREOTIDE 0.05 mg"}], _OCTREO)
+    l = links[0]
+    assert l.matched and l.record.irc == "O50" and l.confidence >= 0.8
+
+
 def test_real_salamat_headers_map_price_not_brand_code():
     # the REAL salamat .xls headers (post read_table normalization): the Arabic-yeh
     # 'قيمت' column must claim reference_price via the folded alias, so the numeric
