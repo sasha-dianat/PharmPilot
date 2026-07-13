@@ -170,6 +170,8 @@ export const pricingApi = {
   coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
   inconsistencies: (insurer: string, threshold: number) =>
     apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
+  inconsistencyDrug: (irc: string, insurer: string) =>
+    apiClient.get(`/pricing/inconsistencies/drug/${irc}`, { params: { insurer } }),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
  * global proxy lock, staged runs with a diff vs live coverage, and preview→اعمال.
  * The one-shot upload card (instant apply) also lives here, moved from DrugCatalogAdmin.
  */
-import { useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { pricingApi, apiErrorText } from '../lib/api'
 
@@ -410,19 +410,6 @@ function Empty({ text = 'هیچ ناسازگاری‌ای یافت نشد ✓' }
   )
 }
 
-function Section({ title, count, children, empty }:
-  { title: string; count: number; children: ReactNode; empty?: string }) {
-  return (
-    <section className="space-y-2">
-      <div className="flex items-center gap-2">
-        <h4 className="text-sm font-semibold text-slate-200">{title}</h4>
-        <Badge n={count} />
-      </div>
-      {count > 0 ? children : <Empty text={empty} />}
-    </section>
-  )
-}
-
 function ScrollTable({ head, children }: { head: ReactNode; children: ReactNode }) {
   return (
     <div className="max-h-72 overflow-y-auto rounded-md border border-slate-700/60">
@@ -434,25 +421,62 @@ function ScrollTable({ head, children }: { head: ReactNode; children: ReactNode 
   )
 }
 
-// generic IRC | نام table (used by every NFI section)
-function IrcNameTable({ items }: { items: { irc: string; name_fa: string }[] }) {
-  return (
-    <ScrollTable head={
-      <tr><th className="px-3 py-2 text-right font-medium">IRC</th>
-          <th className="px-3 py-2 text-right font-medium">نام</th></tr>}>
-      {items.map((it, i) => (
-        <tr key={`${it.irc}-${i}`} className="hover:bg-slate-700/20">
-          <td className="px-3 py-2 text-right tabular-nums font-mono text-slate-400 whitespace-nowrap">{it.irc}</td>
-          <td className="px-3 py-2 text-right text-slate-200">{it.name_fa}</td>
-        </tr>))}
-    </ScrollTable>
-  )
+// ── Discrepancy Workbench ────────────────────────────────────────────────────
+// Per-drug detail from GET /pricing/inconsistencies/drug/{irc}?insurer=
+interface DrugDetail {
+  irc: string
+  catalog: {
+    irc: string; name_fa: string | null; name_en: string | null
+    generic_name: string | null; ingredient_key: string | null
+    strength: string | null; dosage_form: string | null; brand_name: string | null
+    manufacturer: string | null; country: string | null; atc: string | null
+    announced_price: number | null; package_count: number | null
+    gtin: string | null; source: string | null
+  } | null
+  coverage: Record<string, {
+    covered: boolean | null; share_pct: number | null; reference_price: number | null
+    ceiling: number | null; inpatient: boolean | null
+    match_confidence: number | null; match_method: string | null
+  }>
+  siblings: { irc: string; name_fa: string; strength: string | null
+              dosage_form: string | null; announced_price: number | null
+              reference_price: number | null }[]
+  analysis: string[]
+}
+
+// The six drug-anchored issue types (order = chip order). label + list badge tone.
+const ISSUE_TYPES = [
+  ['price', 'مغایرت قیمت'], ['review', 'نیازمند بازبینی'], ['no_price', 'بدون قیمت'],
+  ['no_generic', 'بدون ژنریک'], ['no_country', 'بدون کشور'], ['no_atc', 'بدون ATC'],
+] as const
+type IssueType = (typeof ISSUE_TYPES)[number][0]
+const ISSUE_LABEL = Object.fromEntries(ISSUE_TYPES) as Record<IssueType, string>
+
+interface FlaggedDrug {
+  irc: string; name: string; issues: Set<IssueType>
+  announced: number | null; reference: number | null; gap: number | null
+}
+
+const gapTone = (g: number | null) =>
+  g == null ? 'text-slate-400'
+  : Math.abs(g) >= 50 ? 'text-red-300' : Math.abs(g) >= 25 ? 'text-amber-300' : 'text-slate-300'
+
+// color-graded issue badge (price red/amber by |gap|, others slate)
+function issueTone(issue: IssueType, gap: number | null): string {
+  if (issue === 'price') {
+    return Math.abs(gap ?? 0) >= 50
+      ? 'bg-red-500/20 text-red-300 border-red-500/40'
+      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+  }
+  return 'bg-slate-700/50 text-slate-300 border-slate-600/50'
 }
 
 function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) => void }) {
   const [insurer, setInsurer] = useState('salamat')
   const [threshold, setThreshold] = useState(25)
-  const [tab, setTab] = useState<'coverage' | 'nfi'>('coverage')
+  const [search, setSearch] = useState('')
+  const [activeChips, setActiveChips] = useState<Set<IssueType>>(new Set())
+  const [selectedIrc, setSelectedIrc] = useState<string | null>(null)
 
   const { data, isFetching, isError, error } = useQuery<IncData>({
     queryKey: ['inconsistencies', insurer, threshold],
@@ -460,15 +484,54 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
   })
   if (isError) onError(error, 'دریافت ناسازگاری‌ها ناموفق بود.')
 
-  const cov = data?.coverage
-  const nfi = data?.nfi
-  const covTotal = cov ? cov.counts.unmatched + cov.counts.review + cov.counts.price_conflicts : 0
-  const nfiTotal = nfi ? nfi.counts.no_price + nfi.counts.no_generic + nfi.counts.no_country + nfi.counts.no_atc : 0
-  const gapTone = (g: number) =>
-    Math.abs(g) >= 50 ? 'text-red-300' : Math.abs(g) >= 25 ? 'text-amber-300' : 'text-slate-300'
+  // ── client-side JOIN: one flagged-drug list keyed by irc, unioning every
+  //    drug-anchored issue (price_conflicts, review, and the four nfi.* lists).
+  const flagged = useMemo<FlaggedDrug[]>(() => {
+    const m = new Map<string, FlaggedDrug>()
+    const at = (irc: string, name?: string | null) => {
+      let f = m.get(irc)
+      if (!f) { f = { irc, name: name || irc, issues: new Set(), announced: null, reference: null, gap: null }; m.set(irc, f) }
+      else if (name && (f.name === f.irc)) f.name = name
+      return f
+    }
+    const cov = data?.coverage, nfi = data?.nfi
+    cov?.price_conflicts.forEach(c => {
+      const f = at(c.irc, c.name_fa); f.issues.add('price')
+      f.announced = c.announced_price; f.reference = c.reference_price; f.gap = c.gap_pct
+    })
+    cov?.review.forEach((r: any) => { if (r?.irc) at(String(r.irc), r.name).issues.add('review') })
+    nfi?.no_price.forEach(x => at(x.irc, x.name_fa).issues.add('no_price'))
+    nfi?.no_generic.forEach(x => at(x.irc, x.name_fa).issues.add('no_generic'))
+    nfi?.no_country.forEach(x => at(x.irc, x.name_fa).issues.add('no_country'))
+    nfi?.no_atc.forEach(x => at(x.irc, x.name_fa).issues.add('no_atc'))
+    return [...m.values()]
+  }, [data])
+
+  const chipCounts = useMemo(() => {
+    const c = { price: 0, review: 0, no_price: 0, no_generic: 0, no_country: 0, no_atc: 0 } as Record<IssueType, number>
+    flagged.forEach(f => f.issues.forEach(i => { c[i] += 1 }))
+    return c
+  }, [flagged])
+
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const chips = [...activeChips]
+    return flagged
+      .filter(f => {
+        if (chips.length && !chips.every(c => f.issues.has(c))) return false          // AND across chips
+        if (q && !(f.irc.includes(q) || f.name.toLowerCase().includes(q))) return false
+        return true
+      })
+      .sort((a, b) => (Math.abs(b.gap ?? -1) - Math.abs(a.gap ?? -1)) || (b.issues.size - a.issues.size))
+  }, [flagged, search, activeChips])
+
+  const toggleChip = (k: IssueType) =>
+    setActiveChips(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n })
+
+  const unmatched: any[] = data?.coverage.unmatched ?? []
 
   return (
-    <div className="bg-slate-800/50 border border-indigo-500/30 rounded-lg p-4 space-y-3">
+    <div className="bg-slate-800/50 border border-indigo-500/30 rounded-lg p-4 space-y-4" dir="rtl">
       {/* controls */}
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-1.5 text-sm text-slate-400">بیمه‌گر
@@ -482,88 +545,230 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
             onChange={e => setThreshold(Math.max(0, +e.target.value))}
             className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-100 tabular-nums" />
         </label>
+        <input type="search" value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="جست‌وجو (IRC یا نام)…"
+          className="flex-1 min-w-[12rem] bg-slate-900 border border-slate-600 rounded px-3 py-1 text-sm text-slate-100 placeholder:text-slate-500" />
         {isFetching && <span className="text-xs text-indigo-300">در حال بارگذاری…</span>}
       </div>
 
-      {/* tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-700">
-        {([['coverage', 'پوشش بیمه', covTotal], ['nfi', 'کاتالوگ NFI', nfiTotal]] as const).map(([key, label, n]) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`flex items-center gap-2 px-3 py-2 text-sm rounded-t-md border-b-2 -mb-px transition-colors ${
-              tab === key ? 'border-indigo-400 text-slate-100' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
-            {label} <Badge n={n} active={tab === key} />
-          </button>))}
+      {/* issue-type filter chips (AND across active) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {ISSUE_TYPES.map(([key, label]) => {
+          const active = activeChips.has(key)
+          return (
+            <button key={key} onClick={() => toggleChip(key)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                active ? 'bg-indigo-600 border-indigo-500 text-white'
+                       : 'bg-slate-900/40 border-slate-600 text-slate-300 hover:border-slate-400'}`}>
+              {label}<span className="tabular-nums opacity-80">{fa(chipCounts[key])}</span>
+            </button>)
+        })}
+        {activeChips.size > 0 && (
+          <button onClick={() => setActiveChips(new Set())}
+            className="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2">پاک‌کردن فیلترها</button>)}
       </div>
 
-      {!data ? <p className="text-sm text-slate-500 py-4">در حال بارگذاری…</p> : tab === 'coverage' ? (
-        <div className="space-y-5">
-          <Section title="نامنطبق (بدون تطبیق در کاتالوگ)" count={cov!.counts.unmatched}
-                   empty="همهٔ ردیف‌های دارونامه تطبیق داده شدند ✓">
-            <ScrollTable head={
+      {/* summary tiles */}
+      <div className="flex flex-wrap gap-3">
+        <div className="flex items-center gap-2 bg-slate-900/40 border border-slate-700 rounded-md px-3 py-2">
+          <span className="text-xs text-slate-400">اقلام پرچم‌دار</span>
+          <span className="text-lg font-semibold tabular-nums text-slate-100">{fa(flagged.length)}</span>
+        </div>
+        <div className="flex items-center gap-2 bg-slate-900/40 border border-slate-700 rounded-md px-3 py-2">
+          <span className="text-xs text-slate-400">نامنطبق (در کاتالوگ یافت نشد)</span>
+          <span className="text-lg font-semibold tabular-nums text-slate-100">{fa(data?.coverage.counts.unmatched ?? 0)}</span>
+        </div>
+      </div>
+
+      {/* workbench: unified list (right/start) + detail drawer (left/end on lg) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {/* unified flagged-drug list */}
+        <div>
+          {!data ? <p className="text-sm text-slate-500 py-4">در حال بارگذاری…</p>
+            : shown.length === 0 ? (
+              <Empty text={flagged.length === 0 ? 'هیچ قلم پرچم‌داری یافت نشد ✓' : 'موردی با این فیلترها یافت نشد.'} />
+            ) : (
+              <ScrollTable head={
+                <tr><th className="px-3 py-2 text-right font-medium">IRC</th>
+                    <th className="px-3 py-2 text-right font-medium">نام</th>
+                    <th className="px-3 py-2 text-right font-medium">نشان‌ها</th>
+                    <th className="px-3 py-2 text-left font-medium">اعلامی</th>
+                    <th className="px-3 py-2 text-left font-medium">مرجع</th>
+                    <th className="px-3 py-2 text-left font-medium">اختلاف٪</th></tr>}>
+                {shown.map(f => (
+                  <tr key={f.irc} onClick={() => setSelectedIrc(f.irc)}
+                    className={`cursor-pointer transition-colors ${
+                      selectedIrc === f.irc ? 'bg-indigo-500/15' : 'hover:bg-slate-700/25'}`}>
+                    <td className="px-3 py-2 text-right tabular-nums font-mono text-slate-400 whitespace-nowrap">{f.irc}</td>
+                    <td className="px-3 py-2 text-right text-slate-200">{f.name}</td>
+                    <td className="px-3 py-2 text-right">
+                      <span className="flex flex-wrap gap-1 justify-end">
+                        {[...f.issues].map(iss => (
+                          <span key={iss} className={`text-[10px] px-1.5 py-0.5 rounded border ${issueTone(iss, f.gap)}`}>
+                            {ISSUE_LABEL[iss]}</span>))}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(f.announced)}</td>
+                    <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(f.reference)}</td>
+                    <td className={`px-3 py-2 text-left tabular-nums font-semibold whitespace-nowrap ${gapTone(f.gap)}`}>
+                      {f.gap == null ? '—' : `${f.gap > 0 ? '+' : ''}${fa(f.gap)}٪`}
+                    </td>
+                  </tr>))}
+              </ScrollTable>)}
+        </div>
+
+        {/* detail drawer */}
+        <div className="lg:sticky lg:top-2">
+          {selectedIrc
+            ? <DrugDrawer irc={selectedIrc} insurer={insurer} onClose={() => setSelectedIrc(null)} />
+            : <div className="text-sm text-slate-500 bg-slate-900/30 border border-dashed border-slate-700 rounded-md px-4 py-8 text-center">
+                یک قلم را از فهرست انتخاب کنید تا کاتالوگ، پوشش بیمه، هم‌مولکول‌ها و تحلیل آن نمایش داده شود.
+              </div>}
+        </div>
+      </div>
+
+      {/* unmatched — no IRC, cannot join; separate section */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-semibold text-slate-200">در کاتالوگ یافت نشد (نامنطبق)</h4>
+          <Badge n={unmatched.length} />
+        </div>
+        {unmatched.length === 0
+          ? <Empty text="همهٔ ردیف‌های دارونامه تطبیق داده شدند ✓" />
+          : <ScrollTable head={
               <tr><th className="px-3 py-2 text-right font-medium">نام در دارونامه</th>
                   <th className="px-3 py-2 text-left font-medium">اطمینان</th></tr>}>
-              {cov!.unmatched.map((it, i) => (
+              {unmatched.map((it, i) => (
                 <tr key={i} className="hover:bg-slate-700/20">
                   <td className="px-3 py-2 text-right text-slate-200">{String(it.row?.drug_name ?? it.row?.name ?? '—')}</td>
                   <td className="px-3 py-2 text-left tabular-nums text-slate-400">{fa(it.confidence)}</td>
                 </tr>))}
-            </ScrollTable>
-          </Section>
+            </ScrollTable>}
+      </section>
+    </div>
+  )
+}
 
-          <Section title="نیازمند بازبینی (تطبیق کم‌اطمینان)" count={cov!.counts.review}
-                   empty="موردی برای بازبینی نیست ✓">
-            <ScrollTable head={
-              <tr><th className="px-3 py-2 text-right font-medium">کاندیدای کاتالوگ</th>
-                  <th className="px-3 py-2 text-right font-medium">نام در دارونامه</th>
-                  <th className="px-3 py-2 text-left font-medium">اطمینان</th></tr>}>
-              {cov!.review.map((it, i) => (
-                <tr key={it.id ?? i} className="hover:bg-slate-700/20">
-                  <td className="px-3 py-2 text-right text-slate-200">{String(it.name ?? '—')}</td>
-                  <td className="px-3 py-2 text-right text-slate-400">{String(it.row?.drug_name ?? '—')}</td>
-                  <td className="px-3 py-2 text-left tabular-nums text-slate-400">{fa(it.confidence)}</td>
-                </tr>))}
-            </ScrollTable>
-          </Section>
+// Per-drug detail drawer: catalog + all-insurer coverage + same-generic siblings + analysis.
+function DrugDrawer({ irc, insurer, onClose }: { irc: string; insurer: string; onClose: () => void }) {
+  const { data: detail, isFetching, isError } = useQuery<DrugDetail>({
+    queryKey: ['incons-drug', irc, insurer],
+    queryFn: () => pricingApi.inconsistencyDrug(irc, insurer).then(r => r.data),
+  })
 
-          <Section title="مغایرت قیمت (قیمت مرجع بیمه در برابر قیمت اعلامی)" count={cov!.counts.price_conflicts}
-                   empty="هیچ مغایرت قیمتی بالاتر از آستانه یافت نشد ✓">
-            <ScrollTable head={
-              <tr><th className="px-3 py-2 text-right font-medium">نام</th>
-                  <th className="px-3 py-2 text-left font-medium">قیمت اعلامی</th>
-                  <th className="px-3 py-2 text-left font-medium">قیمت مرجع بیمه</th>
-                  <th className="px-3 py-2 text-left font-medium">اختلاف٪</th></tr>}>
-              {cov!.price_conflicts.map((c, i) => (
-                <tr key={`${c.irc}-${i}`} className="hover:bg-slate-700/20">
-                  <td className="px-3 py-2 text-right text-slate-200">{c.name_fa}</td>
-                  <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(c.announced_price)}</td>
-                  <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(c.reference_price)}</td>
-                  <td className={`px-3 py-2 text-left tabular-nums font-semibold whitespace-nowrap ${gapTone(c.gap_pct)}`}>
-                    {c.gap_pct > 0 ? '+' : ''}{fa(c.gap_pct)}٪
-                  </td>
-                </tr>))}
-            </ScrollTable>
-          </Section>
+  const cat = detail?.catalog
+  const selRef = detail?.coverage?.[insurer]?.reference_price ?? null
+  const selStrength = cat?.strength ?? null
+  // cross-strength smoking gun: sibling sharing this insurer's reference but a different strength
+  const isCross = (s: DrugDetail['siblings'][number]) =>
+    s.reference_price != null && selRef != null && s.reference_price === selRef
+    && (s.strength ?? '') !== (selStrength ?? '')
+
+  const insurerLabel = (k: string) => INSURERS.find(([v]) => v === k)?.[1] ?? k
+  const catField = (label: string, val: unknown) => {
+    const empty = val == null || val === ''
+    return (
+      <div className="flex justify-between gap-3 py-0.5">
+        <span className="text-slate-500 shrink-0">{label}</span>
+        <span className={`text-left ${empty ? 'text-amber-300' : 'text-slate-200'}`}>{empty ? '—' : String(val)}</span>
+      </div>)
+  }
+
+  return (
+    <div className="bg-slate-900/50 border border-slate-700 rounded-lg p-4 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-100">{cat?.name_fa || detail?.irc || irc}</p>
+          <p className="text-xs font-mono tabular-nums text-slate-500">{irc}</p>
         </div>
-      ) : (
-        <div className="space-y-5">
-          <p className="text-xs text-slate-500">
-            مجموع اقلام کاتالوگ: <span className="tabular-nums text-slate-300">{fa(nfi!.counts.total)}</span>
-            {' '}· نمونهٔ حداکثر ۱۰۰ مورد در هر بخش
-          </p>
-          <Section title="بدون قیمت اعلامی" count={nfi!.counts.no_price} empty="همهٔ اقلام قیمت اعلامی دارند ✓">
-            <IrcNameTable items={nfi!.no_price} />
-          </Section>
-          <Section title="بدون نام ژنریک" count={nfi!.counts.no_generic} empty="همهٔ اقلام نام ژنریک دارند ✓">
-            <IrcNameTable items={nfi!.no_generic} />
-          </Section>
-          <Section title="بدون کشور سازنده" count={nfi!.counts.no_country} empty="همهٔ اقلام کشور سازنده دارند ✓">
-            <IrcNameTable items={nfi!.no_country} />
-          </Section>
-          <Section title="بدون کد ATC" count={nfi!.counts.no_atc} empty="همهٔ اقلام کد ATC دارند ✓">
-            <IrcNameTable items={nfi!.no_atc} />
-          </Section>
-        </div>
-      )}
+        <button onClick={onClose}
+          className="text-xs text-slate-400 hover:text-slate-100 border border-slate-600 rounded px-2 py-1">بستن ✕</button>
+      </div>
+
+      {isFetching && !detail ? <p className="text-sm text-slate-500 py-4">در حال بارگذاری…</p>
+        : isError ? <Empty text="دریافت جزئیات قلم ناموفق بود." />
+        : !detail ? null : (
+        <div className="space-y-4">
+          {/* کاتالوگ NFI */}
+          <section className="space-y-1.5">
+            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">کاتالوگ NFI</h5>
+            {!cat ? <Empty text="این IRC در کاتالوگ NFI موجود نیست." />
+              : <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 text-sm bg-slate-800/40 rounded-md p-3">
+                  {catField('نام لاتین', cat.name_en)}
+                  {catField('ژنریک', cat.generic_name)}
+                  {catField('قدرت', cat.strength)}
+                  {catField('شکل دارویی', cat.dosage_form)}
+                  {catField('برند', cat.brand_name)}
+                  {catField('سازنده', cat.manufacturer)}
+                  {catField('کشور', cat.country)}
+                  {catField('ATC', cat.atc)}
+                  {catField('قیمت اعلامی', cat.announced_price == null ? null : fa(cat.announced_price))}
+                  {catField('تعداد در بسته', cat.package_count)}
+                  {catField('GTIN', cat.gtin)}
+                  {catField('منبع', cat.source)}
+                </div>}
+          </section>
+
+          {/* پوشش بیمه — a row per insurer present */}
+          <section className="space-y-1.5">
+            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">پوشش بیمه</h5>
+            {Object.keys(detail.coverage).length === 0 ? <Empty text="هیچ ردیف پوششی برای این قلم ثبت نشده." />
+              : <ScrollTable head={
+                  <tr><th className="px-3 py-2 text-right font-medium">بیمه‌گر</th>
+                      <th className="px-3 py-2 text-center font-medium">پوشش</th>
+                      <th className="px-3 py-2 text-left font-medium">سهم٪</th>
+                      <th className="px-3 py-2 text-left font-medium">مرجع</th>
+                      <th className="px-3 py-2 text-left font-medium">سقف</th>
+                      <th className="px-3 py-2 text-right font-medium">تطبیق</th></tr>}>
+                  {Object.entries(detail.coverage).map(([ins, e]) => (
+                    <tr key={ins} className={ins === insurer ? 'bg-indigo-500/10' : 'hover:bg-slate-700/20'}>
+                      <td className="px-3 py-2 text-right text-slate-200">{insurerLabel(ins)}</td>
+                      <td className="px-3 py-2 text-center">{e.covered ? '✓' : e.covered === false ? '✕' : '—'}</td>
+                      <td className="px-3 py-2 text-left tabular-nums text-slate-300">{fa(e.share_pct)}</td>
+                      <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(e.reference_price)}</td>
+                      <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(e.ceiling)}</td>
+                      <td className="px-3 py-2 text-right text-xs text-slate-400 whitespace-nowrap">
+                        {e.match_method ?? '—'}{e.match_confidence != null ? ` · ${fa(e.match_confidence)}` : ''}</td>
+                    </tr>))}
+                </ScrollTable>}
+          </section>
+
+          {/* گروه هم‌مولکول — siblings; amber = same reference, different strength */}
+          <section className="space-y-1.5">
+            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">گروه هم‌مولکول</h5>
+            {detail.siblings.length === 0 ? <Empty text="هم‌مولکول دیگری یافت نشد." />
+              : <ScrollTable head={
+                  <tr><th className="px-3 py-2 text-right font-medium">نام</th>
+                      <th className="px-3 py-2 text-right font-medium">قدرت</th>
+                      <th className="px-3 py-2 text-left font-medium">قیمت اعلامی</th>
+                      <th className="px-3 py-2 text-left font-medium">مرجع بیمه</th></tr>}>
+                  {detail.siblings.map(s => {
+                    const cross = isCross(s)
+                    return (
+                      <tr key={s.irc} className={cross ? 'bg-amber-500/15' : 'hover:bg-slate-700/20'}>
+                        <td className="px-3 py-2 text-right text-slate-200">
+                          {s.name_fa}{cross && <span className="mr-1 text-[10px] text-amber-300">◄ مرجع مشترک</span>}</td>
+                        <td className={`px-3 py-2 text-right ${cross ? 'text-amber-300' : 'text-slate-300'}`}>{s.strength ?? '—'}</td>
+                        <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(s.announced_price)}</td>
+                        <td className={`px-3 py-2 text-left tabular-nums whitespace-nowrap ${cross ? 'text-amber-300 font-semibold' : 'text-slate-300'}`}>
+                          {fa(s.reference_price)}</td>
+                      </tr>)
+                  })}
+                </ScrollTable>}
+          </section>
+
+          {/* تحلیل — root-cause hints */}
+          <section className="space-y-1.5">
+            <h5 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">تحلیل</h5>
+            {detail.analysis.length === 0
+              ? <Empty text="نکتهٔ تحلیلی‌ای یافت نشد ✓" />
+              : <ul className="space-y-1.5">
+                  {detail.analysis.map((h, i) => (
+                    <li key={i} className="text-sm text-amber-200 bg-amber-500/10 border border-amber-500/25 rounded-md px-3 py-2 leading-relaxed">
+                      {h}</li>))}
+                </ul>}
+          </section>
+        </div>)}
     </div>
   )
 }
