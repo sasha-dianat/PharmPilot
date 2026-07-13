@@ -8,7 +8,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
+  Home, Package, Brain, ShieldCheck, DollarSign, Users, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
   Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
@@ -20,7 +20,6 @@ import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
 import FinancialOperations   from './dashboards/FinancialOperations'
 import PatientAdherence      from './dashboards/PatientAdherence'
-import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
 import DepotRestocking       from './dashboards/DepotRestocking'
@@ -86,7 +85,6 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
-  audio:     AudioIntelligence,
   'ai-hub':  AIIntelligenceHub,
   knowledge: KnowledgeManager,
   depot:     DepotRestocking,
@@ -165,7 +163,6 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   // Section alert badges
   const sectionBadges: Partial<Record<SectionId, { value: string; tone: 'critical' | 'attention' }>> = {
     security: criticalAlerts > 0 ? { value: String(criticalAlerts), tone: 'critical' } : undefined,
-    audio:    { value: '3', tone: 'attention' },  // Pending profile updates
     clinical: { value: '2', tone: 'attention' },  // REMS blockers
   }
 

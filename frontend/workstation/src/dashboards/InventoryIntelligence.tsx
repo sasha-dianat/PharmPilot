@@ -8,10 +8,9 @@
 import { useState, useEffect } from 'react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine, Cell,
-  ScatterChart, Scatter, BarChart, ReferenceArea,
+  Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { DrugPricingTable, RecallAlertBanner, PatientSavingsPanel } from '../components/PricingIntelligence'
 import PackageVerificationDashboard from '../components/PackageVerification'
@@ -31,13 +30,7 @@ interface ExpiringLot {
   days_until_expiry: number; quantity_on_hand: number
   urgency: 'immediate' | 'high' | 'moderate' | 'low'
 }
-interface ShrinkageEvent {
-  ndc: string; drug_name: string; discrepancy: number
-  date_range: string; confidence: number; staff_shift?: string
-}
-
 const URGENCY_COLOR = { immediate:'#ef4444', high:'#f97316', moderate:'#eab308', low:'#22c55e' }
-const RISK_BG = { high:'bg-red-900/40 border-red-800', medium:'bg-orange-900/40 border-orange-800', low:'bg-green-900/40 border-green-800' }
 
 // ── Stockout Risk Gauges ──────────────────────────────────────────────────
 function StockoutRiskGauges({ items }: { items: StockItem[] }) {

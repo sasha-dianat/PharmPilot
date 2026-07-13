@@ -6,7 +6,7 @@
  */
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Cell, ReferenceLine, PieChart, Pie,
+  ResponsiveContainer, BarChart, Cell, ReferenceLine,
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
@@ -41,7 +41,7 @@ function RevenueWaterfall() {
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis dataKey="name" tick={{fill:'#475569',fontSize:8}} angle={-20} textAnchor="end" height={40} />
           <YAxis tickFormatter={formatDollar} tick={{fill:'#475569',fontSize:9}} />
-          <Tooltip formatter={(v:number) => [`$${Math.abs(v).toLocaleString()}`]}
+          <Tooltip formatter={(v) => [`$${Math.abs(Number(v ?? 0)).toLocaleString()}`]}
             contentStyle={{background:'#1a1f2e',border:'1px solid #334155',borderRadius:8,fontSize:11}} />
           <Bar dataKey="value" radius={[3,3,0,0]}>
             {data.map((d,i) => <Cell key={i} fill={d.fill} />)}
@@ -136,7 +136,7 @@ function RejectPareto() {
           <YAxis yAxisId="left" tick={{fill:'#475569',fontSize:9}} />
           <YAxis yAxisId="right" orientation="right" domain={[0,100]} tickFormatter={v=>`${v}%`} tick={{fill:'#475569',fontSize:9}} />
           <Tooltip contentStyle={{background:'#1a1f2e',border:'1px solid #334155',borderRadius:8,fontSize:11}}
-            formatter={(v: any, n: string) => [n==='cumPct'?`${(v as number).toFixed(0)}%`:v, n==='cumPct'?'Cumulative':'Count']} />
+            formatter={(v, n) => [n==='cumPct'?`${Number(v ?? 0).toFixed(0)}%`:(v as any), n==='cumPct'?'Cumulative':'Count']} />
           <Bar yAxisId="left" dataKey="count" radius={[3,3,0,0]}>
             {withCum.map((d,i)=><Cell key={i} fill={d.fill} />)}
           </Bar>

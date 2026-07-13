@@ -4,10 +4,9 @@
  * Opens every morning. 10 seconds to know pharmacy health.
  * Layout: 4-column grid, information hierarchy top-down.
  */
-import { useEffect, useState } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+  XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, CheckCircle2, Inbox, Sparkles, TrendingUp, TrendingDown } from 'lucide-react'
@@ -118,7 +117,7 @@ function PharmacyHealthScore({ score, trend }: { score: number; trend?: number[]
   )
 }
 
-function RevenuePulse({ series, today, yesterday, avg }:
+function RevenuePulse({ series, today, yesterday }:
   { series?: CommandCenterData['revenue_series']; today?: number; yesterday?: number; avg?: number }) {
   const safeToday     = today     ?? 0
   const safeYesterday = yesterday ?? 0
@@ -331,11 +330,9 @@ function TopActionsPanel({ actions }: { actions: string[] }) {
 function normalizeApiData(raw: Record<string, unknown>): CommandCenterData {
   const fills   = (raw?.fills   ?? {}) as Record<string,unknown>
   const claims  = (raw?.claims  ?? {}) as Record<string,unknown>
-  const inventory = (raw?.inventory ?? {}) as Record<string,unknown>
 
   const queueDepth       = Number(fills?.queue_depth        ?? 0)
   const claimsSubmitted  = Number(claims?.claim_count       ?? 187)
-  const avgResponseMs    = Number(claims?.avg_adjudication_ms ?? 0)
   const rejected         = Math.round(claimsSubmitted * 0.12)
   const approved         = claimsSubmitted - rejected
   const rejectRate       = rejected / Math.max(claimsSubmitted, 1)

@@ -10,16 +10,6 @@ interface Props {
   onLoginSuccess: (role: string, pharmacyId: string) => void
 }
 
-const ROLE_LABELS: Record<string, { label: string; color: string }> = {
-  super_admin:          { label: 'Admin',       color: 'bg-purple-100 text-purple-800' },
-  pharmacy_manager:     { label: 'Manager',     color: 'bg-blue-100 text-blue-800' },
-  pharmacist:           { label: 'Pharmacist',  color: 'bg-green-100 text-green-800' },
-  pharmacy_intern:      { label: 'Intern',      color: 'bg-teal-100 text-teal-800' },
-  pharmacy_technician:  { label: 'Technician',  color: 'bg-yellow-100 text-yellow-800' },
-  cashier:              { label: 'Cashier',     color: 'bg-gray-100 text-gray-700' },
-  inventory_staff:      { label: 'Inventory',   color: 'bg-orange-100 text-orange-800' },
-}
-
 export default function LoginPage({ onLoginSuccess }: Props) {
   const [username, setUsername]     = useState('')
   const [password, setPassword]     = useState('')

@@ -6,12 +6,8 @@
  */
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, Cell, ScatterChart, Scatter,
+  LineChart, Line,
 } from 'recharts'
-import { useQuery } from '@tanstack/react-query'
-import { apiClient } from '../lib/api'
-
-const TIER_COLORS = { low:'#22c55e', medium:'#eab308', high:'#f97316', critical:'#ef4444' }
 
 // ── Adherence Funnel ───────────────────────────────────────────────────────
 function AdherenceFunnel() {
@@ -103,7 +99,7 @@ function InterventionEffectiveness() {
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis dataKey="intervention" tick={{fill:'#475569',fontSize:9}} />
           <YAxis domain={[0.5,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`} tick={{fill:'#475569',fontSize:9}} />
-          <Tooltip formatter={(v:number) => [`${(v*100).toFixed(1)}%`]}
+          <Tooltip formatter={(v) => [`${(Number(v ?? 0)*100).toFixed(1)}%`]}
             contentStyle={{background:'#1a1f2e',border:'1px solid #334155',borderRadius:8,fontSize:11}} />
           <Bar dataKey="before" name="Before" fill="#ef4444" fillOpacity={0.7} radius={[2,2,0,0]} />
           <Bar dataKey="after"  name="After"  fill="#22c55e" fillOpacity={0.9} radius={[2,2,0,0]} />
@@ -133,7 +129,7 @@ function RefillReminderLine() {
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis dataKey="week" tick={{fill:'#475569',fontSize:8}} interval={2} />
           <YAxis domain={[0,1]} tickFormatter={v=>`${(v*100).toFixed(0)}%`} tick={{fill:'#475569',fontSize:9}} />
-          <Tooltip formatter={(v:number) => [`${(v*100).toFixed(1)}%`]}
+          <Tooltip formatter={(v) => [`${(Number(v ?? 0)*100).toFixed(1)}%`]}
             contentStyle={{background:'#1a1f2e',border:'1px solid #334155',borderRadius:8,fontSize:11}} />
           <Line dataKey="sendRate" stroke="#3b82f6" strokeWidth={2} dot={false} name="Send Rate" />
           <Line dataKey="completionRate" stroke="#22c55e" strokeWidth={2} dot={false} name="Completion Rate" />

@@ -138,7 +138,6 @@ export default function SecurityDashboard() {
   }
 
   const unresolvedEvents = events.filter(e => !e.resolved)
-  const criticalEvents   = unresolvedEvents.filter(e => e.severity === 'critical')
 
   return (
     <div className="h-full flex flex-col bg-slate-900 text-slate-100 overflow-hidden">
@@ -210,7 +209,7 @@ export default function SecurityDashboard() {
                   </button>
                 </div>
                 <p className="text-slate-200 leading-relaxed">{event.description}</p>
-                {event.metadata?.camera_zone && (
+                {!!event.metadata?.camera_zone && (
                   <p className="text-slate-400 mt-1">Zone: {String(event.metadata.camera_zone)}</p>
                 )}
               </div>

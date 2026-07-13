@@ -6,8 +6,8 @@
  */
 import { useState } from 'react'
 import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Bar, Cell, PieChart, Pie, Legend,
+  XAxis, YAxis, Tooltip,
+  ResponsiveContainer, BarChart, Bar, Cell, PieChart, Pie,
 } from 'recharts'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
@@ -194,7 +194,7 @@ function CostBreakdown({ providers }: { providers: ProviderStatus[] }) {
         <BarChart data={data} layout="vertical">
           <XAxis type="number" tick={{ fill:'#475569', fontSize:10 }} tickFormatter={v=>`$${v.toFixed(3)}`} />
           <YAxis type="category" dataKey="name" width={70} tick={{ fill:'#94a3b8', fontSize:10 }} />
-          <Tooltip formatter={(v: number) => [`$${v.toFixed(4)}`,'Cost']}
+          <Tooltip formatter={(v) => [`$${Number(v ?? 0).toFixed(4)}`,'Cost']}
             contentStyle={{ background:'#1a1f2e', border:'1px solid #334155', borderRadius:8 }} />
           <Bar dataKey="cost" radius={[0,4,4,0]}>
             {data.map((d,i) => <Cell key={i} fill={d.fill} />)}

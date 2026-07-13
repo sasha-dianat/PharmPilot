@@ -224,29 +224,33 @@ function WebcamCapture({ onCapture, onClose }: {
 
 // ─── Transcription Results Panel ──────────────────────────────────────────────
 
+// Confirmed-transcription payload — shared by TranscriptionPanel.onConfirm and
+// the confirm mutation so both sides stay in lockstep.
+interface RxConfirmPayload {
+  patientName:        string
+  rxPatientId:        string | null
+  relationship:       string | null
+  prescriberName:     string
+  prescriberSuffix:   string
+  councilNo:          string
+  councilAuthority:   string
+  medications:        MedicationResult[]
+  rxDate:             string
+}
+
 function TranscriptionPanel({
   result,
   onConfirm,
   isPending,
 }: {
   result:    TranscribeResponse
-  onConfirm: (data: {
-    patientName:        string
-    rxPatientId:        string | null
-    relationship:       string | null
-    prescriberName:     string
-    prescriberSuffix:   string
-    councilNo:          string
-    councilAuthority:   string
-    medications:        MedicationResult[]
-    rxDate:             string
-  }) => void
+  onConfirm: (data: RxConfirmPayload) => void
   isPending: boolean
 }) {
   const [patientName,      setPatientName]      = useState(result.patient_name     || '')
   const [rxPatientId,      setRxPatientId]      = useState<string | null>(null)
   const [relationship,     setRelationship]     = useState<string | null>(null)
-  const [showRelDropdown,  setShowRelDropdown]  = useState(false)
+  const [, setShowRelDropdown] = useState(false)
   const [prescriberName,   setPrescriberName]   = useState(result.prescriber?.full_name    || '')
   const [prescriberSuffix, setPrescriberSuffix] = useState(result.prescriber?.suffix       || '')
   const [councilNo,        setCouncilNo]        = useState(result.prescriber?.medical_council_no || '')
@@ -578,7 +582,7 @@ export default function RxScanner({ rxId, rxNumber, visitorPatientId, onClose, i
 
   // ── Confirm ──
   const confirmMutation = useMutation({
-    mutationFn: (data: ReturnType<Parameters<typeof TranscriptionPanel>[0]['onConfirm']> extends (...a: any[]) => void ? Parameters<Parameters<typeof TranscriptionPanel>[0]['onConfirm']>[0] : never) =>
+    mutationFn: (data: RxConfirmPayload) =>
       apiClient.post('/rx-transcription/confirm', {
         doc_id:                        activeDocId,
         rx_id:                         rxId,
@@ -808,7 +812,7 @@ export default function RxScanner({ rxId, rxNumber, visitorPatientId, onClose, i
           {transcription && !transcribeMutation.isPending && !confirmed && (
             <TranscriptionPanel
               result={transcription}
-              onConfirm={data => confirmMutation.mutate(data as any)}
+              onConfirm={data => confirmMutation.mutate(data)}
               isPending={confirmMutation.isPending}
             />
           )}
@@ -854,7 +858,7 @@ export default function RxScanner({ rxId, rxNumber, visitorPatientId, onClose, i
 
 // ─── Compact badge for toolbar ────────────────────────────────────────────────
 
-export function RxDocumentsBadge({ rxId, rxNumber, onClick }: {
+export function RxDocumentsBadge({ rxId, onClick }: {
   rxId: string; rxNumber: string; onClick: () => void
 }) {
   const { data: rawDocs } = useQuery({

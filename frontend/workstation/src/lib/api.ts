@@ -308,6 +308,7 @@ export interface AllergyData {
 }
 export interface RxIntakeData {
   patient_id: string; prescriber_id: string; ndc: string; drug_name: string
+  drug_strength?: string
   sig_text: string; quantity_prescribed: number; days_supply: number
   refills_authorized?: number; written_date: string; source?: string; dea_schedule?: string
 }

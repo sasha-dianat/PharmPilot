@@ -86,7 +86,7 @@ export default function RxQueue() {
   const baskets = new Map<string, { name: string; rxs: Prescription[] }>()
   for (const rx of activeRxs) {
     const name = (rx as any).patient_name || 'بیمار'
-    const b = baskets.get(rx.patient_id) ?? { name, rxs: [] }
+    const b = baskets.get(rx.patient_id) ?? { name, rxs: [] as Prescription[] }
     b.rxs.push(rx)
     baskets.set(rx.patient_id, b)
   }
