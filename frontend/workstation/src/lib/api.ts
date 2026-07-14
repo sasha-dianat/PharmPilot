@@ -172,6 +172,18 @@ export const pricingApi = {
     apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
   inconsistencyDrug: (irc: string, insurer: string) =>
     apiClient.get(`/pricing/inconsistencies/drug/${irc}`, { params: { insurer } }),
+  // هوش‌یار دارو — drug enrichment intelligence
+  enrichWorklist: (insurer?: string) =>
+    apiClient.get('/pricing/enrichment/worklist', { params: insurer ? { insurer } : {} }),
+  enrichRun: (body: { limit: number; min_confidence: number }) =>
+    apiClient.post('/pricing/enrichment/run', body),
+  enrichRunStatus: () => apiClient.get('/pricing/enrichment/run/status'),
+  enrichSuggestions: (status = 'suggested') =>
+    apiClient.get('/pricing/enrichment/suggestions', { params: { status } }),
+  enrichDecide: (ids: string[], approve: boolean) =>
+    apiClient.post('/pricing/enrichment/decide', { ids, approve }),
+  enrichExport: () => apiClient.post('/pricing/enrichment/export', {}),
+  enrichImport: () => apiClient.post('/pricing/enrichment/import', {}),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────
