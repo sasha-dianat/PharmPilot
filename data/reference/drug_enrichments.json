@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "exported_at": "2026-07-14T20:12:40.351473+00:00",
+  "entries": [
+    {
+      "key": "betacarotene",
+      "raw_name": "BETACAROTENE 15MG CAP 15MG CAPSULE",
+      "irc": null,
+      "generic_name": "beta-carotene",
+      "brand_name": null,
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "softgel",
+      "strengths": [
+        "15 mg"
+      ],
+      "notes": "15 mg beta-carotene ≈ 25000 IU provitamin-A activity; softgel capsule (pro-vitamin A)",
+      "sources": [
+        "https://www.carlsonlabs.com/products/super-beta-carotene"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.8
+    },
+    {
+      "key": "ethacridine lantate revanol",
+      "raw_name": "ETHACRIDINE  LANTATE   (REVANOL)",
+      "irc": null,
+      "generic_name": "ethacridine lactate",
+      "brand_name": "Revanol (Rivanol)",
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "solution",
+      "strengths": [
+        "0.1%"
+      ],
+      "notes": "Source name misspells LACTATE as LANTATE; Revanol/Rivanol is the brand for the ethacridine lactate 0.1% antiseptic solution",
+      "sources": [
+        "https://en.wikipedia.org/wiki/Ethacridine_lactate"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.85
+    },
+    {
+      "key": "ویتامین آ تداژل",
+      "raw_name": "ویتامین آ-تداژل",
+      "irc": null,
+      "generic_name": "vitamin a",
+      "brand_name": "A-Tedagel",
+      "manufacturer": "Tehran Daru (تهران دارو)",
+      "country": "Iran",
+      "dosage_form": "softgel",
+      "strengths": [
+        "25000 IU",
+        "50000 IU"
+      ],
+      "notes": "Fat-soluble vitamin A supplement; softgel; Tehran Daru; 25000/50000 IU",
+      "sources": [
+        "https://www.darooyab.ir/B-1228189258/VITAMIN-A-TEDAGEL-25000IU-SOFT-GEL-CAP",
+        "https://www.darooyab.ir/B-1228189241/VITAMIN-A-TEDAGEL-50000IU-SOFT-GEL-CAP"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.95
+    }
+  ]
+}
