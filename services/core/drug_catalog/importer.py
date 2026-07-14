@@ -158,6 +158,26 @@ _STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
                   "brand_owner", "license_valid_until")
 
 
+def apply_enrichment_gaps(rec: CatalogRecord, enrichments: dict) -> CatalogRecord:
+    """Gap-fill ONLY blank catalog fields from an owner-approved enrichment —
+    NFI-provided values are authoritative and never overwritten. Keyed by the
+    record's name, falling back to its generic. Returns rec unchanged if no
+    approved enrichment matches."""
+    import dataclasses
+    from .enrichment import enrich_key
+    e = enrichments.get(enrich_key(rec.name_fa)) or enrichments.get(enrich_key(rec.generic_name))
+    if not e:
+        return rec
+    patch: dict = {}
+    for field, src in (("country", "country"), ("manufacturer", "manufacturer"),
+                       ("brand_name", "brand_name"), ("dosage_form", "dosage_form")):
+        if not getattr(rec, field, None) and e.get(src):
+            patch[field] = str(e[src]).strip()
+    if not rec.strength and e.get("strengths"):
+        patch["strength"] = str(e["strengths"][0]).strip()
+    return dataclasses.replace(rec, **patch) if patch else rec
+
+
 def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
     """(insert values, on-conflict update columns) for one record."""
     values = dict(
@@ -178,14 +198,19 @@ def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
     return values, update_cols
 
 
-async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi") -> int:
+async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi",
+                         enrichments: dict | None = None) -> int:
     """Upsert CatalogRecords into drug_catalog by IRC, computing ingredient_key.
+    When `enrichments` (owner-approved reference) is supplied, blank catalog
+    fields are gap-filled from it before write — NFI values are never overwritten.
     Returns the number of rows written."""
     from sqlalchemy.dialects.postgresql import insert
     from shared.models.drug_catalog import DrugCatalogItem
 
     n = 0
     for r in records:
+        if enrichments:
+            r = apply_enrichment_gaps(r, enrichments)
         values, update_cols = upsert_values(r, source=source)
         stmt = insert(DrugCatalogItem).values(**values)
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)

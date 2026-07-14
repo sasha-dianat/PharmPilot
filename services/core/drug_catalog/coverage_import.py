@@ -153,6 +153,7 @@ _FORM_WORDS = {
     "drop": "drop", "قطره": "drop", "cream": "cream", "کرم": "cream",
     "ointment": "ointment", "پماد": "ointment", "spray": "spray", "اسپری": "spray",
     "suppository": "suppository", "شیاف": "suppository", "solution": "solution",
+    "softgel": "capsule", "سافت": "capsule", "سافتژل": "capsule", "softgelcap": "capsule",
 }
 
 
@@ -223,7 +224,8 @@ class LinkResult:
         self.matched = self.record is not None and self.confidence >= 0.55
 
 
-def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult]:
+def link_rows(rows: list[dict], catalog: list[CatalogRecord],
+              enrichments: dict | None = None) -> list[LinkResult]:
     by_irc = {r.irc: r for r in catalog}
     by_gtin = {r.gtin: r for r in catalog if r.gtin}
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
@@ -262,6 +264,33 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord]) -> list[LinkResult
             continue
         canon, strengths, form, fa = _row_signals(name)
         row_mg = _strength_mg(name)
+
+        # ── approved-enrichment augmentation ──────────────────────────────────
+        # A vague brand row («ویتامین آ-تداژل») carries no generic/form/strength,
+        # so it can't link. If an OWNER-APPROVED enrichment knows this drug, expand
+        # the row's signals with its researched generic/form/strengths before
+        # scoring — converting unmatched → matched. An explicit irc pin wins
+        # outright. Enrichment is consulted only when provided (deterministic path
+        # untouched when enrichments is None).
+        if enrichments:
+            from .enrichment import enrich_key
+            e = enrichments.get(enrich_key(name))
+            if e:
+                if e.get("irc") and e["irc"] in by_irc:
+                    out.append(LinkResult(row, by_irc[e["irc"]], 1.0, "enrichment"))
+                    continue
+                if not canon and e.get("generic_name"):
+                    canon = canonical_ingredient(normalize(e["generic_name"])) or canon
+                if e.get("strengths"):
+                    for s_disp in e["strengths"]:
+                        strengths |= set(re.findall(
+                            r"\d+(?:\.\d+)?", str(s_disp).translate(_DIGIT_FIX)))
+                    row_mg = row_mg | _strength_mg(" ".join(map(str, e["strengths"])))
+                if not form and e.get("dosage_form"):
+                    for tok in re.findall(r"[A-Za-z]+", str(e["dosage_form"]).lower()):
+                        if tok in _FORM_WORDS:
+                            form = _FORM_WORDS[tok]
+                            break
 
         best: tuple[float, CatalogRecord | None, str] = (0.0, None, "none")
         for rec, c_canon, c_str, c_form, c_mg in (latin_block.get(canon[:3], []) if canon else []):

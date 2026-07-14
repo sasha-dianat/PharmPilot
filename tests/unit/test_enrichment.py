@@ -92,3 +92,53 @@ def test_reference_roundtrip_and_load(tmp_path):
             await db.delete(row); await db.commit()
         await eng.dispose()
     asyncio.get_event_loop().run_until_complete(run())
+
+
+# ── E3: application seams (the "forever" wiring) ──────────────────────────────
+def test_linker_uses_enrichment_to_match_ambiguous_row():
+    # «ویتامین آ-تداژل» carries no form/strength/generic — unmatchable today.
+    # With an approved enrichment the row augments and links to the catalog softgel.
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+
+    # catalog Persian name deliberately dissimilar so the ONLY route to a match
+    # is the latin generic the enrichment supplies (not a fuzzy Persian-name hit)
+    catalog = [CatalogRecord(irc="T1", name_fa="رتینول کپسول", generic_name="vitamin a",
+                             dosage_form="SOFTGEL", strength="25000 IU",
+                             announced_price=Decimal("50000"))]
+    row = {"drug_name": "ویتامین آ-تداژل"}
+    assert not link_rows([row], catalog)[0].matched          # baseline: no match
+    enr = {enrich_key("ویتامین آ-تداژل"): {
+        "generic_name": "vitamin a", "dosage_form": "SOFTGEL",
+        "strengths": ["25000 IU", "50000 IU"], "brand_name": "A-Tedagel",
+        "manufacturer": "Tehran Daru", "country": "Iran", "irc": None}}
+    link = link_rows([row], catalog, enrichments=enr)[0]
+    assert link.matched and link.record.irc == "T1"
+
+
+def test_linker_enrichment_irc_pin_wins():
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+    catalog = [CatalogRecord(irc="P9", name_fa="یک نام کاملا متفاوت", generic_name="foobarium",
+                             dosage_form="TABLET", strength="10 mg", announced_price=Decimal("1"))]
+    enr = {enrich_key("SOME BRAND XYZ"): {"irc": "P9", "generic_name": None,
+           "dosage_form": None, "strengths": None}}
+    link = link_rows([{"drug_name": "SOME BRAND XYZ"}], catalog, enrichments=enr)[0]
+    assert link.matched and link.record.irc == "P9" and link.method == "enrichment"
+
+
+def test_ingest_gapfill_never_overwrites_nfi_values():
+    from services.core.drug_catalog.importer import build_records, apply_enrichment_gaps
+    from services.core.drug_catalog.enrichment import enrich_key
+    rec = build_records([{"irc": "1", "name_fa": "ویتامین آ-تداژل",
+                          "generic_name": "vitamin a", "country": "ایران"}])[0]
+    enr = {enrich_key("ویتامین آ-تداژل"): {
+        "country": "France", "manufacturer": "Tehran Daru", "dosage_form": "SOFTGEL"}}
+    filled = apply_enrichment_gaps(rec, enr)
+    assert filled.country == "ایران"                 # NFI value KEPT (never overwritten)
+    assert filled.manufacturer == "Tehran Daru"      # gap filled
+    assert filled.dosage_form == "SOFTGEL"           # gap filled
