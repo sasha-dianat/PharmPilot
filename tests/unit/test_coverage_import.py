@@ -230,3 +230,12 @@ def test_real_salamat_headers_map_price_not_brand_code():
     assert roles["سهم_سازمان"] == "share_pct"
     assert roles["عنوان"] == "drug_name"
     assert roles["کد_ژنريک"] == "generic_code"
+
+
+def test_english_normalized_not_covered_is_false():
+    # the tamin harvester emits normalized english statuses; 'not_covered' must
+    # not fall through _to_bool's default-True (presence ⇒ covered) rule
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "covered": "not_covered"}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="tamin", min_confidence=0.6)
+    assert cov.applied["111"]["tamin"]["covered"] is False

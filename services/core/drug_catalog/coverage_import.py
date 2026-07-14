@@ -48,7 +48,8 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _TRUE_WORDS = {"1", "true", "yes", "بله", "دارد", "فعال", "دارای تعهد", "مورد تعهد", "*", "✓"}
-_FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-"}
+_FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-",
+                "not_covered", "not covered", "نيست", "نیست"}
 
 
 def _norm_header(h: str) -> str:
