@@ -176,6 +176,49 @@ async def import_reference(db, path=REFERENCE_PATH) -> int:
     return count
 
 
+async def list_enrichments(db, status: str | None = "suggested",
+                           limit: int = 500) -> list[dict]:
+    """Return enrichment rows (newest first) as JSON dicts for the review GUI.
+    status=None returns all statuses."""
+    from sqlalchemy import select
+    from shared.models.enrichment import DrugEnrichment
+
+    q = select(DrugEnrichment).order_by(DrugEnrichment.updated_at.desc()).limit(min(limit, 2000))
+    if status:
+        q = q.where(DrugEnrichment.status == status)
+    rows = (await db.execute(q)).scalars().all()
+    return [{
+        "id": str(r.id), "key": r.key, "raw_name": r.raw_name, "irc": r.irc,
+        "generic_name": r.generic_name, "brand_name": r.brand_name,
+        "manufacturer": r.manufacturer, "country": r.country,
+        "dosage_form": r.dosage_form, "strengths": r.strengths, "notes": r.notes,
+        "sources": r.sources, "researched_by": r.researched_by,
+        "confidence": r.confidence, "status": r.status,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    } for r in rows]
+
+
+async def decide_enrichments(db, ids: list, *, approve: bool,
+                             staff_id=None) -> dict:
+    """Approve or reject enrichment rows by id. Approved rows immediately become
+    eligible to self-apply at the next harvest/ingest. Returns {updated, status}."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from shared.models.enrichment import DrugEnrichment
+
+    new_status = "approved" if approve else "rejected"
+    rows = (await db.execute(
+        select(DrugEnrichment).where(DrugEnrichment.id.in_(list(ids)))
+    )).scalars().all()
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        r.status = new_status
+        r.decided_by = staff_id
+        r.decided_at = now
+    await db.commit()
+    return {"updated": len(rows), "status": new_status}
+
+
 async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
     """Deterministic research worklist, deduped by spelling-proof key.
 

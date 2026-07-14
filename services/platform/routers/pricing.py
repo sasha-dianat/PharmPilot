@@ -724,3 +724,93 @@ async def decide_price_proposals(body: DecideRequest,
                                  db: AsyncSession = Depends(get_db)):
     """Approve (apply to catalog) or reject pending price proposals."""
     return await sync_service.decide_proposals(db, body.ids, approve=body.approve, staff_id=staff.id)
+
+
+# ── هوش‌یار دارو — drug enrichment intelligence ──────────────────────────────
+class EnrichmentRunRequest(BaseModel):
+    limit: int = 50
+    min_confidence: float = 0.7
+
+
+class EnrichmentDecideRequest(BaseModel):
+    ids: list[str]
+    approve: bool = True
+
+
+@router.get("/enrichment/worklist")
+async def enrichment_worklist(insurer: str | None = None, min_confidence: float = 0.7,
+                              staff: Staff = Depends(require_permission("inventory:read")),
+                              db: AsyncSession = Depends(get_db)):
+    """Deterministic research worklist (deduped by spelling-proof key). Optional
+    `insurer` filters to one insurer's items. Returns items + per-reason counts."""
+    from services.core.drug_catalog.enrichment import build_worklist
+    items = await build_worklist(db, min_confidence=min_confidence)
+    if insurer:
+        items = [i for i in items if i.get("insurer") == insurer]
+    counts: dict[str, int] = {}
+    for i in items:
+        counts[i["reason"]] = counts.get(i["reason"], 0) + 1
+    return {"total": len(items), "counts": counts, "items": items[:1000]}
+
+
+@router.post("/enrichment/run")
+async def enrichment_run(body: EnrichmentRunRequest,
+                         staff: Staff = Depends(require_permission("inventory:write"))):
+    """Start a background Mistral research batch over the worklist. Non-blocking;
+    poll /enrichment/run/status. Produces status='suggested' rows only."""
+    from services.ai.enrichment import service as es
+    try:
+        return es.start_batch_background(limit=body.limit, min_confidence=body.min_confidence)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/enrichment/run/status")
+async def enrichment_run_status(staff: Staff = Depends(require_permission("inventory:read"))):
+    from services.ai.enrichment import service as es
+    return es.status()
+
+
+@router.get("/enrichment/suggestions")
+async def enrichment_suggestions(status: str = "suggested", limit: int = 500,
+                                 staff: Staff = Depends(require_permission("inventory:read")),
+                                 db: AsyncSession = Depends(get_db)):
+    """List enrichment rows for review. status='all' returns every status."""
+    from services.core.drug_catalog.enrichment import list_enrichments
+    rows = await list_enrichments(db, status=(None if status == "all" else status), limit=limit)
+    return {"status": status, "count": len(rows), "suggestions": rows}
+
+
+@router.post("/enrichment/decide")
+async def enrichment_decide(body: EnrichmentDecideRequest,
+                            staff: Staff = Depends(require_permission("inventory:write")),
+                            db: AsyncSession = Depends(get_db)):
+    """Approve or reject researched enrichment rows. Approved rows self-apply at
+    the next harvest/ingest."""
+    from services.core.drug_catalog.enrichment import decide_enrichments
+    ids: list = []
+    for raw in body.ids:
+        try:
+            ids.append(UUID(raw))
+        except (ValueError, AttributeError):
+            continue
+    return await decide_enrichments(db, ids, approve=body.approve, staff_id=staff.id)
+
+
+@router.post("/enrichment/export")
+async def enrichment_export(staff: Staff = Depends(require_permission("inventory:write")),
+                            db: AsyncSession = Depends(get_db)):
+    """Write every approved row to the committed canonical artifact
+    (data/reference/drug_enrichments.json). Returns the exported count."""
+    from services.core.drug_catalog.enrichment import export_reference, REFERENCE_PATH
+    n = await export_reference(db)
+    return {"exported": n, "path": str(REFERENCE_PATH)}
+
+
+@router.post("/enrichment/import")
+async def enrichment_import(staff: Staff = Depends(require_permission("inventory:write")),
+                            db: AsyncSession = Depends(get_db)):
+    """Upsert the committed canonical artifact's entries as approved rows."""
+    from services.core.drug_catalog.enrichment import import_reference, REFERENCE_PATH
+    n = await import_reference(db)
+    return {"imported": n, "path": str(REFERENCE_PATH)}
