@@ -45,6 +45,7 @@ class EnrichmentBatchState:
 
 _STATE = EnrichmentBatchState()
 _LOCK = asyncio.Lock()
+_CANCEL = asyncio.Event()
 
 # Politeness delay a worker takes after finishing an item (the _Pacer below is
 # what actually governs the global call rate).
@@ -57,6 +58,33 @@ _RATE_BACKOFFS = (20.0, 45.0, 90.0, 180.0)
 
 def status() -> dict:
     return _STATE.snapshot()
+
+
+def stop_batch() -> dict:
+    """Ask the running batch to stop. Workers exit at their next checkpoint and
+    long rate-limit waits wake immediately, so a stop lands in ~a second even
+    mid-cooldown. An HTTP call already in flight is allowed to finish (it can't
+    be torn down cleanly), so `done` may tick up once more. Suggestions already
+    saved are kept; unresearched items simply stay in the worklist."""
+    if not _STATE.running:
+        raise RuntimeError("اجرایی در جریان نیست")
+    _CANCEL.set()
+    _STATE.phase = "cancelling"
+    return _STATE.snapshot()
+
+
+async def _sleep_or_cancel(seconds: float) -> bool:
+    """Sleep up to `seconds`, waking early if the batch is cancelled.
+    → True if cancelled (caller should bail out)."""
+    if _CANCEL.is_set():
+        return True
+    if seconds <= 0:
+        return False
+    try:
+        await asyncio.wait_for(_CANCEL.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 def _is_rate_limited(errors: list[str]) -> bool:
@@ -76,7 +104,7 @@ class _RateGate:
         self.open_at = max(self.open_at, time.time() + seconds)
 
     async def wait(self) -> None:
-        while True:
+        while not _CANCEL.is_set():
             delta = self.open_at - time.time()
             if delta <= 0:
                 return
@@ -104,7 +132,7 @@ class _Pacer:
             wait = self._next_at - now
             self._next_at = max(now, self._next_at) + self.interval
         if wait > 0:
-            await asyncio.sleep(wait)
+            await _sleep_or_cancel(wait)   # wakes early on cancel; caller checks
 
     def on_rate_limit(self) -> None:
         self.interval = min(max(self.interval, 0.5) * 2, self.max_interval)
@@ -127,6 +155,8 @@ async def _research_with_backoff(researcher: DrugResearcher, raw_name: str,
         await gate.wait()
     if pacer:
         await pacer.acquire()
+    if _CANCEL.is_set():
+        return None, ["cancelled"]
     suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
     for wait in backoffs:
         if suggestion is not None or not _is_rate_limited(errors):
@@ -139,9 +169,11 @@ async def _research_with_backoff(researcher: DrugResearcher, raw_name: str,
             await gate.wait()
         else:
             _STATE.current = f"{raw_name} — محدودیت نرخ؛ {int(wait)}s توقف…"
-            await asyncio.sleep(wait)
+            await _sleep_or_cancel(wait)
         if pacer:
             await pacer.acquire()   # stagger re-entry — no thundering herd
+        if _CANCEL.is_set():
+            return None, ["cancelled"]
         _STATE.current = raw_name
         suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
     if pacer and suggestion is not None:
@@ -167,7 +199,7 @@ async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
         _STATE.current = (f"{len(active)} فعال: " + "، ".join(active[-4:])) if active else ""
 
     async def worker() -> None:
-        while True:
+        while not _CANCEL.is_set():
             try:
                 item = queue.get_nowait()
             except asyncio.QueueEmpty:
@@ -178,6 +210,8 @@ async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
             try:
                 suggestion, errors = await _research_with_backoff(
                     researcher, raw_name, gate=gate, pacer=pacer)
+                if suggestion is None and _CANCEL.is_set():
+                    return          # aborted mid-item: not a real failure, stays in worklist
                 if suggestion is None:
                     _STATE.failed += 1
                     _push_recent(raw_name, "failed: " + "; ".join(errors[:2]))
@@ -197,8 +231,8 @@ async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
                     active.remove(raw_name)
                 show()
                 _STATE.done += 1
-            if throttle_sec:
-                await asyncio.sleep(throttle_sec)
+            if throttle_sec and await _sleep_or_cancel(throttle_sec):
+                return
 
     await asyncio.gather(*(worker() for _ in range(max(1, workers))))
 
@@ -222,6 +256,7 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
         researcher = researcher or make_researcher(provider)   # raises on unknown
         workers = max(1, min(int(workers), 15))
         _reset_state()
+        _CANCEL.clear()
         _STATE.running = True
         _STATE.phase = "researching"
         _STATE.provider = provider
@@ -241,7 +276,7 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
                             workers=workers, throttle_sec=throttle_sec, save=save,
                             pacer=_Pacer(PROVIDER_PACE.get(provider, 3.0)))
 
-            _STATE.phase = "done"
+            _STATE.phase = "cancelled" if _CANCEL.is_set() else "done"
         except Exception as e:
             _STATE.phase = "failed"
             _STATE.error = f"{type(e).__name__}: {e}"

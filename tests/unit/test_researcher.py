@@ -108,6 +108,37 @@ def test_pool_save_error_fails_item_not_run():
     assert es._STATE.done == 2 and es._STATE.saved == 1 and es._STATE.failed == 1
 
 
+def test_stop_batch_cancels_pool_early():
+    import asyncio
+    import time as t
+    from services.ai.enrichment import service as es
+
+    ok = '{"generic":"x","dosage_form":"tab","confidence":0.9,"sources":["https://x"]}'
+    def slow(p, s):
+        t.sleep(0.1)
+        return ok
+    items = [{"raw_name": f"drug {i}"} for i in range(30)]
+    saved = []
+    async def fake_save(name, sug):
+        saved.append(name)
+        return object()
+
+    async def run_and_cancel():
+        es._reset_state()
+        es._CANCEL.clear()
+        pool = asyncio.ensure_future(
+            es._run_pool(items, DrugResearcher(search_fn=slow),
+                         workers=2, throttle_sec=0, save=fake_save,
+                         pacer=es._Pacer(0.0, 0.0)))
+        await asyncio.sleep(0.25)          # let ~2 waves finish
+        es._CANCEL.set()                   # what stop_batch() does
+        await pool
+
+    asyncio.new_event_loop().run_until_complete(run_and_cancel())
+    assert 0 < len(saved) < 30             # started, then stopped well short
+    es._CANCEL.clear()
+
+
 def test_pacer_widens_on_429_and_spaces_calls():
     import asyncio
     import time as t

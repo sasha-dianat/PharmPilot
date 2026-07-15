@@ -179,6 +179,9 @@ export const pricingApi = {
                       provider?: string }) =>
     apiClient.post('/pricing/enrichment/run', body),
   enrichRunStatus: () => apiClient.get('/pricing/enrichment/run/status'),
+  enrichStop: () => apiClient.post('/pricing/enrichment/run/stop', {}),
+  enrichProviderTest: (provider: string) =>
+    apiClient.post('/pricing/enrichment/provider-test', { provider }),
   enrichSuggestions: (status = 'suggested') =>
     apiClient.get('/pricing/enrichment/suggestions', { params: { status } }),
   enrichDecide: (ids: string[], approve: boolean) =>

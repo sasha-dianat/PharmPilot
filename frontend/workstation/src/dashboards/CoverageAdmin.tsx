@@ -836,6 +836,21 @@ function EnrichmentPanel({ onMsg, onError }: {
       qc.invalidateQueries({ queryKey: ['enrich-run-status'] })
     } catch (e) { onError(e, 'شروع پژوهش ناموفق بود.') }
   }
+  const stopRun = async () => {
+    try {
+      await pricingApi.enrichStop()
+      onMsg({ kind: 'ok', text: 'درخواست توقف ثبت شد — پیشنهادهای ذخیره‌شده حفظ می‌شوند.' })
+      qc.invalidateQueries({ queryKey: ['enrich-run-status'] })
+    } catch (e) { onError(e, 'توقف ناموفق بود.') }
+  }
+  const testProvider = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.enrichProviderTest(provider)
+      onMsg({ kind: 'ok', text: `اتصال ${data.provider} برقرار است (${data.model || 'مدل پیش‌فرض'}): ${data.reply || 'OK'}` })
+    } catch (e) { onError(e, `اتصال ${provider} برقرار نشد.`) }
+    finally { setBusy(false) }
+  }
   const decide = async (ids: string[], approve: boolean) => {
     if (!ids.length) return
     setBusy(true)
@@ -904,6 +919,18 @@ function EnrichmentPanel({ onMsg, onError }: {
           className="px-3 py-1.5 text-sm rounded-md bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-40">
           {run?.running ? 'در حال پژوهش…' : 'شروع پژوهش'}
         </button>
+        {run?.running && (
+          <button onClick={stopRun} disabled={run.phase === 'cancelling'}
+            className="px-3 py-1.5 text-sm rounded-md bg-red-700 hover:bg-red-600 disabled:opacity-40">
+            {run.phase === 'cancelling' ? 'در حال توقف…' : '⏹ توقف'}
+          </button>
+        )}
+        {!run?.running && (
+          <button onClick={testProvider} disabled={busy}
+            className="px-3 py-1.5 text-sm rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-40">
+            آزمون اتصال
+          </button>
+        )}
         <div className="mr-auto flex gap-2">
           <button onClick={exportRef} className="px-2.5 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600">
             برون‌سپاری مرجع ⬇</button>

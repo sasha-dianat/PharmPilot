@@ -776,6 +776,32 @@ async def enrichment_run_status(staff: Staff = Depends(require_permission("inven
     return es.status()
 
 
+@router.post("/enrichment/run/stop")
+async def enrichment_run_stop(staff: Staff = Depends(require_permission("inventory:write"))):
+    """Cancel the running research batch. Saved suggestions are kept;
+    unresearched items stay in the worklist for the next run."""
+    from services.ai.enrichment import service as es
+    try:
+        return es.stop_batch()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.post("/enrichment/provider-test")
+async def enrichment_provider_test(body: EnrichmentRunRequest,
+                                   staff: Staff = Depends(require_permission("inventory:write"))):
+    """Live connection test for the selected provider — a real API request
+    decides validity, never a key-prefix heuristic."""
+    import asyncio as _aio
+    from services.ai.enrichment import providers as ep
+    try:
+        return await _aio.to_thread(ep.test_provider, body.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.get("/enrichment/suggestions")
 async def enrichment_suggestions(status: str = "suggested", limit: int = 500,
                                  staff: Staff = Depends(require_permission("inventory:read")),
