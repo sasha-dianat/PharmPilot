@@ -791,7 +791,8 @@ interface Suggestion {
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
-  skipped: number; failed: number; workers: number; current: string
+  skipped: number; failed: number; workers: number; pace_sec: number
+  current: string
   error: string | null
   elapsed_sec: number; recent: { name: string; result: string }[]
 }
@@ -909,6 +910,7 @@ function EnrichmentPanel({ onMsg, onError }: {
           <div className="flex flex-wrap gap-x-5">
             <span className="text-fuchsia-300">مرحله: {run.phase}</span>
             <span>هم‌زمانی: {fa(run.workers)}</span>
+            {run.pace_sec > 0 && <span>فاصله فراخوانی: {run.pace_sec}s</span>}
             <span>پیشرفت: {fa(run.done)}/{fa(run.total)}</span>
             <span className="text-emerald-300">ثبت‌شده: {fa(run.saved)}</span>
             <span className="text-slate-400">ردشده: {fa(run.skipped)}</span>

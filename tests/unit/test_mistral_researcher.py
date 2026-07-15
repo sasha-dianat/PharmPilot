@@ -80,7 +80,8 @@ def test_pool_parallelizes_and_counts():
     start = t.time()
     asyncio.get_event_loop().run_until_complete(
         es._run_pool(items, MistralResearcher(search_fn=slow),
-                     workers=3, throttle_sec=0, save=fake_save))
+                     workers=3, throttle_sec=0, save=fake_save,
+                     pacer=es._Pacer(0.0, 0.0)))
     elapsed = t.time() - start
     assert sorted(saved) == sorted(i["raw_name"] for i in items)
     assert es._STATE.saved == 9 and es._STATE.done == 9 and es._STATE.failed == 0
@@ -102,8 +103,34 @@ def test_pool_save_error_fails_item_not_run():
     es._reset_state()
     asyncio.get_event_loop().run_until_complete(
         es._run_pool(items, MistralResearcher(search_fn=lambda p, s: ok),
-                     workers=2, throttle_sec=0, save=bad_save))
+                     workers=2, throttle_sec=0, save=bad_save,
+                     pacer=es._Pacer(0.0, 0.0)))
     assert es._STATE.done == 2 and es._STATE.saved == 1 and es._STATE.failed == 1
+
+
+def test_pacer_widens_on_429_and_spaces_calls():
+    import asyncio
+    import time as t
+    from services.ai.enrichment import service as es
+
+    p = es._Pacer(min_interval=0.1, max_interval=2.0)
+    # 429s double the spacing; successes narrow it back toward min.
+    p.on_rate_limit(); p.on_rate_limit()
+    assert p.interval > 0.5                      # 0.5*2 floor then doubled again
+    widened = p.interval
+    for _ in range(30):
+        p.on_success()
+    assert p.interval < widened and p.interval >= 0.1
+
+    # acquire() enforces the spacing between call starts globally
+    p2 = es._Pacer(min_interval=0.15, max_interval=1.0)
+    async def two_acquires():
+        start = t.time()
+        await p2.acquire()
+        await p2.acquire()
+        return t.time() - start
+    took = asyncio.get_event_loop().run_until_complete(two_acquires())
+    assert took >= 0.14, f"second call start not spaced ({took:.3f}s)"
 
 
 def test_batch_backoff_retries_429_but_not_other_failures():

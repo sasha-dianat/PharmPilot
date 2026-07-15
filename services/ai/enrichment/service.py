@@ -26,6 +26,7 @@ class EnrichmentBatchState:
     skipped: int = 0
     failed: int = 0
     workers: int = 1
+    pace_sec: float = 0.0        # current adaptive spacing between call starts
     current: str = ""
     error: Optional[str] = None
     started_at: Optional[float] = None
@@ -42,11 +43,13 @@ class EnrichmentBatchState:
 _STATE = EnrichmentBatchState()
 _LOCK = asyncio.Lock()
 
-# Politeness delay between web-search calls (Mistral rate limits + web etiquette).
-_THROTTLE_SEC = 3.0
+# Politeness delay a worker takes after finishing an item (the _Pacer below is
+# what actually governs the global call rate).
+_THROTTLE_SEC = 1.0
 # Escalating waits after a 429 from the web_search connector — its rate window
-# is coarser than the chat API's, so short waits don't clear it.
-_RATE_BACKOFFS = (20.0, 45.0, 90.0)
+# is coarser than the chat API's (undocumented, tier-dependent), so waits must
+# reach into minutes before giving up on an item.
+_RATE_BACKOFFS = (20.0, 45.0, 90.0, 180.0)
 
 
 def status() -> dict:
@@ -77,18 +80,56 @@ class _RateGate:
             await asyncio.sleep(min(delta, 1.0))
 
 
+class _Pacer:
+    """Global spacing between call STARTS across the whole pool. Mistral's
+    web_search window is undocumented and tier-dependent, so the sustainable
+    rate is discovered empirically: every 429 doubles the spacing (up to max),
+    every success gently narrows it (down to min). Also prevents the
+    thundering herd when a _RateGate reopens — workers re-enter one spacing
+    apart instead of all at once."""
+
+    def __init__(self, min_interval: float = 3.0, max_interval: float = 120.0):
+        self.min_interval = min_interval
+        self.max_interval = max_interval
+        self.interval = min_interval
+        self._next_at = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.time()
+            wait = self._next_at - now
+            self._next_at = max(now, self._next_at) + self.interval
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+    def on_rate_limit(self) -> None:
+        self.interval = min(max(self.interval, 0.5) * 2, self.max_interval)
+        _STATE.pace_sec = round(self.interval, 1)
+
+    def on_success(self) -> None:
+        self.interval = max(self.interval * 0.9, self.min_interval)
+        _STATE.pace_sec = round(self.interval, 1)
+
+
 async def _research_with_backoff(researcher: MistralResearcher, raw_name: str,
-                                 backoffs=_RATE_BACKOFFS, gate: _RateGate | None = None):
+                                 backoffs=_RATE_BACKOFFS, gate: _RateGate | None = None,
+                                 pacer: _Pacer | None = None):
     """research() once, retrying only 429/rate-limit failures with escalating
     waits. Non-rate-limit failures return immediately (retrying won't fix a
-    bad name). With a gate, the cooldown is shared across the pool.
-    → (suggestion|None, errors)."""
+    bad name). With a gate, the cooldown is shared across the pool; with a
+    pacer, call starts are globally spaced and retries re-enter staggered
+    instead of as a synchronized burst. → (suggestion|None, errors)."""
     if gate:
         await gate.wait()
+    if pacer:
+        await pacer.acquire()
     suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
     for wait in backoffs:
         if suggestion is not None or not _is_rate_limited(errors):
             break
+        if pacer:
+            pacer.on_rate_limit()
         if gate:
             gate.pause(wait)
             _STATE.current = f"محدودیت نرخ؛ {int(wait)}s توقف همگانی…"
@@ -96,13 +137,18 @@ async def _research_with_backoff(researcher: MistralResearcher, raw_name: str,
         else:
             _STATE.current = f"{raw_name} — محدودیت نرخ؛ {int(wait)}s توقف…"
             await asyncio.sleep(wait)
+        if pacer:
+            await pacer.acquire()   # stagger re-entry — no thundering herd
         _STATE.current = raw_name
         suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
+    if pacer and suggestion is not None:
+        pacer.on_success()
     return suggestion, errors
 
 
 async def _run_pool(items: list[dict], researcher: MistralResearcher, *,
-                    workers: int, throttle_sec: float, save) -> None:
+                    workers: int, throttle_sec: float, save,
+                    pacer: _Pacer | None = None) -> None:
     """Drain `items` through a pool of concurrent workers. `save` is an async
     (raw_name, suggestion) → row|None callable (injected so tests need no DB).
     Per-item exceptions are counted as failures, never abort the pool."""
@@ -110,6 +156,8 @@ async def _run_pool(items: list[dict], researcher: MistralResearcher, *,
     for it in items:
         queue.put_nowait(it)
     gate = _RateGate()
+    pacer = pacer or _Pacer()
+    _STATE.pace_sec = round(pacer.interval, 1)
     active: list[str] = []
 
     def show() -> None:
@@ -126,7 +174,7 @@ async def _run_pool(items: list[dict], researcher: MistralResearcher, *,
             show()
             try:
                 suggestion, errors = await _research_with_backoff(
-                    researcher, raw_name, gate=gate)
+                    researcher, raw_name, gate=gate, pacer=pacer)
                 if suggestion is None:
                     _STATE.failed += 1
                     _push_recent(raw_name, "failed: " + "; ".join(errors[:2]))
