@@ -1,6 +1,6 @@
-"""MistralResearcher — offline via injected search_fn (no network, no SDK)."""
-from services.ai.enrichment.mistral_researcher import (
-    MistralResearcher, build_prompt, extract_json)
+"""DrugResearcher — offline via injected search_fn (no network, no SDK)."""
+from services.ai.enrichment.researcher import (
+    DrugResearcher, build_prompt, extract_json)
 
 
 def test_extract_json_tolerates_fences_and_prose():
@@ -20,7 +20,7 @@ def test_research_happy_path_maps_columns():
     reply = ('{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
              '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'
              '"confidence":0.95,"sources":["https://x"],"notes":"n"}')
-    r = MistralResearcher(search_fn=lambda p, s: reply)
+    r = DrugResearcher(search_fn=lambda p, s: reply)
     sug, errors = r.research("ویتامین آ-تداژل")
     assert errors == []
     assert sug["generic_name"] == "vitamin a"      # generic → generic_name
@@ -31,28 +31,28 @@ def test_research_happy_path_maps_columns():
 
 
 def test_research_rejects_empty_and_unparseable():
-    r = MistralResearcher(search_fn=lambda p, s: "not json")
+    r = DrugResearcher(search_fn=lambda p, s: "not json")
     sug, errors = r.research("something")
     assert sug is None and errors
 
-    sug2, errors2 = MistralResearcher(search_fn=lambda p, s: "{}").research("x")
+    sug2, errors2 = DrugResearcher(search_fn=lambda p, s: "{}").research("x")
     assert sug2 is None and errors2
 
-    sug3, errors3 = MistralResearcher(search_fn=lambda p, s: "").research("")
+    sug3, errors3 = DrugResearcher(search_fn=lambda p, s: "").research("")
     assert sug3 is None and errors3
 
 
 def test_research_reports_search_failure_without_raising():
     def boom(p, s):
         raise RuntimeError("network down")
-    sug, errors = MistralResearcher(search_fn=boom).research("x")
+    sug, errors = DrugResearcher(search_fn=boom).research("x")
     assert sug is None
     assert any("network down" in e for e in errors)
 
 
 def test_research_rejects_all_null_fields():
     reply = '{"generic":null,"brand":null,"strengths":[],"confidence":0.1,"sources":[]}'
-    sug, errors = MistralResearcher(search_fn=lambda p, s: reply).research("x")
+    sug, errors = DrugResearcher(search_fn=lambda p, s: reply).research("x")
     assert sug is None and errors
 
 
@@ -79,7 +79,7 @@ def test_pool_parallelizes_and_counts():
     es._reset_state()
     start = t.time()
     asyncio.get_event_loop().run_until_complete(
-        es._run_pool(items, MistralResearcher(search_fn=slow),
+        es._run_pool(items, DrugResearcher(search_fn=slow),
                      workers=3, throttle_sec=0, save=fake_save,
                      pacer=es._Pacer(0.0, 0.0)))
     elapsed = t.time() - start
@@ -102,7 +102,7 @@ def test_pool_save_error_fails_item_not_run():
 
     es._reset_state()
     asyncio.get_event_loop().run_until_complete(
-        es._run_pool(items, MistralResearcher(search_fn=lambda p, s: ok),
+        es._run_pool(items, DrugResearcher(search_fn=lambda p, s: ok),
                      workers=2, throttle_sec=0, save=bad_save,
                      pacer=es._Pacer(0.0, 0.0)))
     assert es._STATE.done == 2 and es._STATE.saved == 1 and es._STATE.failed == 1
@@ -149,7 +149,7 @@ def test_batch_backoff_retries_429_but_not_other_failures():
             raise RuntimeError("API error occurred: Status 429. Body: web_search rate limit reached.")
         return ok
 
-    r = MistralResearcher(search_fn=flaky)
+    r = DrugResearcher(search_fn=flaky)
     sug, errors = asyncio.get_event_loop().run_until_complete(
         _research_with_backoff(r, "x", backoffs=(0.01, 0.01, 0.01)))
     assert sug is not None and calls["n"] == 3      # two 429s retried, third wins
@@ -159,6 +159,6 @@ def test_batch_backoff_retries_429_but_not_other_failures():
         calls["n"] += 1
         raise RuntimeError("invalid api key")
     sug2, errors2 = asyncio.get_event_loop().run_until_complete(
-        _research_with_backoff(MistralResearcher(search_fn=hard_fail), "x",
+        _research_with_backoff(DrugResearcher(search_fn=hard_fail), "x",
                                backoffs=(0.01, 0.01)))
     assert sug2 is None and calls["n"] == 1          # not rate-limit → no retry

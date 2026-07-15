@@ -791,7 +791,8 @@ interface Suggestion {
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
-  skipped: number; failed: number; workers: number; pace_sec: number
+  skipped: number; failed: number; provider: string; workers: number
+  pace_sec: number
   current: string
   error: string | null
   elapsed_sec: number; recent: { name: string; result: string }[]
@@ -807,6 +808,7 @@ function EnrichmentPanel({ onMsg, onError }: {
   const qc = useQueryClient()
   const [limit, setLimit] = useState(50)
   const [workers, setWorkers] = useState(5)
+  const [provider, setProvider] = useState('mistral')
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
 
@@ -830,7 +832,7 @@ function EnrichmentPanel({ onMsg, onError }: {
   const startRun = async () => {
     onMsg({ kind: 'ok', text: 'پژوهش آغاز شد…' })
     try {
-      await pricingApi.enrichRun({ limit, min_confidence: 0.7, workers })
+      await pricingApi.enrichRun({ limit, min_confidence: 0.7, workers, provider })
       qc.invalidateQueries({ queryKey: ['enrich-run-status'] })
     } catch (e) { onError(e, 'شروع پژوهش ناموفق بود.') }
   }
@@ -884,6 +886,12 @@ function EnrichmentPanel({ onMsg, onError }: {
 
       {/* run controls */}
       <div className="flex flex-wrap items-center gap-2">
+        <label className="text-[12px] text-slate-400">موتور جستجو</label>
+        <select value={provider} onChange={e => setProvider(e.target.value)}
+          className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm">
+          <option value="mistral">Mistral (کند — محدودیت نرخ)</option>
+          <option value="gemini">Gemini (سریع، رایگان)</option>
+        </select>
         <label className="text-[12px] text-slate-400">تعداد در این اجرا</label>
         <input type="number" min={1} max={500} value={limit}
           onChange={e => setLimit(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}
@@ -909,6 +917,7 @@ function EnrichmentPanel({ onMsg, onError }: {
         <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-lg p-3 text-[12px] font-mono space-y-1">
           <div className="flex flex-wrap gap-x-5">
             <span className="text-fuchsia-300">مرحله: {run.phase}</span>
+            {run.provider && <span>موتور: {run.provider}</span>}
             <span>هم‌زمانی: {fa(run.workers)}</span>
             {run.pace_sec > 0 && <span>فاصله فراخوانی: {run.pace_sec}s</span>}
             <span>پیشرفت: {fa(run.done)}/{fa(run.total)}</span>

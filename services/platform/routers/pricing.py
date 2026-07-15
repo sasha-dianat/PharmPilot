@@ -731,6 +731,7 @@ class EnrichmentRunRequest(BaseModel):
     limit: int = 50
     min_confidence: float = 0.7
     workers: int = 5             # concurrent researchers, clamped 1-15 in service
+    provider: str = "mistral"    # web-searching backend: mistral | gemini
 
 
 class EnrichmentDecideRequest(BaseModel):
@@ -757,12 +758,14 @@ async def enrichment_worklist(insurer: str | None = None, min_confidence: float 
 @router.post("/enrichment/run")
 async def enrichment_run(body: EnrichmentRunRequest,
                          staff: Staff = Depends(require_permission("inventory:write"))):
-    """Start a background Mistral research batch over the worklist. Non-blocking;
+    """Start a background web-research batch over the worklist. Non-blocking;
     poll /enrichment/run/status. Produces status='suggested' rows only."""
     from services.ai.enrichment import service as es
     try:
         return es.start_batch_background(limit=body.limit, min_confidence=body.min_confidence,
-                                         workers=body.workers)
+                                         workers=body.workers, provider=body.provider)
+    except ValueError as e:                       # unknown/non-searching provider
+        raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
 

@@ -1,5 +1,6 @@
 """Background batch enrichment — walk the deterministic worklist, research each
-drug via Mistral, and persist SUGGESTED rows for owner review.
+drug via a web-searching provider (see providers.py), and persist SUGGESTED
+rows for owner review, attributed to the provider that found them.
 
 Single-flight (one batch at a time) with an in-memory progress snapshot the GUI
 polls, mirroring coverage_harvest's state pattern. Runs are advisory: everything
@@ -13,7 +14,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from services.core.drug_catalog.enrichment import build_worklist
-from .mistral_researcher import MistralResearcher, save_suggestion
+from .providers import PROVIDER_PACE, make_researcher
+from .researcher import DrugResearcher, save_suggestion
 
 
 @dataclass
@@ -25,6 +27,7 @@ class EnrichmentBatchState:
     saved: int = 0
     skipped: int = 0
     failed: int = 0
+    provider: str = ""
     workers: int = 1
     pace_sec: float = 0.0        # current adaptive spacing between call starts
     current: str = ""
@@ -112,7 +115,7 @@ class _Pacer:
         _STATE.pace_sec = round(self.interval, 1)
 
 
-async def _research_with_backoff(researcher: MistralResearcher, raw_name: str,
+async def _research_with_backoff(researcher: DrugResearcher, raw_name: str,
                                  backoffs=_RATE_BACKOFFS, gate: _RateGate | None = None,
                                  pacer: _Pacer | None = None):
     """research() once, retrying only 429/rate-limit failures with escalating
@@ -146,7 +149,7 @@ async def _research_with_backoff(researcher: MistralResearcher, raw_name: str,
     return suggestion, errors
 
 
-async def _run_pool(items: list[dict], researcher: MistralResearcher, *,
+async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
                     workers: int, throttle_sec: float, save,
                     pacer: _Pacer | None = None) -> None:
     """Drain `items` through a pool of concurrent workers. `save` is an async
@@ -201,23 +204,27 @@ async def _run_pool(items: list[dict], researcher: MistralResearcher, *,
 
 
 async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
-                    researcher: Optional[MistralResearcher] = None,
+                    provider: str = "mistral",
+                    researcher: Optional[DrugResearcher] = None,
                     throttle_sec: float = _THROTTLE_SEC,
                     workers: int = 5) -> dict:
     """Research up to `limit` worklist items through `workers` concurrent
-    researchers (clamped 1–15) and save suggestions. Returns the final
-    snapshot. Raises RuntimeError if a batch is already running."""
+    researchers (clamped 1–15) against a web-searching `provider`, and save
+    suggestions attributed to it. Returns the final snapshot. Raises
+    RuntimeError if a batch is already running."""
     if _LOCK.locked():
         raise RuntimeError("یک اجرای پژوهش هم‌اکنون در حال انجام است")
 
     async with _LOCK:
         from services.platform.database import AsyncSessionLocal
 
-        researcher = researcher or MistralResearcher()
+        provider = (provider or "mistral").lower()
+        researcher = researcher or make_researcher(provider)   # raises on unknown
         workers = max(1, min(int(workers), 15))
         _reset_state()
         _STATE.running = True
         _STATE.phase = "researching"
+        _STATE.provider = provider
         _STATE.workers = workers
         _STATE.started_at = time.time()
         try:
@@ -227,10 +234,12 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
 
             async def save(raw_name: str, suggestion: dict):
                 async with AsyncSessionLocal() as db:
-                    return await save_suggestion(db, raw_name, suggestion)
+                    return await save_suggestion(db, raw_name, suggestion,
+                                                 researched_by=provider)
 
             await _run_pool(worklist[:limit], researcher,
-                            workers=workers, throttle_sec=throttle_sec, save=save)
+                            workers=workers, throttle_sec=throttle_sec, save=save,
+                            pacer=_Pacer(PROVIDER_PACE.get(provider, 3.0)))
 
             _STATE.phase = "done"
         except Exception as e:
@@ -245,11 +254,15 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
 
 
 def start_batch_background(**kwargs) -> dict:
-    """Fire-and-forget a batch run; returns the initial snapshot immediately."""
+    """Fire-and-forget a batch run; returns the initial snapshot immediately.
+    The provider is resolved HERE so an unknown one surfaces to the caller as an
+    error instead of dying silently inside the background task."""
     if _STATE.running or _LOCK.locked():
         raise RuntimeError("یک اجرای پژوهش هم‌اکنون در حال انجام است")
+    provider = (kwargs.get("provider") or "mistral").lower()
+    make_researcher(provider)                     # raises ValueError if unusable
     asyncio.create_task(_run_guarded(**kwargs))
-    return {"running": True, "phase": "researching"}
+    return {"running": True, "phase": "researching", "provider": provider}
 
 
 async def _run_guarded(**kwargs) -> None:

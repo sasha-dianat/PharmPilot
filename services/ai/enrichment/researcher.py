@@ -1,18 +1,22 @@
-"""MistralResearcher — turn a messy Iranian drug name into a validated,
-provenance-carrying enrichment SUGGESTION via Mistral's web-search agent.
+"""DrugResearcher — turn a messy Iranian drug name into a validated,
+provenance-carrying enrichment SUGGESTION via a web-searching LLM.
+
+Provider-agnostic: the actual network call is an injectable `search_fn`
+(see providers.py for the Mistral / Gemini implementations), which keeps the
+whole pipeline (prompt → JSON extraction → validation → persistence)
+unit-testable offline and mirrors the project's injected-fetcher pattern.
 
 Design constraints (deterministic-first invariant):
   * Output is ALWAYS status='suggested' — it never enters the linker/ingest
     paths until an owner approves it.
-  * The actual network call is isolated behind an injectable `search_fn` so the
-    whole pipeline (prompt → JSON extraction → validation → persistence) is
-    unit-testable offline, mirroring the project's injected-fetcher pattern.
-  * No PHI ever reaches Mistral — only reference drug NAMES are sent.
+  * The provider MUST actually search the web. A non-searching LLM would
+    invent Iranian manufacturers and strengths, which is exactly what the
+    approve-with-sources trust model exists to prevent.
+  * No PHI ever leaves this module — only reference drug NAMES are sent.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Callable, Optional
 
@@ -83,60 +87,9 @@ def extract_json(text: str) -> dict:
     return {}
 
 
-# search_fn(prompt, system) -> raw model text. Injected for tests; the default
-# hits Mistral's web-search agent.
+# search_fn(prompt, system) -> raw model text. Injected for tests; real
+# implementations live in providers.py.
 SearchFn = Callable[[str, str], str]
-
-
-def _default_search_fn(prompt: str, system: str) -> str:
-    """Call Mistral's conversations/web-search agent. Lazy-imports the SDK so the
-    module loads (and tests run) without `mistralai` or a key present."""
-    api_key = os.environ.get("MISTRAL_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("MISTRAL_API_KEY تنظیم نشده است")
-    # SDK v2 moved the client to mistralai.client; v1 exported it top-level.
-    try:
-        from mistralai.client import Mistral   # lazy: optional dependency (v2+)
-    except ImportError:
-        from mistralai import Mistral          # v1 fallback
-
-    model = os.environ.get("MISTRAL_RESEARCH_MODEL", "mistral-large-latest")
-    with Mistral(api_key=api_key) as client:
-        res = client.beta.conversations.start(
-            model=model,
-            instructions=system,
-            inputs=prompt,
-            tools=[{"type": "web_search"}],
-            completion_args={"response_format": {"type": "json_object"}},
-        )
-    return _text_from_response(res)
-
-
-def _text_from_response(res) -> str:
-    """Pull assistant text out of the several shapes the SDK/API may return."""
-    # Newer conversations API: res.outputs = [entry, ...] with .content
-    for attr in ("outputs", "entries"):
-        seq = getattr(res, attr, None)
-        if seq:
-            parts = []
-            for e in seq:
-                c = getattr(e, "content", None)
-                if isinstance(c, str):
-                    parts.append(c)
-                elif isinstance(c, list):
-                    parts.extend(getattr(x, "text", "") or (x.get("text") if isinstance(x, dict) else "")
-                                 for x in c)
-            joined = "\n".join(p for p in parts if p)
-            if joined.strip():
-                return joined
-    # Chat-completions shape: res.choices[0].message.content
-    choices = getattr(res, "choices", None)
-    if choices:
-        msg = getattr(choices[0], "message", None)
-        content = getattr(msg, "content", None) if msg else None
-        if isinstance(content, str):
-            return content
-    return ""
 
 
 # Map the model's suggestion keys → DrugEnrichment columns.
@@ -146,11 +99,13 @@ _COL_MAP = {"generic": "generic_name", "brand": "brand_name",
             "notes": "notes"}
 
 
-class MistralResearcher:
-    """Stateless researcher: name → (validated suggestion dict | None, errors)."""
+class DrugResearcher:
+    """Stateless researcher: name → (validated suggestion dict | None, errors).
+    `search_fn` decides the provider; there is no default, so a caller can never
+    silently research against a non-searching backend."""
 
-    def __init__(self, search_fn: Optional[SearchFn] = None):
-        self._search = search_fn or _default_search_fn
+    def __init__(self, search_fn: SearchFn):
+        self._search = search_fn
 
     def research(self, raw_name: str) -> tuple[Optional[dict], list[str]]:
         """Returns (suggestion, errors). `suggestion` is a dict of DrugEnrichment
@@ -179,7 +134,7 @@ class MistralResearcher:
 
 
 async def save_suggestion(db, raw_name: str, suggestion: dict, *,
-                          researched_by: str = "mistral") -> "object":
+                          researched_by: str = "mistral") -> "object":   # noqa: D401
     """Upsert a researched suggestion by spelling-proof key as status='suggested'.
 
     NEVER downgrades an already-approved/rejected row: if a row for this key

@@ -175,7 +175,8 @@ export const pricingApi = {
   // هوش‌یار دارو — drug enrichment intelligence
   enrichWorklist: (insurer?: string) =>
     apiClient.get('/pricing/enrichment/worklist', { params: insurer ? { insurer } : {} }),
-  enrichRun: (body: { limit: number; min_confidence: number; workers?: number }) =>
+  enrichRun: (body: { limit: number; min_confidence: number; workers?: number
+                      provider?: string }) =>
     apiClient.post('/pricing/enrichment/run', body),
   enrichRunStatus: () => apiClient.get('/pricing/enrichment/run/status'),
   enrichSuggestions: (status = 'suggested') =>
