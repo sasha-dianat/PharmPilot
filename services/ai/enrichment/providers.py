@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -98,13 +99,24 @@ def _mistral_text(res) -> str:
     return ""
 
 
-# ── Gemini: Interactions API + google_search tool ────────────────────────────
+# ── Gemini: Interactions API, strict free tier ───────────────────────────────
 # Auth is the x-goog-api-key header with the key EXACTLY as stored (trimmed
 # only). No prefix heuristics: AI Studio issues both AIza… and newer AQ.…
 # Authorization/Auth API keys, so whether a key is valid is the API's call,
-# not a local guess — a wrong guess here previously rejected working keys.
+# not a local guess — a wrong guess here previously rejected a working key.
+#
+# Verified live against this project's key (2026-07-15):
+#   gemini-3.1-flash-lite  → status=completed
+#   gemini-2.5-flash(-lite) → 404 "no longer available to new users"
+#     (a MODEL_UNAVAILABLE condition, NOT a key failure)
+#
+# Strict free tier: Google Search grounding is NOT available for
+# gemini-3.1-flash-lite on the API free tier, so SEARCH is separated from
+# EXTRACTION — a free external web search finds candidate pages, and Gemini
+# only extracts/normalizes from those results. Never silently enable the paid
+# google_search tool or a paid model.
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 _GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 
@@ -120,22 +132,100 @@ def _gemini_model() -> str:
     return (os.environ.get("GEMINI_RESEARCH_MODEL") or "").strip() or DEFAULT_GEMINI_MODEL
 
 
-def gemini_search_fn(prompt: str, system: str, *, _post=None) -> str:
-    """Call Gemini via the Interactions API with the google_search tool enabled.
-    `_post` is injectable for tests. JSON output is requested via the prompt and
-    recovered by the researcher's tolerant extract_json; url_citation
-    annotations are merged into the suggestion's `sources` — those are pages
-    the search actually surfaced, stronger provenance than URLs the model
-    merely claims."""
-    body = {
-        "model": _gemini_model(),
-        "input": f"{system}\n\n{prompt}",
-        "tools": [{"type": "google_search"}],
-    }
+# ── free external search (SearchProvider seam) ──────────────────────────────
+# search(query) → [{title, url, snippet}]. DuckDuckGo's HTML endpoint needs no
+# key and no billing; swap the callable to change providers without touching
+# the Gemini integration.
+
+_DDG_URL = "https://html.duckduckgo.com/html/"
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+
+def _http_get(url: str, timeout: int = 30, data: bytes | None = None) -> str:
+    """GET (or POST when `data` is given). DDG's html endpoint serves a bot
+    challenge to datacenter IPs on GET but real results on POST — verified
+    live from this deployment's egress."""
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": _BROWSER_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Status {e.code}. جستجوی وب ناموفق بود") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"خطای شبکه در جستجوی وب: {e.reason}") from None
+
+
+def _ddg_unwrap(href: str) -> str:
+    """DDG links results through //duckduckgo.com/l/?uddg=<encoded-url>."""
+    if href.startswith("//"):
+        href = "https:" + href
+    if "uddg=" in href:
+        from urllib.parse import parse_qs, urlparse
+        target = (parse_qs(urlparse(href).query).get("uddg") or [""])[0]
+        return target
+    return href if href.startswith("http") else ""
+
+
+def ddg_search(query: str, *, max_results: int = 6, _get=None) -> list[dict]:
+    """Free web search → [{title, url, snippet}]. `_get` injectable for tests."""
+    import html as _html
+    from urllib.parse import urlencode
+    page = (_get or _http_get)(_DDG_URL, data=urlencode({"q": query}).encode())
+    results: list[dict] = []
+    for m in re.finditer(
+            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            page, re.S):
+        url = _ddg_unwrap(_html.unescape(m.group(1)))
+        title = _html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        if url and title and not any(r["url"] == url for r in results):
+            results.append({"title": title, "url": url})
+        if len(results) >= max_results:
+            break
+    snippets = [_html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+                for s in re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', page, re.S)]
+    for r, s in zip(results, snippets):
+        r["snippet"] = s[:300]
+    return results
+
+
+def _name_from_prompt(prompt: str) -> str:
+    """build_prompt quotes the raw drug name as «name» — recover it."""
+    m = re.search(r"«(.+?)»", prompt, re.S)
+    return m.group(1).strip() if m else prompt.strip().splitlines()[0][:120]
+
+
+def gemini_search_fn(prompt: str, system: str, *, _post=None, _search=None) -> str:
+    """Free-tier pipeline: free external search → Gemini 3.1 Flash-Lite
+    EXTRACTION over those results (no google_search tool — not available on
+    the free tier for this model, and paid grounding must never turn on
+    silently). `_post`/`_search` are injectable for tests.
+
+    Provenance: the model is told to cite only URLs from the supplied result
+    list; if it returns none, the top search URLs are used — either way,
+    sources are pages a real search surfaced, never invented links."""
+    raw_name = _name_from_prompt(prompt)
+    results = (_search or ddg_search)(f"{raw_name} دارو")
+    if not results:
+        raise RuntimeError(f"جستجوی وب نتیجه‌ای برای «{raw_name}» نداشت")
+    listing = json.dumps(results, ensure_ascii=False, indent=1)
+    input_text = (
+        f"{system}\n\n{prompt}\n\n"
+        "نتایج جستجوی وب در ادامه آمده است. فقط بر اساس همین نتایج استخراج کن؛ "
+        "به دانش درونی تکیه نکن و مقدار تأییدنشده را null بگذار:\n"
+        f"{listing}\n\n"
+        "در sources فقط URLهایی از همین فهرست را بگذار که واقعاً استفاده کردی."
+    )
     payload = (_post or _http_post_json)(
-        _GEMINI_INTERACTIONS_URL, body,
+        _GEMINI_INTERACTIONS_URL,
+        {"model": _gemini_model(), "input": input_text},
         headers={"x-goog-api-key": _gemini_key()})
-    return _gemini_text(payload)
+    text, cited = _gemini_output(payload)
+    obj = extract_json(text)
+    if obj and not obj.get("sources"):
+        obj["sources"] = cited or [r["url"] for r in results[:3]]
+        return json.dumps(obj, ensure_ascii=False)
+    return text
 
 
 def gemini_ping(*, _post=None) -> dict:
@@ -156,7 +246,7 @@ _API_HINTS = {
     401: "احراز هویت ناموفق — Google این کلید را نپذیرفت",
     403: "دسترسی مجاز نیست (پروژه/منطقه/مجوز)",
     404: "مدل یا نقطه اتصال یافت نشد",
-    429: "سهمیه رایگان یا محدودیت نرخ Gemini پر شده است — بعداً دوباره تلاش کنید",
+    429: "(FREE_TIER_QUOTA_EXHAUSTED) سهمیه رایگان یا محدودیت نرخ Gemini پر شده است — بعداً دوباره تلاش کنید",
 }
 
 
@@ -171,6 +261,11 @@ def _http_post_json(url: str, body: dict, headers: dict | None = None,
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
         hint = _API_HINTS.get(e.code, "")
+        if e.code == 404 and "no longer available" in detail:
+            # Retired model (e.g. gemini-2.5-*) — a MODEL_UNAVAILABLE condition,
+            # emphatically NOT a key failure: do not retry, do not blame auth.
+            hint = ("(MODEL_UNAVAILABLE) این مدل برای این پروژه در دسترس نیست — "
+                    f"مدل پیش‌فرض {DEFAULT_GEMINI_MODEL} است یا GEMINI_RESEARCH_MODEL را تنظیم کنید")
         # "Status <code>" prefix is load-bearing: the batch's 429 detection
         # keys off it. Keys travel in headers, never URLs, so `detail` and the
         # message are key-free by construction.

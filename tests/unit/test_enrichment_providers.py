@@ -26,6 +26,15 @@ def _interaction(steps):
     return {"status": "completed", "steps": steps}
 
 
+_RESULTS = [{"title": "VITAMIN A-TEDAGEL 25000IU", "url": "https://found.example/a",
+             "snippet": "softgel 25000 IU"},
+            {"title": "b", "url": "https://found.example/b", "snippet": "s2"}]
+
+
+def _searcher(q, **kw):
+    return list(_RESULTS)
+
+
 def _model_output(text, urls=()):
     return {"type": "model_output", "content": [{
         "type": "text", "text": text,
@@ -37,14 +46,13 @@ def _model_output(text, urls=()):
 
 def test_aq_prefixed_key_is_accepted_and_sent_via_header(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "  AQ.Ab8RN6LfakeKEYn92A  ")   # + whitespace
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     seen = {}
 
     def fake_post(url, body, headers=None):
         seen.update(url=url, body=body, headers=headers or {})
         return _interaction([_model_output('{"generic":"x"}')])
 
-    gemini_search_fn("p", "s", _post=fake_post)
+    gemini_search_fn("نام: «X»", "s", _post=fake_post, _search=_searcher)
     assert seen["headers"]["x-goog-api-key"] == "AQ.Ab8RN6LfakeKEYn92A"  # trimmed only
     assert "Authorization" not in seen["headers"]          # never a Bearer token
     assert "key=" not in seen["url"]                       # never in the URL
@@ -53,53 +61,100 @@ def test_aq_prefixed_key_is_accepted_and_sent_via_header(monkeypatch):
 
 def test_aiza_key_also_accepted_no_prefix_requirement(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyFakeKey123")
-    out = gemini_search_fn("p", "s", _post=lambda u, b, headers=None:
-                           _interaction([_model_output('{"generic":"y"}')]))
+    out = gemini_search_fn("«y-drug»", "s", _search=_searcher,
+                           _post=lambda u, b, headers=None:
+                           _interaction([_model_output('{"generic":"y","sources":["https://found.example/a"]}')]))
     assert json.loads(out)["generic"] == "y"
 
 
 def test_empty_key_rejected(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "   ")
     with pytest.raises(RuntimeError, match="AI Hub"):
-        gemini_search_fn("p", "s", _post=lambda u, b, headers=None: {})
+        gemini_search_fn("«p»", "s", _search=_searcher,
+                         _post=lambda u, b, headers=None: {})
 
 
 def test_google_api_key_fallback(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "AQ.fallbackKey")
     seen = {}
     def fake_post(url, body, headers=None):
         seen["key"] = (headers or {}).get("x-goog-api-key")
         return _interaction([_model_output("hi")])
-    gemini_search_fn("p", "s", _post=fake_post)
+    gemini_search_fn("«p»", "s", _post=fake_post, _search=_searcher)
     assert seen["key"] == "AQ.fallbackKey"
 
 
-# ── request shape ────────────────────────────────────────────────────────────
+# ── request shape: strict free tier ──────────────────────────────────────────
 
-def test_default_model_and_google_search_tool(monkeypatch):
+def test_default_model_no_paid_search_tool_results_embedded(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
-    monkeypatch.delenv("GEMINI_RESEARCH_MODEL", raising=False)
     seen = {}
     def fake_post(url, body, headers=None):
         seen["body"] = body
         return _interaction([_model_output("t")])
-    gemini_search_fn("the-prompt", "the-system", _post=fake_post)
-    assert seen["body"]["model"] == DEFAULT_GEMINI_MODEL == "gemini-2.5-flash-lite"
-    assert seen["body"]["tools"] == [{"type": "google_search"}]   # real search, not roleplay
-    assert "the-system" in seen["body"]["input"] and "the-prompt" in seen["body"]["input"]
+    gemini_search_fn("نام فرآورده: «ویتامین آ-تداژل»", "the-system",
+                     _post=fake_post, _search=_searcher)
+    assert seen["body"]["model"] == DEFAULT_GEMINI_MODEL == "gemini-3.1-flash-lite"
+    assert "tools" not in seen["body"]          # free tier: NO paid google_search grounding
+    assert "the-system" in seen["body"]["input"]
+    assert "https://found.example/a" in seen["body"]["input"]   # search results embedded
 
 
 def test_model_env_override(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
-    monkeypatch.setenv("GEMINI_RESEARCH_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_RESEARCH_MODEL", "gemini-4-flash")
     seen = {}
     def fake_post(url, body, headers=None):
         seen["m"] = body["model"]
         return _interaction([_model_output("t")])
-    gemini_search_fn("p", "s", _post=fake_post)
-    assert seen["m"] == "gemini-2.5-flash"
+    gemini_search_fn("«p»", "s", _post=fake_post, _search=_searcher)
+    assert seen["m"] == "gemini-4-flash"
+
+
+def test_search_results_urls_become_fallback_sources(monkeypatch):
+    # Model omitted sources → top REAL search URLs fill in (never invented links)
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
+    out = gemini_search_fn("«x»", "s", _search=_searcher,
+                           _post=lambda u, b, headers=None:
+                           _interaction([_model_output('{"generic":"x"}')]))
+    assert json.loads(out)["sources"] == ["https://found.example/a", "https://found.example/b"]
+
+
+def test_empty_search_results_fail_fast(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
+    with pytest.raises(RuntimeError, match="جستجوی وب"):
+        gemini_search_fn("«x»", "s", _search=lambda q, **kw: [],
+                         _post=lambda u, b, headers=None: {})
+
+
+def test_ddg_parsing_and_uddg_unwrap():
+    from services.ai.enrichment.providers import ddg_search
+    page = '''
+    <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdarooyab.ir%2Fangipars&amp;rut=x">ANGIPARS &amp; info</a>
+    <a class="result__snippet" href="#">herbal <b>drug</b> for diabetic foot</a>
+    <a rel="nofollow" class="result__a" href="https://direct.example/page">Direct result</a>
+    <a class="result__snippet" href="#">second snippet</a>
+    '''
+    rs = ddg_search("q", _get=lambda u, **kw: page)
+    assert rs[0]["url"] == "https://darooyab.ir/angipars"      # uddg unwrapped
+    assert rs[0]["title"] == "ANGIPARS & info"                 # entities + tags cleaned
+    assert rs[0]["snippet"] == "herbal drug for diabetic foot"
+    assert rs[1]["url"] == "https://direct.example/page"
+
+
+def test_404_retired_model_is_model_unavailable_not_key_failure():
+    import io
+    import urllib.error
+    from unittest import mock
+    from services.ai.enrichment.providers import _http_post_json
+    body = b'{"error":{"code":404,"message":"This model models/gemini-2.5-flash-lite is no longer available to new users."}}'
+    err = urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(body))
+    with mock.patch("urllib.request.urlopen", side_effect=err):
+        with pytest.raises(RuntimeError) as ei:
+            _http_post_json("https://x.example", {}, headers={"x-goog-api-key": "AQ.k"})
+    msg = str(ei.value)
+    assert "MODEL_UNAVAILABLE" in msg
+    assert "کلید" not in msg and "INVALID_API_KEY" not in msg   # not blamed on the key
 
 
 def test_ping_sends_no_tools(monkeypatch):
