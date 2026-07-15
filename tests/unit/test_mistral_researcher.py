@@ -56,6 +56,56 @@ def test_research_rejects_all_null_fields():
     assert sug is None and errors
 
 
+def test_pool_parallelizes_and_counts():
+    # 9 items × 0.15s serial ≈ 1.35s; 3 workers must land well under that.
+    import asyncio
+    import time as t
+    from services.ai.enrichment import service as es
+
+    ok = ('{"generic":"x","dosage_form":"tab","confidence":0.9,'
+          '"sources":["https://x"]}')
+
+    def slow(p, s):
+        t.sleep(0.15)
+        return ok
+
+    items = [{"raw_name": f"drug {i}"} for i in range(9)]
+    saved: list[str] = []
+
+    async def fake_save(name, sug):
+        saved.append(name)
+        return object()
+
+    es._reset_state()
+    start = t.time()
+    asyncio.get_event_loop().run_until_complete(
+        es._run_pool(items, MistralResearcher(search_fn=slow),
+                     workers=3, throttle_sec=0, save=fake_save))
+    elapsed = t.time() - start
+    assert sorted(saved) == sorted(i["raw_name"] for i in items)
+    assert es._STATE.saved == 9 and es._STATE.done == 9 and es._STATE.failed == 0
+    assert elapsed < 1.0, f"pool did not parallelize (took {elapsed:.2f}s)"
+
+
+def test_pool_save_error_fails_item_not_run():
+    import asyncio
+    from services.ai.enrichment import service as es
+
+    ok = '{"generic":"x","dosage_form":"tab","confidence":0.9,"sources":["https://x"]}'
+    items = [{"raw_name": "a"}, {"raw_name": "b"}]
+
+    async def bad_save(name, sug):
+        if name == "a":
+            raise RuntimeError("db down")
+        return object()
+
+    es._reset_state()
+    asyncio.get_event_loop().run_until_complete(
+        es._run_pool(items, MistralResearcher(search_fn=lambda p, s: ok),
+                     workers=2, throttle_sec=0, save=bad_save))
+    assert es._STATE.done == 2 and es._STATE.saved == 1 and es._STATE.failed == 1
+
+
 def test_batch_backoff_retries_429_but_not_other_failures():
     # Real failure mode: Mistral web_search returns Status 429 for a burst, then
     # recovers. The batch must retry those; a non-429 failure must NOT be retried.

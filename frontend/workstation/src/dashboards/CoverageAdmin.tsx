@@ -791,7 +791,8 @@ interface Suggestion {
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
-  skipped: number; failed: number; current: string; error: string | null
+  skipped: number; failed: number; workers: number; current: string
+  error: string | null
   elapsed_sec: number; recent: { name: string; result: string }[]
 }
 const REASON_FA: Record<string, string> = {
@@ -804,6 +805,7 @@ function EnrichmentPanel({ onMsg, onError }: {
 }) {
   const qc = useQueryClient()
   const [limit, setLimit] = useState(50)
+  const [workers, setWorkers] = useState(5)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
 
@@ -827,7 +829,7 @@ function EnrichmentPanel({ onMsg, onError }: {
   const startRun = async () => {
     onMsg({ kind: 'ok', text: 'پژوهش آغاز شد…' })
     try {
-      await pricingApi.enrichRun({ limit, min_confidence: 0.7 })
+      await pricingApi.enrichRun({ limit, min_confidence: 0.7, workers })
       qc.invalidateQueries({ queryKey: ['enrich-run-status'] })
     } catch (e) { onError(e, 'شروع پژوهش ناموفق بود.') }
   }
@@ -885,6 +887,10 @@ function EnrichmentPanel({ onMsg, onError }: {
         <input type="number" min={1} max={500} value={limit}
           onChange={e => setLimit(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}
           className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm tabular-nums" />
+        <label className="text-[12px] text-slate-400">هم‌زمانی</label>
+        <input type="number" min={1} max={15} value={workers}
+          onChange={e => setWorkers(Math.max(1, Math.min(15, Number(e.target.value) || 1)))}
+          className="w-16 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm tabular-nums" />
         <button onClick={startRun} disabled={run?.running}
           className="px-3 py-1.5 text-sm rounded-md bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-40">
           {run?.running ? 'در حال پژوهش…' : 'شروع پژوهش'}
@@ -902,13 +908,15 @@ function EnrichmentPanel({ onMsg, onError }: {
         <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-lg p-3 text-[12px] font-mono space-y-1">
           <div className="flex flex-wrap gap-x-5">
             <span className="text-fuchsia-300">مرحله: {run.phase}</span>
+            <span>هم‌زمانی: {fa(run.workers)}</span>
             <span>پیشرفت: {fa(run.done)}/{fa(run.total)}</span>
             <span className="text-emerald-300">ثبت‌شده: {fa(run.saved)}</span>
             <span className="text-slate-400">ردشده: {fa(run.skipped)}</span>
             <span className="text-red-400">ناموفق: {fa(run.failed)}</span>
             <span>{run.elapsed_sec}s</span>
           </div>
-          {run.current && <div className="text-slate-300 truncate">در حال بررسی: {run.current}</div>}
+          {/* current is self-describing now («۳ فعال: …» / «محدودیت نرخ؛ …») */}
+          {run.current && <div className="text-slate-300 truncate">{run.current}</div>}
         </div>
       )}
       {run && !run.running && run.error &&

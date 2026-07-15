@@ -730,6 +730,7 @@ async def decide_price_proposals(body: DecideRequest,
 class EnrichmentRunRequest(BaseModel):
     limit: int = 50
     min_confidence: float = 0.7
+    workers: int = 5             # concurrent researchers, clamped 1-15 in service
 
 
 class EnrichmentDecideRequest(BaseModel):
@@ -760,7 +761,8 @@ async def enrichment_run(body: EnrichmentRunRequest,
     poll /enrichment/run/status. Produces status='suggested' rows only."""
     from services.ai.enrichment import service as es
     try:
-        return es.start_batch_background(limit=body.limit, min_confidence=body.min_confidence)
+        return es.start_batch_background(limit=body.limit, min_confidence=body.min_confidence,
+                                         workers=body.workers)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
