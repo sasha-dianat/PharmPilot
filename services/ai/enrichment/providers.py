@@ -158,8 +158,11 @@ def _http_get(url: str, timeout: int = 30, data: bytes | None = None,
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:200]
         # "Status <code>" marker preserved → the batch's 429 backoff sees it.
-        raise RuntimeError(f"Status {e.code}. جستجوی وب ناموفق بود") from None
+        # Body included: a hidden body turned Brave's SUBSCRIPTION_TOKEN_INVALID
+        # into an opaque "جستجو ناموفق بود" once already.
+        raise RuntimeError(f"Status {e.code}. جستجوی وب ناموفق بود: {detail}") from None
     except urllib.error.URLError as e:
         raise RuntimeError(f"خطای شبکه در جستجوی وب: {e.reason}") from None
 

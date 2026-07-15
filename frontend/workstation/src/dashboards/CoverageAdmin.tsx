@@ -793,6 +793,7 @@ interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
   skipped: number; failed: number; provider: string; workers: number
   pace_sec: number
+  search_backend?: string
   current: string
   error: string | null
   elapsed_sec: number; recent: { name: string; result: string }[]
@@ -911,8 +912,16 @@ function EnrichmentPanel({ onMsg, onError }: {
         <select value={provider} onChange={e => setProvider(e.target.value)}
           className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm">
           <option value="mistral">Mistral (کند — محدودیت نرخ)</option>
-          <option value="gemini">Gemini (سریع، رایگان)</option>
+          <option value="gemini">Gemini (رایگان، استخراج)</option>
         </select>
+        {provider === 'gemini' && run?.search_backend && (
+          <span className={`text-[11px] px-2 py-0.5 rounded-full border ${
+            run.search_backend === 'brave'
+              ? 'bg-orange-500/10 border-orange-500/40 text-orange-300'
+              : 'bg-slate-700 border-slate-600 text-slate-300'}`}>
+            جستجوی وب: {run.search_backend === 'brave' ? 'Brave ✓' : 'DuckDuckGo (بدون کلید)'}
+          </span>
+        )}
         <label className="text-[12px] text-slate-400">تعداد در این اجرا</label>
         <input type="number" min={1} max={500} value={limit}
           onChange={e => setLimit(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}

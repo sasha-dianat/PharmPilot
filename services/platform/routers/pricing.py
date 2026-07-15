@@ -773,7 +773,8 @@ async def enrichment_run(body: EnrichmentRunRequest,
 @router.get("/enrichment/run/status")
 async def enrichment_run_status(staff: Staff = Depends(require_permission("inventory:read"))):
     from services.ai.enrichment import service as es
-    return es.status()
+    from services.ai.enrichment.providers import search_backend_name
+    return {**es.status(), "search_backend": search_backend_name()}
 
 
 @router.post("/enrichment/run/stop")
