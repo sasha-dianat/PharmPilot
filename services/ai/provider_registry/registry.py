@@ -196,6 +196,18 @@ class AIProviderRegistry:
             cost_per_1k_output=0.009,
             supports_streaming=True,
         ),
+        # Search-only provider: no LLM models — its key is managed here so the
+        # AI Hub key card works, but no AITask ever routes to it.
+        "brave": ProviderConfig(
+            name="Brave Search (وب‌جستجو)", api_key_env="BRAVE_API_KEY",
+            base_url="https://api.search.brave.com/res/v1",
+            models=[], default_model="",
+            strengths=["web_search"],
+            has_baa=False,
+            cost_per_1k_input=0.0,
+            cost_per_1k_output=0.0,
+            supports_streaming=False,
+        ),
         "groq": ProviderConfig(
             name="Groq", api_key_env="GROQ_API_KEY",
             base_url="https://api.groq.com/openai/v1",

@@ -133,27 +133,67 @@ def _gemini_model() -> str:
 
 
 # ── free external search (SearchProvider seam) ──────────────────────────────
-# search(query) → [{title, url, snippet}]. DuckDuckGo's HTML endpoint needs no
-# key and no billing; swap the callable to change providers without touching
-# the Gemini integration.
+# search(query) → [{title, url, snippet}]. web_search() picks the backend:
+# Brave Search API (keyed, reliable, free 2k/month) when a BRAVE_API_KEY is
+# set in the AI Hub, else keyless DuckDuckGo HTML — which serves bot
+# challenges to this deployment's datacenter egress after a few requests, so
+# it is strictly the fallback. Swapping backends never touches the Gemini
+# integration.
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
+_BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
 
-def _http_get(url: str, timeout: int = 30, data: bytes | None = None) -> str:
+def _http_get(url: str, timeout: int = 30, data: bytes | None = None,
+              headers: dict | None = None) -> str:
     """GET (or POST when `data` is given). DDG's html endpoint serves a bot
     challenge to datacenter IPs on GET but real results on POST — verified
     live from this deployment's egress."""
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": _BROWSER_UA})
+    h = {"User-Agent": _BROWSER_UA}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
+        # "Status <code>" marker preserved → the batch's 429 backoff sees it.
         raise RuntimeError(f"Status {e.code}. جستجوی وب ناموفق بود") from None
     except urllib.error.URLError as e:
         raise RuntimeError(f"خطای شبکه در جستجوی وب: {e.reason}") from None
+
+
+def brave_search(query: str, *, max_results: int = 6, _get=None) -> list[dict]:
+    """Brave Search API → [{title, url, snippet}]. Key via X-Subscription-Token
+    header (never in the URL). Free plan: 2,000 queries/month at 1 req/s —
+    the batch pacer already spaces calls wider than that."""
+    key = _resolve_key("BRAVE_API_KEY").strip()
+    if not key:
+        raise RuntimeError("کلید Brave تنظیم نشده است — آن را در «AI Hub» وارد کنید")
+    from urllib.parse import urlencode
+    url = f"{_BRAVE_URL}?{urlencode({'q': query, 'count': max_results})}"
+    raw = (_get or _http_get)(url, headers={
+        "X-Subscription-Token": key, "Accept": "application/json"})
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    results = []
+    for r in ((payload.get("web") or {}).get("results") or [])[:max_results]:
+        u, t = r.get("url"), (r.get("title") or "").strip()
+        if u and t:
+            results.append({"title": t, "url": u,
+                            "snippet": (r.get("description") or "")[:300]})
+    return results
+
+
+def search_backend_name() -> str:
+    return "brave" if _resolve_key("BRAVE_API_KEY").strip() else "duckduckgo"
+
+
+def web_search(query: str, *, max_results: int = 6) -> list[dict]:
+    """The active SearchProvider: Brave when its key is set, else DDG."""
+    if search_backend_name() == "brave":
+        return brave_search(query, max_results=max_results)
+    return ddg_search(query, max_results=max_results)
 
 
 def _ddg_unwrap(href: str) -> str:
@@ -205,7 +245,7 @@ def gemini_search_fn(prompt: str, system: str, *, _post=None, _search=None) -> s
     list; if it returns none, the top search URLs are used — either way,
     sources are pages a real search surfaced, never invented links."""
     raw_name = _name_from_prompt(prompt)
-    results = (_search or ddg_search)(f"{raw_name} دارو")
+    results = (_search or web_search)(f"{raw_name} دارو")
     if not results:
         raise RuntimeError(f"جستجوی وب نتیجه‌ای برای «{raw_name}» نداشت")
     listing = json.dumps(results, ensure_ascii=False, indent=1)
@@ -228,17 +268,25 @@ def gemini_search_fn(prompt: str, system: str, *, _post=None, _search=None) -> s
     return text
 
 
-def gemini_ping(*, _post=None) -> dict:
-    """Real connection test: a minimal no-tools interaction. The API — not a
-    key-prefix heuristic — decides whether the credential works.
-    → {ok, model, reply} or raises with the categorized failure."""
+def gemini_ping(*, _post=None, _search=None) -> dict:
+    """Real connection test: a minimal no-tools interaction, plus a probe of
+    the active search backend (both legs of the pipeline must work). The API —
+    not a key-prefix heuristic — decides whether the credential works.
+    → {ok, model, reply, search_backend, search_results} or raises."""
     model = _gemini_model()
     payload = (_post or _http_post_json)(
         _GEMINI_INTERACTIONS_URL,
         {"model": model, "input": "Reply with exactly: OK"},
         headers={"x-goog-api-key": _gemini_key()})
     text, _ = _gemini_output(payload)
-    return {"ok": True, "provider": "gemini", "model": model, "reply": text[:60]}
+    out = {"ok": True, "provider": "gemini", "model": model, "reply": text[:60],
+           "search_backend": search_backend_name()}
+    try:
+        out["search_results"] = len((_search or web_search)("aspirin 100 mg دارو"))
+    except Exception as e:
+        out["ok"] = False
+        out["search_error"] = str(e)[:160]
+    return out
 
 
 _API_HINTS = {

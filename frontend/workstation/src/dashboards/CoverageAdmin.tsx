@@ -847,7 +847,13 @@ function EnrichmentPanel({ onMsg, onError }: {
     setBusy(true)
     try {
       const { data } = await pricingApi.enrichProviderTest(provider)
-      onMsg({ kind: 'ok', text: `اتصال ${data.provider} برقرار است (${data.model || 'مدل پیش‌فرض'}): ${data.reply || 'OK'}` })
+      const search = data.search_backend
+        ? ` · جستجو: ${data.search_backend}${data.search_error ? ` ✗ (${data.search_error})` : ` ✓ (${data.search_results} نتیجه)`}`
+        : ''
+      onMsg({
+        kind: data.ok === false ? 'err' : 'ok',
+        text: `اتصال ${data.provider}${data.ok === false ? ' ناقص است' : ' برقرار است'} (${data.model || 'مدل پیش‌فرض'}): ${data.reply || 'OK'}${search}`,
+      })
     } catch (e) { onError(e, `اتصال ${provider} برقرار نشد.`) }
     finally { setBusy(false) }
   }

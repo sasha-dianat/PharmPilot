@@ -20,6 +20,7 @@ def _isolated_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_RESEARCH_MODEL", raising=False)
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
 
 def _interaction(steps):
@@ -140,6 +141,41 @@ def test_ddg_parsing_and_uddg_unwrap():
     assert rs[0]["title"] == "ANGIPARS & info"                 # entities + tags cleaned
     assert rs[0]["snippet"] == "herbal drug for diabetic foot"
     assert rs[1]["url"] == "https://direct.example/page"
+
+
+def test_brave_search_parses_and_authenticates_via_header(monkeypatch):
+    from services.ai.enrichment.providers import brave_search
+    monkeypatch.setenv("BRAVE_API_KEY", " brv-key-123 ")
+    seen = {}
+
+    def fake_get(url, headers=None, **kw):
+        seen.update(url=url, headers=headers or {})
+        return json.dumps({"web": {"results": [
+            {"title": "ANGIPARS caps", "url": "https://darooyab.ir/a",
+             "description": "herbal drug for diabetic foot ulcers"},
+            {"title": "", "url": "https://skip.me"},          # untitled → skipped
+            {"title": "dup ok", "url": "https://b.example", "description": "d2"},
+        ]}})
+
+    rs = brave_search("angipars دارو", _get=fake_get)
+    assert seen["headers"]["X-Subscription-Token"] == "brv-key-123"   # trimmed, in header
+    assert "brv-key-123" not in seen["url"]                           # never in the URL
+    assert rs[0] == {"title": "ANGIPARS caps", "url": "https://darooyab.ir/a",
+                     "snippet": "herbal drug for diabetic foot ulcers"}
+    assert len(rs) == 2
+
+
+def test_brave_requires_key(monkeypatch):
+    from services.ai.enrichment.providers import brave_search
+    with pytest.raises(RuntimeError, match="AI Hub"):
+        brave_search("q", _get=lambda u, **kw: "{}")
+
+
+def test_web_search_seam_prefers_brave_when_key_set(monkeypatch):
+    from services.ai.enrichment import providers as ep
+    assert ep.search_backend_name() == "duckduckgo"      # no key → free fallback
+    monkeypatch.setenv("BRAVE_API_KEY", "brv")
+    assert ep.search_backend_name() == "brave"
 
 
 def test_404_retired_model_is_model_unavailable_not_key_failure():
