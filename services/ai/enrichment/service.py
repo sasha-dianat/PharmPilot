@@ -42,11 +42,35 @@ _STATE = EnrichmentBatchState()
 _LOCK = asyncio.Lock()
 
 # Politeness delay between web-search calls (Mistral rate limits + web etiquette).
-_THROTTLE_SEC = 1.5
+_THROTTLE_SEC = 3.0
+# Escalating waits after a 429 from the web_search connector — its rate window
+# is coarser than the chat API's, so short waits don't clear it.
+_RATE_BACKOFFS = (20.0, 45.0, 90.0)
 
 
 def status() -> dict:
     return _STATE.snapshot()
+
+
+def _is_rate_limited(errors: list[str]) -> bool:
+    txt = " ".join(errors).lower()
+    return "429" in txt or "rate limit" in txt
+
+
+async def _research_with_backoff(researcher: MistralResearcher, raw_name: str,
+                                 backoffs=_RATE_BACKOFFS):
+    """research() once, retrying only 429/rate-limit failures with escalating
+    waits. Non-rate-limit failures return immediately (retrying won't fix a
+    bad name). → (suggestion|None, errors)."""
+    suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
+    for wait in backoffs:
+        if suggestion is not None or not _is_rate_limited(errors):
+            break
+        _STATE.current = f"{raw_name} — محدودیت نرخ؛ {int(wait)}s توقف…"
+        await asyncio.sleep(wait)
+        _STATE.current = raw_name
+        suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
+    return suggestion, errors
 
 
 async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
@@ -73,7 +97,7 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
             for item in worklist[:limit]:
                 raw_name = item.get("raw_name") or ""
                 _STATE.current = raw_name
-                suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
+                suggestion, errors = await _research_with_backoff(researcher, raw_name)
                 if suggestion is None:
                     _STATE.failed += 1
                     _push_recent(raw_name, "failed: " + "; ".join(errors[:2]))
