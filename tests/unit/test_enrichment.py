@@ -30,6 +30,15 @@ def test_validate_suggestion_cleans_and_flags():
     assert "junk_field" not in clean
 
 
+def test_validate_suggestion_scalar_field_given_a_list_takes_first():
+    # Real Mistral reply for ANGIPARS answered dosage_form as ['capsule','ointment'];
+    # stringifying it would write "['capsule', 'ointment']" into the catalog column.
+    clean, errors = validate_suggestion(
+        {"generic": "melilotus officinalis", "dosage_form": ["capsule", "ointment"]})
+    assert errors == []
+    assert clean["dosage_form"] == "capsule"
+
+
 def test_validate_suggestion_rejects_bad_shapes():
     clean, errors = validate_suggestion({"confidence": "high", "sources": "not-a-list"})
     assert errors                                   # confidence not float, sources not list

@@ -561,7 +561,11 @@ class AIProviderRegistry:
             return text, int(tokens_in), int(tokens_out)
 
         elif provider == "mistral":
-            from mistralai import Mistral
+            # SDK v2 moved the client to mistralai.client; v1 exported it top-level.
+            try:
+                from mistralai.client import Mistral
+            except ImportError:
+                from mistralai import Mistral
             client = Mistral(api_key=os.environ.get("MISTRAL_API_KEY", ""))
             msgs = []
             if system_prompt:

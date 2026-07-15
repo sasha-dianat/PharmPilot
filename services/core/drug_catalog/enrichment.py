@@ -63,6 +63,13 @@ def validate_suggestion(d: dict) -> tuple[dict, list[str]]:
                 continue
             v = [str(x).strip() for x in v if str(x).strip()]
         else:
+            # Researchers sometimes answer a scalar field with a list (a product
+            # sold as both capsule AND ointment). Take the first value rather
+            # than stringifying the list into "['capsule', 'ointment']".
+            if isinstance(v, (list, tuple)):
+                v = next((str(x).strip() for x in v if str(x).strip()), "")
+                if not v:
+                    continue
             v = str(v).strip()
         clean[f] = v
     return clean, errors

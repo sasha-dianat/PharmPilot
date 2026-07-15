@@ -94,13 +94,18 @@ def _default_search_fn(prompt: str, system: str) -> str:
     api_key = os.environ.get("MISTRAL_API_KEY", "")
     if not api_key:
         raise RuntimeError("MISTRAL_API_KEY تنظیم نشده است")
-    from mistralai import Mistral  # lazy: optional dependency
+    # SDK v2 moved the client to mistralai.client; v1 exported it top-level.
+    try:
+        from mistralai.client import Mistral   # lazy: optional dependency (v2+)
+    except ImportError:
+        from mistralai import Mistral          # v1 fallback
 
     model = os.environ.get("MISTRAL_RESEARCH_MODEL", "mistral-large-latest")
     with Mistral(api_key=api_key) as client:
         res = client.beta.conversations.start(
             model=model,
-            inputs=f"{system}\n\n{prompt}",
+            instructions=system,
+            inputs=prompt,
             tools=[{"type": "web_search"}],
             completion_args={"response_format": {"type": "json_object"}},
         )

@@ -914,6 +914,25 @@ function EnrichmentPanel({ onMsg, onError }: {
       {run && !run.running && run.error &&
         <p className="text-[12px] text-red-400">خطای آخرین اجرا: {run.error}</p>}
 
+      {/* per-item outcomes — without these a failed run shows only a count */}
+      {(run?.recent || []).length > 0 && (
+        <details className="text-[12px]" open={(run?.failed || 0) > 0}>
+          <summary className="cursor-pointer text-slate-400 hover:text-slate-200">
+            رویدادهای اخیر ({fa(run?.recent.length)})
+          </summary>
+          <ul className="mt-1.5 space-y-0.5 font-mono max-h-48 overflow-y-auto">
+            {(run?.recent || []).slice().reverse().map((r, i) => {
+              const bad = r.result.startsWith('failed')
+              return (
+                <li key={i} className="flex gap-2 border-b border-slate-700/40 pb-0.5">
+                  <span className="text-slate-300 truncate max-w-[14rem]">{r.name}</span>
+                  <span className={bad ? 'text-red-400' : 'text-emerald-400'}>{r.result}</span>
+                </li>)
+            })}
+          </ul>
+        </details>
+      )}
+
       {/* review queue */}
       <div className="space-y-2">
         <div className="flex items-center gap-2">
