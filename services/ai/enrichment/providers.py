@@ -188,13 +188,56 @@ def brave_search(query: str, *, max_results: int = 6, _get=None) -> list[dict]:
     return results
 
 
+_YOUCOM_URL = "https://ydc-index.io/v1/search"
+
+
+def youcom_search(query: str, *, max_results: int = 6, _get=None) -> list[dict]:
+    """You.com Search API → [{title, url, snippet}]. Key via X-API-KEY header
+    (never in the URL). Response shape (verified live):
+    {"results": {"web": [{url, title, description, snippets[]}]}}."""
+    key = _resolve_key("YOUCOM_API_KEY").strip()
+    if not key:
+        raise RuntimeError("کلید You.com تنظیم نشده است — آن را در «AI Hub» وارد کنید")
+    from urllib.parse import urlencode
+    url = f"{_YOUCOM_URL}?{urlencode({'query': query, 'count': max_results})}"
+    raw = (_get or _http_get)(url, headers={"X-API-KEY": key, "Accept": "application/json"})
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    web = ((payload.get("results") or {}).get("web")
+           or payload.get("hits") or [])          # older API shape fallback
+    results = []
+    for r in web[:max_results]:
+        u, t = r.get("url"), (r.get("title") or "").strip()
+        if not (u and t):
+            continue
+        snippet = (r.get("description") or "").strip()
+        for s in (r.get("snippets") or []):       # snippets are often richer
+            if s and len(s) > len(snippet):
+                snippet = s
+        results.append({"title": t, "url": u, "snippet": snippet[:300]})
+    return results
+
+
+# Keyed backends first (reliable), keyless DDG strictly last — it bot-challenges
+# this deployment's datacenter egress after a few requests.
+_SEARCH_BACKENDS: tuple[tuple[str, str], ...] = (
+    ("youcom", "YOUCOM_API_KEY"),
+    ("brave", "BRAVE_API_KEY"),
+)
+
+
 def search_backend_name() -> str:
-    return "brave" if _resolve_key("BRAVE_API_KEY").strip() else "duckduckgo"
+    for name, env in _SEARCH_BACKENDS:
+        if _resolve_key(env).strip():
+            return name
+    return "duckduckgo"
 
 
 def web_search(query: str, *, max_results: int = 6) -> list[dict]:
-    """The active SearchProvider: Brave when its key is set, else DDG."""
-    if search_backend_name() == "brave":
+    """The active SearchProvider: first keyed backend whose key is set, else DDG."""
+    backend = search_backend_name()
+    if backend == "youcom":
+        return youcom_search(query, max_results=max_results)
+    if backend == "brave":
         return brave_search(query, max_results=max_results)
     return ddg_search(query, max_results=max_results)
 

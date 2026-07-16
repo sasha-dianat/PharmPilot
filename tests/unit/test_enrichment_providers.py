@@ -21,6 +21,7 @@ def _isolated_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_RESEARCH_MODEL", raising=False)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.delenv("YOUCOM_API_KEY", raising=False)
 
 
 def _interaction(steps):
@@ -171,11 +172,50 @@ def test_brave_requires_key(monkeypatch):
         brave_search("q", _get=lambda u, **kw: "{}")
 
 
-def test_web_search_seam_prefers_brave_when_key_set(monkeypatch):
+def test_web_search_seam_priority_youcom_brave_ddg(monkeypatch):
     from services.ai.enrichment import providers as ep
     assert ep.search_backend_name() == "duckduckgo"      # no key → free fallback
     monkeypatch.setenv("BRAVE_API_KEY", "brv")
     assert ep.search_backend_name() == "brave"
+    monkeypatch.setenv("YOUCOM_API_KEY", "ydc-x")        # keyed You.com outranks brave
+    assert ep.search_backend_name() == "youcom"
+
+
+def test_youcom_search_parses_and_authenticates_via_header(monkeypatch):
+    from services.ai.enrichment.providers import youcom_search
+    monkeypatch.setenv("YOUCOM_API_KEY", " ydc-key-1 ")
+    seen = {}
+
+    def fake_get(url, headers=None, **kw):
+        seen.update(url=url, headers=headers or {})
+        # live-verified shape: results.web[] with description + snippets[]
+        return json.dumps({"results": {"web": [
+            {"url": "https://darooyab.ir/a", "title": "ANGIPARS caps",
+             "description": "short", "snippets": ["a much longer, richer snippet text"]},
+            {"url": "https://no-title.example", "title": ""},
+            {"url": "https://b.example", "title": "b", "description": "d2", "snippets": []},
+        ]}})
+
+    rs = youcom_search("angipars دارو", _get=fake_get)
+    assert seen["headers"]["X-API-KEY"] == "ydc-key-1"          # trimmed, in header
+    assert "ydc-key-1" not in seen["url"]                       # never in the URL
+    assert "query=" in seen["url"] and seen["url"].startswith("https://ydc-index.io/v1/search")
+    assert rs[0]["snippet"] == "a much longer, richer snippet text"   # richest text wins
+    assert [r["url"] for r in rs] == ["https://darooyab.ir/a", "https://b.example"]
+
+
+def test_youcom_requires_key():
+    from services.ai.enrichment.providers import youcom_search
+    with pytest.raises(RuntimeError, match="AI Hub"):
+        youcom_search("q", _get=lambda u, **kw: "{}")
+
+
+def test_youcom_older_hits_shape_fallback(monkeypatch):
+    from services.ai.enrichment.providers import youcom_search
+    monkeypatch.setenv("YOUCOM_API_KEY", "ydc-k")
+    rs = youcom_search("q", _get=lambda u, **kw: json.dumps(
+        {"hits": [{"url": "https://h.example", "title": "hit", "description": "d"}]}))
+    assert rs == [{"title": "hit", "url": "https://h.example", "snippet": "d"}]
 
 
 def test_404_retired_model_is_model_unavailable_not_key_failure():

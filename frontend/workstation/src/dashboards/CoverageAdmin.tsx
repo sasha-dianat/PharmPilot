@@ -916,10 +916,11 @@ function EnrichmentPanel({ onMsg, onError }: {
         </select>
         {provider === 'gemini' && run?.search_backend && (
           <span className={`text-[11px] px-2 py-0.5 rounded-full border ${
-            run.search_backend === 'brave'
+            run.search_backend !== 'duckduckgo'
               ? 'bg-orange-500/10 border-orange-500/40 text-orange-300'
               : 'bg-slate-700 border-slate-600 text-slate-300'}`}>
-            جستجوی وب: {run.search_backend === 'brave' ? 'Brave ✓' : 'DuckDuckGo (بدون کلید)'}
+            جستجوی وب: {run.search_backend === 'youcom' ? 'You.com ✓'
+              : run.search_backend === 'brave' ? 'Brave ✓' : 'DuckDuckGo (بدون کلید)'}
           </span>
         )}
         <label className="text-[12px] text-slate-400">تعداد در این اجرا</label>
