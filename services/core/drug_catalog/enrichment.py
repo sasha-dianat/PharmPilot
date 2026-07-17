@@ -31,8 +31,12 @@ ITEM_KINDS = ("drug", "supply", "supplement", "other")
 # strength (150 mg), and container (vial/ampoule/prefilled syringe) are all
 # identity dimensions — carboplatin "injection" alone is ambiguous between a
 # concentrate-for-infusion vial and a ready solution.
+# components: [{name, strength}] — combination products (Al/Mg hydroxide +
+# simethicone 200/200/25 mg) carry per-active SERVING amounts, which are one
+# product, never separate strength variants.
 _VARIANT_KEYS = ("dosage_form", "route", "strength", "concentration",
-                 "pack_size", "container", "brand_name", "manufacturer", "notes")
+                 "pack_size", "container", "components",
+                 "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
 # are environment-specific and intentionally excluded — all exported rows are approved).
@@ -82,10 +86,23 @@ def validate_suggestion(d: dict) -> tuple[dict, list[str]]:
             if not isinstance(v, list):
                 errors.append("variants must be a list")
                 continue
-            v = [{k: (str(e[k]).strip() or None) if e.get(k) is not None else None
-                  for k in _VARIANT_KEYS}
-                 for e in v if isinstance(e, dict)]
-            v = [e for e in v if any(e.values())]
+            cleaned = []
+            for e in v:
+                if not isinstance(e, dict):
+                    continue
+                cv = {}
+                for k in _VARIANT_KEYS:
+                    if k == "components":
+                        comps = e.get(k)
+                        cv[k] = [{"name": str(c.get("name", "")).strip() or None,
+                                  "strength": str(c.get("strength", "")).strip() or None}
+                                 for c in comps if isinstance(c, dict)] \
+                            if isinstance(comps, list) else None
+                    else:
+                        cv[k] = (str(e[k]).strip() or None) if e.get(k) is not None else None
+                if any(cv.values()):
+                    cleaned.append(cv)
+            v = cleaned
         elif f == "item_kind":
             v = str(v).strip().lower()
             if v not in ITEM_KINDS:
@@ -140,9 +157,9 @@ def expand_variants(clean: dict) -> list[dict]:
         wrong form would fabricate products."""
     out: list[dict] = []
 
-    def add(form, strength, brand, pack=None):
+    def add(form, strength, brand, pack=None, components=None):
         v = {"dosage_form": form, "strength": strength, "pack_size": pack,
-             "brand_name": brand,
+             "components": components, "brand_name": brand,
              "manufacturer": clean.get("manufacturer") or None, "notes": None}
         if any(v.values()) and v not in out:
             out.append(v)
@@ -162,6 +179,21 @@ def expand_variants(clean: dict) -> list[dict]:
     strengths = clean.get("strengths") or []
     packs = clean.get("pack_size")
     packs = packs if isinstance(packs, list) else ([packs] if packs else [])
+
+    # Combination guard: N actives («al / mg / simethicone») with N strengths
+    # means per-active SERVING amounts of ONE product — a composite strength
+    # with components, never N fabricated variants.
+    actives = [a.strip() for a in str(clean.get("generic") or "").split("/")
+               if a.strip()]
+    if len(actives) > 1 and strengths and len(strengths) == len(actives) \
+            and len(forms) <= 1:
+        form = forms[0] if forms else None
+        comp = [{"name": a, "strength": s} for a, s in zip(actives, strengths)]
+        composite = " / ".join(strengths)
+        for brand in brands:
+            for p in (packs or [None]):
+                add(form, composite, brand, p, components=comp)
+        return out
 
     for brand in brands:
         if len(forms) <= 1:

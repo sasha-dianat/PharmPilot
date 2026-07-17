@@ -57,6 +57,12 @@ RESEARCH_SYSTEM = (
     '{"dosage_form":"injection, solution, concentrate","route":"intravenous",'
     '"strength":"150 mg","concentration":"10 mg/mL","pack_size":"15 mL",'
     '"container":"vial"}. آنچه منبع نگفته را null بگذار، حدس نزن.\n'
+    "۱۰) فرآوردهٔ ترکیبی (چند مادهٔ مؤثره) یک واریانت است، نه چند قدرت: strength را "
+    "ترکیبی بده و components را جدا. مثال: آلومینیوم/منیزیم هیدروکساید+سایمتیکون قرص جویدنی ⇒ "
+    '{"dosage_form":"chewable tablet","strength":"200 mg / 200 mg / 25 mg",'
+    '"components":[{"name":"aluminium hydroxide","strength":"200 mg"},'
+    '{"name":"magnesium hydroxide","strength":"200 mg"},'
+    '{"name":"simethicone","strength":"25 mg"}]}.\n'
     "مثال — ورودی «ویتامین آ-تداژل» ⇒ "
     '{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
     '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'

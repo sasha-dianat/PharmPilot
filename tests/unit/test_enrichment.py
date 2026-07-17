@@ -156,6 +156,30 @@ def test_linker_uses_concentration_numbers_too():
     assert link.matched and link.record.irc == "C1"
 
 
+def test_expand_variants_combination_is_one_product():
+    # Al/Mg hydroxide + simethicone 200/200/25 mg = per-active SERVING amounts
+    # of ONE chewable tablet — never 3 fabricated strength variants.
+    from services.core.drug_catalog.enrichment import expand_variants
+    vs = expand_variants({
+        "generic": "aluminium hydroxide / magnesium hydroxide / simethicone",
+        "dosage_form": "chewable tablet",
+        "strengths": ["200 mg", "200 mg", "25 mg"]})
+    assert len(vs) == 1
+    assert vs[0]["strength"] == "200 mg / 200 mg / 25 mg"
+    assert [c["name"] for c in vs[0]["components"]] == \
+        ["aluminium hydroxide", "magnesium hydroxide", "simethicone"]
+    assert vs[0]["components"][2]["strength"] == "25 mg"
+
+
+def test_validate_keeps_variant_components():
+    clean, errors = validate_suggestion({"generic": "x", "variants": [
+        {"dosage_form": "tablet", "strength": "200/25 mg",
+         "components": [{"name": "a", "strength": "200 mg"},
+                        {"name": "b", "strength": "25 mg"}]}]})
+    assert errors == []
+    assert clean["variants"][0]["components"][1] == {"name": "b", "strength": "25 mg"}
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"
