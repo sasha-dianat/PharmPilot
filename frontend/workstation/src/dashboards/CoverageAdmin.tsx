@@ -783,7 +783,8 @@ function DrugDrawer({ irc, insurer, onClose }: { irc: string; insurer: string; o
 
 // ── هوش‌یار دارو — smart enrichment (worklist → research → review → approve) ───
 interface EnrichVariant {
-  dosage_form: string | null; strength: string | null; pack_size?: string | null
+  dosage_form: string | null; route?: string | null; strength: string | null
+  concentration?: string | null; pack_size?: string | null; container?: string | null
   brand_name: string | null; manufacturer: string | null; notes: string | null
 }
 interface Suggestion {
@@ -1042,7 +1043,8 @@ function EnrichmentPanel({ onMsg, onError }: {
                       <div className="flex flex-wrap gap-1 pt-0.5">
                         {(s.variants || []).map((v, i) => (
                           <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200">
-                            {[v.dosage_form, v.strength, v.pack_size, v.brand_name]
+                            {[v.dosage_form, v.route, v.strength, v.concentration,
+                              v.pack_size, v.container, v.brand_name]
                               .filter(Boolean).join(' · ') || '—'}
                           </span>
                         ))}

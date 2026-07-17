@@ -313,7 +313,9 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                                            for v in variants) if f}
                     if len(v_forms) == 1:
                         form = next(iter(v_forms))
-                e_strengths = ([v.get("strength") for v in v_use if v.get("strength")]
+                e_strengths = ([s for v in v_use
+                                for s in (v.get("strength"), v.get("concentration"))
+                                if s]
                                if variants else (e.get("strengths") or []))
                 if e_strengths:
                     for s_disp in e_strengths:

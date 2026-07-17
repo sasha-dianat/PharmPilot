@@ -120,6 +120,42 @@ def test_linker_pack_size_disambiguates_same_form():
     assert link.matched and link.record.irc == "G70"
 
 
+def test_variant_passthrough_keeps_injectable_detail():
+    # Carboplatin: bare "injection" is ambiguous — route, concentration (per mL),
+    # total strength, pack volume, and container are each identity dimensions.
+    from services.core.drug_catalog.enrichment import expand_variants, validate_suggestion
+    clean, errors = validate_suggestion({"generic": "carboplatin", "variants": [
+        {"dosage_form": "injection, solution, concentrate", "route": "intravenous",
+         "strength": "150 mg", "concentration": "10 mg/mL",
+         "pack_size": "15 mL", "container": "vial"}]})
+    assert errors == []
+    v = expand_variants(clean)[0]
+    assert (v["route"], v["concentration"], v["container"]) == \
+        ("intravenous", "10 mg/mL", "vial")
+    assert (v["strength"], v["pack_size"]) == ("150 mg", "15 mL")
+
+
+def test_linker_uses_concentration_numbers_too():
+    # Row text carries 10 mg/1mL; the variant's concentration must feed matching
+    # even when its total strength (150 mg) is what the catalog row shows.
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+    catalog = [CatalogRecord(irc="C1", name_fa="ک پ", generic_name="carboplatin",
+                             dosage_form="INJECTION", strength="150 mg/15 mL",
+                             announced_price=Decimal("1"))]
+    enr = {enrich_key("CARBOPLATINX INJ"): {
+        "generic_name": "carboplatin", "dosage_form": None, "strengths": None,
+        "irc": None, "variants": [
+            {"dosage_form": "injection", "route": "intravenous",
+             "strength": "150 mg", "concentration": "10 mg/mL",
+             "pack_size": "15 mL", "container": "vial"}]}}
+    link = link_rows([{"drug_name": "CARBOPLATINX INJ 10 mg/1mL"}], catalog,
+                     enrichments=enr)[0]
+    assert link.matched and link.record.irc == "C1"
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"

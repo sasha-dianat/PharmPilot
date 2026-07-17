@@ -49,6 +49,14 @@ RESEARCH_SYSTEM = (
     "مثال: مترونیدازول ژل ۰٫۷۵٪ ⇒ "
     '[{"dosage_form":"topical gel","strength":"0.75 %","pack_size":"30 g"},'
     '{"dosage_form":"vaginal gel","strength":"0.75 %","pack_size":"70 g"}].\n'
+    "۹) حداکثر دقت در هر معیار — «injection» به‌تنهایی کافی نیست: نوع دقیق "
+    "(solution آماده، concentrate for infusion، powder for reconstitution)، "
+    "route (intravenous/intramuscular/subcutaneous/…)، container "
+    "(vial/ampoule/prefilled syringe)، و هم strength کل و هم concentration را جدا بده. "
+    "مثال: کربوپلاتین ⇒ "
+    '{"dosage_form":"injection, solution, concentrate","route":"intravenous",'
+    '"strength":"150 mg","concentration":"10 mg/mL","pack_size":"15 mL",'
+    '"container":"vial"}. آنچه منبع نگفته را null بگذار، حدس نزن.\n'
     "مثال — ورودی «ویتامین آ-تداژل» ⇒ "
     '{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
     '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'

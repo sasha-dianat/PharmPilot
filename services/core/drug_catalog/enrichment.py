@@ -26,8 +26,13 @@ ITEM_KINDS = ("drug", "supply", "supplement", "other")
 # pack_size (۳۰ g / ۷۰ g / ۱۰ mL / ۱۰۰ عددی) is an identity dimension of its
 # own: identical form+strength in different pack sizes are different priced
 # products (metronidazole 0.75% gel 30 g ≠ 70 g).
-_VARIANT_KEYS = ("dosage_form", "strength", "pack_size",
-                 "brand_name", "manufacturer", "notes")
+# Injectables (and sprays/drops) need more than a bare form to identify a
+# product: route (IV/IM/SC…), concentration (10 mg/mL) as distinct from total
+# strength (150 mg), and container (vial/ampoule/prefilled syringe) are all
+# identity dimensions — carboplatin "injection" alone is ambiguous between a
+# concentrate-for-infusion vial and a ready solution.
+_VARIANT_KEYS = ("dosage_form", "route", "strength", "concentration",
+                 "pack_size", "container", "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
 # are environment-specific and intentionally excluded — all exported rows are approved).
