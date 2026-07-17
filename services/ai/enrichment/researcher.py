@@ -36,7 +36,14 @@ RESEARCH_SYSTEM = (
     "۴) confidence یک عدد بین 0 و 1 بر اساس قطعیت منابع.\n"
     "۵) sources فهرست URLهای واقعی مورد استفاده باشد.\n"
     "کلیدهای JSON دقیقاً: generic, brand, manufacturer, country, dosage_form, "
-    "strengths (لیست), confidence (عدد), sources (لیست), notes.\n"
+    "strengths (لیست), confidence (عدد), sources (لیست), notes, item_kind, variants.\n"
+    "۶) item_kind: «drug» برای دارو، «supply» برای اقلام غیر دارویی مثل بطری/ظرف خالی "
+    "داروسازی (مثلاً BOTTLE 240 CC)، «supplement» برای مکمل، «other» در غیر این‌ها.\n"
+    "۷) variants: اگر فرآورده در چند «شکل دارویی»، چند «قدرت» یا چند «برند» عرضه می‌شود، "
+    "برای هر ترکیبِ واقعاً موجود یک عضو بده: "
+    '{"dosage_form":..., "strength":..., "brand_name":..., "manufacturer":...}. '
+    "مثال: تولمتین کپسول 400 و 600 ⇒ دو عضو؛ سالبوتامول اسپری استنشاقی/شربت/قرص ⇒ سه عضو "
+    "(نوع اسپری MDI یا DPI را اگر منبع گفته مشخص کن). ترکیب ناموجود نساز.\n"
     "مثال — ورودی «ویتامین آ-تداژل» ⇒ "
     '{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
     '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'
@@ -125,9 +132,17 @@ class DrugResearcher:
         if errors:
             return None, errors
         if not any(clean.get(f) for f in ("generic", "brand", "manufacturer",
-                                          "dosage_form", "strengths")):
+                                          "dosage_form", "strengths", "item_kind")):
             return None, ["مدل هیچ فیلد مفیدی برنگرداند"]
+        from services.core.drug_catalog.enrichment import expand_variants, infer_item_kind
         suggestion = {_COL_MAP[k]: v for k, v in clean.items() if k in _COL_MAP}
+        # dosage_form/brand may be lists (multi-form/-brand products): the scalar
+        # column takes the first value; the full set lives in variants.
+        for col in ("dosage_form", "brand_name"):
+            if isinstance(suggestion.get(col), list):
+                suggestion[col] = suggestion[col][0]
+        suggestion["variants"] = expand_variants(clean)
+        suggestion["item_kind"] = infer_item_kind(raw_name, clean)
         suggestion["confidence"] = clean.get("confidence")
         suggestion["sources"] = clean.get("sources") or []
         return suggestion, []
@@ -160,6 +175,8 @@ async def save_suggestion(db, raw_name: str, suggestion: dict, *,
         country=suggestion.get("country"),
         dosage_form=suggestion.get("dosage_form"),
         strengths=suggestion.get("strengths"),
+        variants=suggestion.get("variants") or None,
+        item_kind=suggestion.get("item_kind") or "drug",
         notes=suggestion.get("notes"),
         sources=suggestion.get("sources") or [],
         confidence=suggestion.get("confidence"),

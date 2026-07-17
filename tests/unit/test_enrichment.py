@@ -30,13 +30,75 @@ def test_validate_suggestion_cleans_and_flags():
     assert "junk_field" not in clean
 
 
-def test_validate_suggestion_scalar_field_given_a_list_takes_first():
-    # Real Mistral reply for ANGIPARS answered dosage_form as ['capsule','ointment'];
-    # stringifying it would write "['capsule', 'ointment']" into the catalog column.
+def test_validate_suggestion_preserves_form_list_for_fanout():
+    # A multi-form product (ANGIPARS capsule+ointment) keeps the LIST so the
+    # expander can fan it out — never stringified into "['capsule', 'ointment']".
     clean, errors = validate_suggestion(
         {"generic": "melilotus officinalis", "dosage_form": ["capsule", "ointment"]})
     assert errors == []
-    assert clean["dosage_form"] == "capsule"
+    assert clean["dosage_form"] == ["capsule", "ointment"]
+
+
+# ── variant fan-out (هر توان/شکل/برند = یک مدخل) ─────────────────────────────
+def test_expand_variants_one_form_many_strengths():
+    from services.core.drug_catalog.enrichment import expand_variants
+    vs = expand_variants({"generic": "tolmetin sodium", "brand": "Tolectin",
+                          "dosage_form": "capsule", "strengths": ["400 mg", "600 mg"]})
+    assert [(v["dosage_form"], v["strength"]) for v in vs] == \
+        [("capsule", "400 mg"), ("capsule", "600 mg")]
+    assert all(v["brand_name"] == "Tolectin" for v in vs)
+
+
+def test_expand_variants_many_forms_no_cross_attribution():
+    from services.core.drug_catalog.enrichment import expand_variants
+    vs = expand_variants({"generic": "salbutamol",
+                          "dosage_form": ["inhalation spray", "syrup", "tablet"],
+                          "strengths": ["100 mcg/dose", "2 mg/5 mL", "4 mg"]})
+    # one variant per form; strengths NOT cross-attributed (that would fabricate products)
+    assert [v["dosage_form"] for v in vs] == ["inhalation spray", "syrup", "tablet"]
+    assert all(v["strength"] is None for v in vs)
+
+
+def test_expand_variants_model_provided_passthrough():
+    from services.core.drug_catalog.enrichment import expand_variants
+    given = [{"dosage_form": "syrup", "strength": "2 mg/5 mL"},
+             {"dosage_form": "tablet", "strength": "4 mg"}]
+    vs = expand_variants({"variants": given, "dosage_form": ["x"], "strengths": ["9"]})
+    assert [(v["dosage_form"], v["strength"]) for v in vs] == \
+        [("syrup", "2 mg/5 mL"), ("tablet", "4 mg")]
+
+
+def test_infer_item_kind_bottle_is_supply():
+    from services.core.drug_catalog.enrichment import infer_item_kind
+    assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"
+    assert infer_item_kind("بطری 120 میلی لیتر", {}) == "supply"
+    assert infer_item_kind("SALBUTAMOL", {"generic": "salbutamol"}) == "drug"
+    # model says supply but a generic exists → regex guard doesn't fire; model kind kept
+    assert infer_item_kind("weird item", {"item_kind": "supply"}) == "supply"
+
+
+def test_linker_variant_picks_matching_form_strength():
+    # «سالبوتامول شربت» must use the SYRUP variant's strength, not the tablet's.
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+    catalog = [
+        CatalogRecord(irc="S1", name_fa="محلول خوراکی س", generic_name="salbutamol",
+                      dosage_form="SYRUP", strength="2 mg/5 mL",
+                      announced_price=Decimal("1")),
+        CatalogRecord(irc="T1", name_fa="قرص س", generic_name="salbutamol",
+                      dosage_form="TABLET", strength="4 mg",
+                      announced_price=Decimal("1")),
+    ]
+    enr = {enrich_key("SALBUTAMOL SYRUP X"): {
+        "generic_name": "salbutamol", "dosage_form": None, "strengths": None,
+        "irc": None, "variants": [
+            {"dosage_form": "syrup", "strength": "2 mg/5 mL"},
+            {"dosage_form": "tablet", "strength": "4 mg"},
+        ]}}
+    link = link_rows([{"drug_name": "SALBUTAMOL SYRUP X"}], catalog, enrichments=enr)[0]
+    assert link.matched and link.record.irc == "S1"
 
 
 def test_validate_suggestion_rejects_bad_shapes():

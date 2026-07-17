@@ -281,16 +281,36 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                     continue
                 if not canon and e.get("generic_name"):
                     canon = canonical_ingredient(normalize(e["generic_name"])) or canon
-                if e.get("strengths"):
-                    for s_disp in e["strengths"]:
+                def _form_of(s):
+                    for tok in re.findall(r"[A-Za-z]+", str(s or "").lower()):
+                        if tok in _FORM_WORDS:
+                            return _FORM_WORDS[tok]
+                    return None
+
+                # Variant-aware refinement: when the row names a form
+                # («سالبوتامول شربت»), use ONLY the matching variant's strengths
+                # so the syrup row can't inherit the tablet's 4 mg.
+                variants = e.get("variants") or []
+                v_use = variants
+                if variants and form:
+                    matched = [v for v in variants
+                               if _form_of(v.get("dosage_form")) == form]
+                    if matched:
+                        v_use = matched
+                if not form:
+                    v_forms = {f for f in (_form_of(v.get("dosage_form"))
+                                           for v in variants) if f}
+                    if len(v_forms) == 1:
+                        form = next(iter(v_forms))
+                e_strengths = ([v.get("strength") for v in v_use if v.get("strength")]
+                               if variants else (e.get("strengths") or []))
+                if e_strengths:
+                    for s_disp in e_strengths:
                         strengths |= set(re.findall(
                             r"\d+(?:\.\d+)?", str(s_disp).translate(_DIGIT_FIX)))
-                    row_mg = row_mg | _strength_mg(" ".join(map(str, e["strengths"])))
+                    row_mg = row_mg | _strength_mg(" ".join(map(str, e_strengths)))
                 if not form and e.get("dosage_form"):
-                    for tok in re.findall(r"[A-Za-z]+", str(e["dosage_form"]).lower()):
-                        if tok in _FORM_WORDS:
-                            form = _FORM_WORDS[tok]
-                            break
+                    form = _form_of(e["dosage_form"]) or form
 
         best: tuple[float, CatalogRecord | None, str] = (0.0, None, "none")
         for rec, c_canon, c_str, c_form, c_mg in (latin_block.get(canon[:3], []) if canon else []):

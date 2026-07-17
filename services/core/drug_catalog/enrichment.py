@@ -17,12 +17,18 @@ from .schema import canonical_ingredient
 REFERENCE_PATH = Path("data/reference/drug_enrichments.json")
 
 SUGGESTION_FIELDS = ("generic", "brand", "manufacturer", "country",
-                     "dosage_form", "strengths", "confidence", "sources", "notes")
+                     "dosage_form", "strengths", "confidence", "sources", "notes",
+                     "item_kind", "variants")
+
+ITEM_KINDS = ("drug", "supply", "supplement", "other")
+
+_VARIANT_KEYS = ("dosage_form", "strength", "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
 # are environment-specific and intentionally excluded — all exported rows are approved).
 _REFERENCE_FIELDS = ("key", "raw_name", "irc", "generic_name", "brand_name",
                      "manufacturer", "country", "dosage_form", "strengths",
+                     "variants", "item_kind",
                      "notes", "sources", "researched_by", "confidence")
 
 
@@ -62,10 +68,31 @@ def validate_suggestion(d: dict) -> tuple[dict, list[str]]:
                 errors.append(f"{f} must be a list")
                 continue
             v = [str(x).strip() for x in v if str(x).strip()]
+        elif f == "variants":
+            if not isinstance(v, list):
+                errors.append("variants must be a list")
+                continue
+            v = [{k: (str(e[k]).strip() or None) if e.get(k) is not None else None
+                  for k in _VARIANT_KEYS}
+                 for e in v if isinstance(e, dict)]
+            v = [e for e in v if any(e.values())]
+        elif f == "item_kind":
+            v = str(v).strip().lower()
+            if v not in ITEM_KINDS:
+                continue                       # unknown kind → default handled later
+        elif f in ("dosage_form", "brand"):
+            # A product sold as several forms/brands legitimately answers with a
+            # list — PRESERVE it for variant fan-out (the researcher stores the
+            # first value in the scalar column and expands the rest).
+            if isinstance(v, (list, tuple)):
+                v = [str(x).strip() for x in v if str(x).strip()]
+                if not v:
+                    continue
+                if len(v) == 1:
+                    v = v[0]
+            else:
+                v = str(v).strip()
         else:
-            # Researchers sometimes answer a scalar field with a list (a product
-            # sold as both capsule AND ointment). Take the first value rather
-            # than stringifying the list into "['capsule', 'ointment']".
             if isinstance(v, (list, tuple)):
                 v = next((str(x).strip() for x in v if str(x).strip()), "")
                 if not v:
@@ -73,6 +100,68 @@ def validate_suggestion(d: dict) -> tuple[dict, list[str]]:
             v = str(v).strip()
         clean[f] = v
     return clean, errors
+
+
+_SUPPLY_RE = None  # compiled lazily below
+
+
+def infer_item_kind(raw_name: str, clean: dict) -> str:
+    """Deterministic classification guard on top of the model's item_kind.
+    Empty bottles/containers for compounding (e.g. «BOTTLE 240 CC») must never
+    be treated as drugs, even if the model says otherwise."""
+    import re
+    global _SUPPLY_RE
+    if _SUPPLY_RE is None:
+        _SUPPLY_RE = re.compile(
+            r"(bottle|container|jar|بطری|ظرف|شیشه)\s*.{0,15}?\d+\s*(cc|ml|میلی)", re.I)
+    if _SUPPLY_RE.search(str(raw_name)) and not clean.get("generic"):
+        return "supply"
+    kind = clean.get("item_kind")
+    return kind if kind in ITEM_KINDS else "drug"
+
+
+def expand_variants(clean: dict) -> list[dict]:
+    """Deterministic fan-out into registrable variants (never trusts the LLM to
+    enumerate combinations):
+      * model-provided variants[] pass through cleaned and deduped;
+      * ONE dosage form × N strengths → N variants (tolmetin 400/600 → 2);
+      * N dosage forms → one variant per form (salbutamol spray/syrup/tablet →
+        3); strengths stay parent-level because cross-attributing them to the
+        wrong form would fabricate products."""
+    out: list[dict] = []
+
+    def add(form, strength, brand):
+        v = {"dosage_form": form, "strength": strength, "brand_name": brand,
+             "manufacturer": clean.get("manufacturer") or None, "notes": None}
+        if any(v.values()) and v not in out:
+            out.append(v)
+
+    provided = clean.get("variants") or []
+    if provided:
+        for v in provided:
+            v = {**{k: None for k in _VARIANT_KEYS}, **v}
+            if v not in out:
+                out.append(v)
+        return out
+
+    forms = clean.get("dosage_form")
+    forms = forms if isinstance(forms, list) else ([forms] if forms else [])
+    brands = clean.get("brand")
+    brands = brands if isinstance(brands, list) else [brands or None]
+    strengths = clean.get("strengths") or []
+
+    for brand in brands:
+        if len(forms) <= 1:
+            form = forms[0] if forms else None
+            if strengths:
+                for s in strengths:
+                    add(form, s, brand)
+            elif form or brand:
+                add(form, None, brand)
+        else:
+            for form in forms:
+                add(form, None, brand)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +190,11 @@ async def load_approved(db) -> dict[str, dict]:
             "country": r.country,
             "dosage_form": r.dosage_form,
             "strengths": r.strengths,
+            "variants": r.variants,
             "irc": r.irc,
         }
-        for r in rows if r.key
+        # supply items (empty bottles/containers) must never steer drug matching
+        for r in rows if r.key and (getattr(r, "item_kind", "drug") or "drug") == "drug"
     }
 
 
@@ -167,6 +258,8 @@ async def import_reference(db, path=REFERENCE_PATH) -> int:
             country=entry.get("country"),
             dosage_form=entry.get("dosage_form"),
             strengths=entry.get("strengths"),
+            variants=entry.get("variants"),
+            item_kind=entry.get("item_kind") or "drug",
             notes=entry.get("notes"),
             sources=entry.get("sources"),
             researched_by=researched_by,
@@ -198,7 +291,9 @@ async def list_enrichments(db, status: str | None = "suggested",
         "id": str(r.id), "key": r.key, "raw_name": r.raw_name, "irc": r.irc,
         "generic_name": r.generic_name, "brand_name": r.brand_name,
         "manufacturer": r.manufacturer, "country": r.country,
-        "dosage_form": r.dosage_form, "strengths": r.strengths, "notes": r.notes,
+        "dosage_form": r.dosage_form, "strengths": r.strengths,
+        "variants": r.variants, "item_kind": getattr(r, "item_kind", "drug"),
+        "notes": r.notes,
         "sources": r.sources, "researched_by": r.researched_by,
         "confidence": r.confidence, "status": r.status,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,

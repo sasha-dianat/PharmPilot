@@ -782,12 +782,20 @@ function DrugDrawer({ irc, insurer, onClose }: { irc: string; insurer: string; o
 }
 
 // ── هوش‌یار دارو — smart enrichment (worklist → research → review → approve) ───
+interface EnrichVariant {
+  dosage_form: string | null; strength: string | null
+  brand_name: string | null; manufacturer: string | null; notes: string | null
+}
 interface Suggestion {
   id: string; key: string; raw_name: string; irc: string | null
   generic_name: string | null; brand_name: string | null; manufacturer: string | null
   country: string | null; dosage_form: string | null; strengths: string[] | null
+  variants: EnrichVariant[] | null; item_kind: string
   notes: string | null; sources: string[] | null; researched_by: string
   confidence: number | null; status: string
+}
+const KIND_FA: Record<string, string> = {
+  supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
@@ -1017,12 +1025,29 @@ function EnrichmentPanel({ onMsg, onError }: {
                 <div key={s.id} className="flex flex-wrap items-start gap-x-3 gap-y-1 text-[12px] border border-slate-700/60 rounded-md p-2">
                   <input type="checkbox" checked={sel.has(s.id)} onChange={() => toggle(s.id)} className="mt-1" />
                   <div className="flex-1 min-w-[16rem] space-y-0.5">
-                    <div className="font-semibold text-slate-100">{s.raw_name}</div>
+                    <div className="font-semibold text-slate-100">
+                      {s.raw_name}
+                      {s.item_kind && s.item_kind !== 'drug' && (
+                        <span className="mr-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300 align-middle">
+                          {KIND_FA[s.item_kind] || s.item_kind}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-slate-300">
                       {[s.generic_name, s.brand_name, s.manufacturer, s.country,
                         s.dosage_form, (s.strengths || []).join(' / ')]
                         .filter(Boolean).join(' · ') || '—'}
                     </div>
+                    {(s.variants || []).length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {(s.variants || []).map((v, i) => (
+                          <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200">
+                            {[v.dosage_form, v.strength, v.brand_name]
+                              .filter(Boolean).join(' · ') || '—'}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                       <span className="px-1.5 py-0.5 rounded bg-slate-700">{s.researched_by}</span>
                       {s.confidence != null &&

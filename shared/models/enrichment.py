@@ -21,6 +21,11 @@ class DrugEnrichment(TimestampedBase):
     country: Mapped[str | None] = mapped_column(String(80), nullable=True)
     dosage_form: Mapped[str | None] = mapped_column(String(80), nullable=True)
     strengths: Mapped[list | None] = mapped_column(JSONB, nullable=True)   # display strings
+    # [{dosage_form, strength, brand_name, manufacturer, notes}] — one entry per
+    # registrable strength×form×brand combination (expanded deterministically).
+    variants: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # drug | supply | supplement | other — supply never enters drug matching
+    item_kind: Mapped[str] = mapped_column(String(20), default="drug", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)     # urls
     researched_by: Mapped[str] = mapped_column(String(20), nullable=False)  # mistral|claude|manual
