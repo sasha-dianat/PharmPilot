@@ -63,6 +63,14 @@ RESEARCH_SYSTEM = (
     '"components":[{"name":"aluminium hydroxide","strength":"200 mg"},'
     '{"name":"magnesium hydroxide","strength":"200 mg"},'
     '{"name":"simethicone","strength":"25 mg"}]}.\n'
+    "۱۱) برای قلم‌های تزریق (انسولین و غیره) نوع دقیق قلم جزو هویت فرآورده است و در "
+    "container می‌آید: prefilled disposable pen، reusable pen، cartridge/Penfill، و نام "
+    "سیستم قلم اگر دارد (SoloStar، FlexPen، KwikPen، …). هر نوع قلم/کارتریج یک واریانت جدا است. "
+    "مثال: انسولین گلارژین ⇒ "
+    '[{"dosage_form":"injection, solution","route":"subcutaneous","concentration":"100 IU/mL",'
+    '"pack_size":"3 mL","container":"prefilled pen (SoloStar)"},'
+    '{"dosage_form":"injection, solution","route":"subcutaneous","concentration":"100 IU/mL",'
+    '"pack_size":"3 mL","container":"cartridge (Penfill)"}].\n'
     "مثال — ورودی «ویتامین آ-تداژل» ⇒ "
     '{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
     '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'

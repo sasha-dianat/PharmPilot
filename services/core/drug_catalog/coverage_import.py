@@ -298,6 +298,21 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                     if matched:
                         v_use = matched
                 if len(v_use) > 1:
+                    # Pen/container type disambiguates (SoloStar vs Penfill
+                    # cartridge are different priced products): keep variants
+                    # whose container tokens appear in the row name.
+                    low = str(name).lower()
+                    pen_hits = [t for t in ("solostar", "flexpen", "kwikpen",
+                                            "penfill", "cartridge", "pen",
+                                            "قلم", "کارتریج")
+                                if t in low]
+                    if pen_hits:
+                        contained = [v for v in v_use if v.get("container") and
+                                     any(t in str(v["container"]).lower()
+                                         for t in pen_hits)]
+                        if contained:
+                            v_use = contained
+                if len(v_use) > 1:
                     # pack size disambiguates further: «…30 g GEL» keeps only
                     # the 30 g variant (identical form/strength in a different
                     # pack is a different priced product).

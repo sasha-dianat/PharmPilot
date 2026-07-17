@@ -180,6 +180,34 @@ def test_validate_keeps_variant_components():
     assert clean["variants"][0]["components"][1] == {"name": "b", "strength": "25 mg"}
 
 
+def test_linker_pen_type_disambiguates():
+    # SoloStar prefilled pen (U-300) vs Penfill cartridge (U-100): a row naming
+    # the pen system must use that variant's concentration.
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+    catalog = [
+        CatalogRecord(irc="P300", name_fa="ق الف", generic_name="insulin glargine",
+                      dosage_form="INJECTION", strength="300 IU/mL",
+                      announced_price=Decimal("1")),
+        CatalogRecord(irc="C100", name_fa="ک ب", generic_name="insulin glargine",
+                      dosage_form="INJECTION", strength="100 IU/mL",
+                      announced_price=Decimal("1")),
+    ]
+    enr = {enrich_key("INSULINGLAR X"): {
+        "generic_name": "insulin glargine", "dosage_form": None, "strengths": None,
+        "irc": None, "variants": [
+            {"dosage_form": "injection", "concentration": "300 IU/mL",
+             "container": "prefilled pen (SoloStar)"},
+            {"dosage_form": "injection", "concentration": "100 IU/mL",
+             "container": "cartridge (Penfill)"},
+        ]}}
+    link = link_rows([{"drug_name": "INSULINGLAR X SOLOSTAR"}], catalog,
+                     enrichments=enr)[0]
+    assert link.matched and link.record.irc == "P300"
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"
