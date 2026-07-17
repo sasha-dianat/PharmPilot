@@ -63,6 +63,13 @@ RESEARCH_SYSTEM = (
     '"components":[{"name":"aluminium hydroxide","strength":"200 mg"},'
     '{"name":"magnesium hydroxide","strength":"200 mg"},'
     '{"name":"simethicone","strength":"25 mg"}]}.\n'
+    "۱۲) فرآوردهٔ گیاهی ⇒ item_kind: «herbal» و هویت فارماکوگنوزی در واریانت: "
+    "scientific_name (نام علمی لاتین)، plant_part (اندام گیاه)، extract_type "
+    "(نوع عصاره: خشک/هیدروالکلی/اسانس/…)، marker (مادهٔ استانداردشده). "
+    "مثال: لیورگل ⇒ "
+    '{"scientific_name":"Silybum marianum","plant_part":"seed",'
+    '"extract_type":"dry extract","marker":"silymarin 70 mg",'
+    '"dosage_form":"tablet"}. چندجزئی گیاهی ⇒ components با نام علمی هر گیاه.\n'
     "۱۱) برای قلم‌های تزریق (انسولین و غیره) نوع دقیق قلم جزو هویت فرآورده است و در "
     "container می‌آید: prefilled disposable pen، reusable pen، cartridge/Penfill، و نام "
     "سیستم قلم اگر دارد (SoloStar، FlexPen، KwikPen، …). هر نوع قلم/کارتریج یک واریانت جدا است. "

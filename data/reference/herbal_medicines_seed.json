@@ -1,0 +1,42 @@
+{"version": 1, "note": "Classified Iranian-market herbal medicines seed — pharmacognosy identity per variant. Authored by Claude (pharmacognosy pass), loaded as SUGGESTED for owner review. classes: phenylpropanoid|flavonolignan|terpenoid|essential_oil|alkaloid|mucilage|anthraquinone|saponin|sulfur_compound|coumarin",
+ "entries": [
+  {"raw_name": "ANGIPARS", "generic": "melilotus officinalis", "item_kind": "herbal", "brand": "Angipars", "manufacturer": "ParsRoos", "country": "Iran", "notes": "coumarin class; diabetic foot ulcer", "variants": [
+    {"dosage_form": "capsule", "strength": "100 mg", "scientific_name": "Melilotus officinalis", "plant_part": "aerial parts", "extract_type": "hydroalcoholic extract"},
+    {"dosage_form": "topical ointment", "concentration": "3 %", "pack_size": "30 g", "scientific_name": "Melilotus officinalis", "plant_part": "aerial parts"}]},
+  {"raw_name": "LIVERGOL", "generic": "silybum marianum", "item_kind": "herbal", "brand": "Livergol", "manufacturer": "Goldaru", "country": "Iran", "notes": "flavonolignan class; hepatoprotective", "variants": [
+    {"dosage_form": "tablet", "strength": "70 mg", "marker": "silymarin 70 mg", "scientific_name": "Silybum marianum", "plant_part": "seed", "extract_type": "dry extract"},
+    {"dosage_form": "tablet", "strength": "140 mg", "marker": "silymarin 140 mg", "scientific_name": "Silybum marianum", "plant_part": "seed", "extract_type": "dry extract"}]},
+  {"raw_name": "HYPIRAN", "generic": "hypericum perforatum", "item_kind": "herbal", "brand": "Hypiran", "manufacturer": "Poursina", "country": "Iran", "notes": "phenylpropanoid/naphthodianthrone; mild-moderate depression", "variants": [
+    {"dosage_form": "oral drops", "marker": "hypericin", "scientific_name": "Hypericum perforatum", "plant_part": "flowering tops", "extract_type": "hydroalcoholic extract", "pack_size": "30 mL"}]},
+  {"raw_name": "PERSICA", "generic": "salvadora persica", "item_kind": "herbal", "brand": "Persica", "manufacturer": "Poursina", "country": "Iran", "notes": "mouthwash; antiseptic (with mint/yarrow)", "variants": [
+    {"dosage_form": "mouthwash solution", "scientific_name": "Salvadora persica", "plant_part": "root/twig", "extract_type": "hydroalcoholic extract", "pack_size": "30 mL"}]},
+  {"raw_name": "CARMINT", "generic": "melissa officinalis / mentha piperita / coriandrum sativum", "item_kind": "herbal", "brand": "Carmint", "manufacturer": "Barij Essence", "country": "Iran", "notes": "essential_oil class; carminative/antispasmodic", "variants": [
+    {"dosage_form": "oral drops", "pack_size": "15 mL", "components": [
+      {"name": "Melissa officinalis"}, {"name": "Mentha piperita"}, {"name": "Coriandrum sativum"}]}]},
+  {"raw_name": "SEDAMIN", "generic": "valeriana officinalis", "item_kind": "herbal", "brand": "Sedamin", "manufacturer": "Goldaru", "country": "Iran", "notes": "terpenoid (valepotriate/valerenic acid); sedative", "variants": [
+    {"dosage_form": "capsule", "strength": "530 mg", "scientific_name": "Valeriana officinalis", "plant_part": "root", "extract_type": "dry extract"}]},
+  {"raw_name": "ZINTOMA", "generic": "zingiber officinale", "item_kind": "herbal", "brand": "Zintoma", "manufacturer": "Goldaru", "country": "Iran", "notes": "terpenoid/gingerol; antiemetic", "variants": [
+    {"dosage_form": "capsule", "strength": "250 mg", "scientific_name": "Zingiber officinale", "plant_part": "rhizome", "extract_type": "powder"}]},
+  {"raw_name": "GARLET", "generic": "allium sativum", "item_kind": "herbal", "brand": "Garlet", "manufacturer": "Goldaru", "country": "Iran", "notes": "sulfur_compound (alliin); lipid-lowering", "variants": [
+    {"dosage_form": "enteric coated tablet", "strength": "400 mg", "scientific_name": "Allium sativum", "plant_part": "bulb", "extract_type": "powder"}]},
+  {"raw_name": "GINKGO T.D.", "generic": "ginkgo biloba", "item_kind": "herbal", "brand": "Ginkgo T.D.", "manufacturer": "Tolidaru", "country": "Iran", "notes": "flavonoid/terpene lactone; peripheral & cerebral circulation", "variants": [
+    {"dosage_form": "tablet", "strength": "40 mg", "marker": "ginkgo flavone glycosides 24%", "scientific_name": "Ginkgo biloba", "plant_part": "leaf", "extract_type": "dry extract"}]},
+  {"raw_name": "SENAGOL", "generic": "cassia angustifolia", "item_kind": "herbal", "brand": "Senagol", "manufacturer": "Goldaru", "country": "Iran", "notes": "anthraquinone (sennosides); stimulant laxative", "variants": [
+    {"dosage_form": "tablet", "marker": "sennosides", "scientific_name": "Cassia angustifolia", "plant_part": "leaf", "extract_type": "dry extract"}]},
+  {"raw_name": "PSYLLIUM (ESFARZEH)", "generic": "plantago ovata", "item_kind": "herbal", "brand": null, "manufacturer": null, "country": "Iran", "notes": "mucilage class; bulk laxative", "variants": [
+    {"dosage_form": "powder", "scientific_name": "Plantago ovata", "plant_part": "seed husk", "extract_type": "whole husk"}]},
+  {"raw_name": "MYRTOPLEX", "generic": "myrtus communis", "item_kind": "herbal", "brand": "Myrtoplex", "manufacturer": "Barij Essence", "country": "Iran", "notes": "essential_oil class; topical anti-herpetic", "variants": [
+    {"dosage_form": "topical ointment", "concentration": "10 %", "scientific_name": "Myrtus communis", "plant_part": "leaf", "extract_type": "essential oil"}]},
+  {"raw_name": "PROSTATAN", "generic": "cucurbita pepo / urtica dioica", "item_kind": "herbal", "brand": "Prostatan", "manufacturer": "Goldaru", "country": "Iran", "notes": "saponin/phytosterol; BPH adjunct", "variants": [
+    {"dosage_form": "oral drops", "components": [{"name": "Cucurbita pepo"}, {"name": "Urtica dioica"}]}]},
+  {"raw_name": "D-REGLIS", "generic": "glycyrrhiza glabra", "item_kind": "herbal", "brand": "D-Reglis", "manufacturer": "Darupakhsh", "country": "Iran", "notes": "saponin (deglycyrrhizinated licorice); peptic ulcer adjunct", "variants": [
+    {"dosage_form": "chewable tablet", "strength": "380 mg", "scientific_name": "Glycyrrhiza glabra", "plant_part": "root", "extract_type": "deglycyrrhizinated extract"}]},
+  {"raw_name": "THYMEX", "generic": "thymus vulgaris", "item_kind": "herbal", "brand": "Thymex", "manufacturer": "Iran Darouk", "country": "Iran", "notes": "essential_oil (thymol); expectorant/antitussive", "variants": [
+    {"dosage_form": "syrup", "pack_size": "120 mL", "scientific_name": "Thymus vulgaris", "plant_part": "aerial parts", "extract_type": "fluid extract"}]},
+  {"raw_name": "ZOOFA", "generic": "hyssopus officinalis (compound)", "item_kind": "herbal", "brand": "Zoofa", "manufacturer": "Iran Darouk", "country": "Iran", "notes": "essential_oil class; compound expectorant syrup", "variants": [
+    {"dosage_form": "syrup", "pack_size": "120 mL", "scientific_name": "Hyssopus officinalis", "plant_part": "aerial parts"}]},
+  {"raw_name": "ECHIHERB", "generic": "echinacea purpurea", "item_kind": "herbal", "brand": "EchiHerb", "manufacturer": "Goldaru", "country": "Iran", "notes": "phenylpropanoid (cichoric acid); immunostimulant", "variants": [
+    {"dosage_form": "tablet", "scientific_name": "Echinacea purpurea", "plant_part": "aerial parts", "extract_type": "dry extract"}]},
+  {"raw_name": "COLPERMIN-TYPE PEPPERMINT OIL", "generic": "mentha piperita", "item_kind": "herbal", "brand": null, "manufacturer": null, "country": null, "notes": "essential_oil (menthol); IBS antispasmodic", "variants": [
+    {"dosage_form": "enteric coated capsule", "strength": "187 mg", "scientific_name": "Mentha piperita", "plant_part": "leaf", "extract_type": "essential oil"}]}
+]}

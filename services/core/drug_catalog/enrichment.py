@@ -21,7 +21,7 @@ SUGGESTION_FIELDS = ("generic", "brand", "manufacturer", "country",
                      "confidence", "sources", "notes",
                      "item_kind", "variants")
 
-ITEM_KINDS = ("drug", "supply", "supplement", "other")
+ITEM_KINDS = ("drug", "herbal", "supply", "supplement", "other")
 
 # pack_size (۳۰ g / ۷۰ g / ۱۰ mL / ۱۰۰ عددی) is an identity dimension of its
 # own: identical form+strength in different pack sizes are different priced
@@ -34,8 +34,13 @@ ITEM_KINDS = ("drug", "supply", "supplement", "other")
 # components: [{name, strength}] — combination products (Al/Mg hydroxide +
 # simethicone 200/200/25 mg) carry per-active SERVING amounts, which are one
 # product, never separate strength variants.
+# Pharmacognosy identity for herbal products (item_kind='herbal'):
+# scientific_name (Latin binomial), plant_part (root/leaf/flower/…),
+# extract_type (dry/hydroalcoholic/essential oil/…), marker (standardized
+# constituent, e.g. "silymarin 70 mg").
 _VARIANT_KEYS = ("dosage_form", "route", "strength", "concentration",
                  "pack_size", "container", "components",
+                 "scientific_name", "plant_part", "extract_type", "marker",
                  "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
