@@ -68,6 +68,58 @@ def test_expand_variants_model_provided_passthrough():
         [("syrup", "2 mg/5 mL"), ("tablet", "4 mg")]
 
 
+def test_expand_variants_pack_sizes_fan_out_single_form():
+    from services.core.drug_catalog.enrichment import expand_variants
+    vs = expand_variants({"generic": "metronidazole", "dosage_form": "topical gel",
+                          "strengths": ["0.75 %"], "pack_size": ["30 g", "70 g"]})
+    assert [(v["dosage_form"], v["strength"], v["pack_size"]) for v in vs] == \
+        [("topical gel", "0.75 %", "30 g"), ("topical gel", "0.75 %", "70 g")]
+
+
+def test_expand_variants_packs_not_crossed_over_multiple_forms():
+    from services.core.drug_catalog.enrichment import expand_variants
+    vs = expand_variants({"generic": "metronidazole",
+                          "dosage_form": ["topical gel", "vaginal gel"],
+                          "pack_size": ["30 g", "70 g"]})
+    # multi-form pack attribution must come from the model's variants[] —
+    # never cartesian-fabricated
+    assert [v["dosage_form"] for v in vs] == ["topical gel", "vaginal gel"]
+    assert all(v["pack_size"] is None for v in vs)
+
+
+def test_variant_passthrough_keeps_pack_size():
+    from services.core.drug_catalog.enrichment import expand_variants
+    given = [{"dosage_form": "topical gel", "strength": "0.75 %", "pack_size": "30 g"},
+             {"dosage_form": "vaginal gel", "strength": "0.75 %", "pack_size": "70 g"}]
+    vs = expand_variants({"variants": given})
+    assert [v["pack_size"] for v in vs] == ["30 g", "70 g"]
+
+
+def test_linker_pack_size_disambiguates_same_form():
+    # Two vaginal-gel variants differing only in pack: «…70 g GEL» → the 70 g one.
+    from decimal import Decimal
+    from services.core.drug_catalog.coverage_import import link_rows
+    from services.core.drug_catalog.enrichment import enrich_key
+    from services.core.drug_catalog.schema import CatalogRecord
+    catalog = [
+        CatalogRecord(irc="G30", name_fa="ژ ت", generic_name="metronidazole",
+                      dosage_form="GEL", strength="0.75 % 30 g",
+                      announced_price=Decimal("1")),
+        CatalogRecord(irc="G70", name_fa="ژ و", generic_name="metronidazole",
+                      dosage_form="GEL", strength="0.75 % 70 g",
+                      announced_price=Decimal("1")),
+    ]
+    enr = {enrich_key("METRONIDAZOLE GELX"): {
+        "generic_name": "metronidazole", "dosage_form": None, "strengths": None,
+        "irc": None, "variants": [
+            {"dosage_form": "gel", "strength": "0.75 %", "pack_size": "30 g"},
+            {"dosage_form": "gel", "strength": "0.75 %", "pack_size": "70 g"},
+        ]}}
+    link = link_rows([{"drug_name": "METRONIDAZOLE GELX 70 g"}], catalog,
+                     enrichments=enr)[0]
+    assert link.matched and link.record.irc == "G70"
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"

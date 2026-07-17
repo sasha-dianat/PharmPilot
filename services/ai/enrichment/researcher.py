@@ -41,9 +41,14 @@ RESEARCH_SYSTEM = (
     "داروسازی (مثلاً BOTTLE 240 CC)، «supplement» برای مکمل، «other» در غیر این‌ها.\n"
     "۷) variants: اگر فرآورده در چند «شکل دارویی»، چند «قدرت» یا چند «برند» عرضه می‌شود، "
     "برای هر ترکیبِ واقعاً موجود یک عضو بده: "
-    '{"dosage_form":..., "strength":..., "brand_name":..., "manufacturer":...}. '
+    '{"dosage_form":..., "strength":..., "pack_size":..., "brand_name":..., "manufacturer":...}. '
     "مثال: تولمتین کپسول 400 و 600 ⇒ دو عضو؛ سالبوتامول اسپری استنشاقی/شربت/قرص ⇒ سه عضو "
     "(نوع اسپری MDI یا DPI را اگر منبع گفته مشخص کن). ترکیب ناموجود نساز.\n"
+    "۸) pack_size (وزن/حجم/تعداد بسته مثل 30 g یا 70 g یا 10 mL) یک بعد هویتی مستقل است: "
+    "شکل و قدرت یکسان با بستهٔ متفاوت، دو فرآوردهٔ جدا با دو قیمت جدا هستند. "
+    "مثال: مترونیدازول ژل ۰٫۷۵٪ ⇒ "
+    '[{"dosage_form":"topical gel","strength":"0.75 %","pack_size":"30 g"},'
+    '{"dosage_form":"vaginal gel","strength":"0.75 %","pack_size":"70 g"}].\n'
     "مثال — ورودی «ویتامین آ-تداژل» ⇒ "
     '{"generic":"vitamin a","brand":"A-Tedagel","manufacturer":"Tehran Daru",'
     '"country":"Iran","dosage_form":"softgel","strengths":["25000 IU","50000 IU"],'

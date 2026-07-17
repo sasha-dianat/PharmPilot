@@ -297,6 +297,17 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                                if _form_of(v.get("dosage_form")) == form]
                     if matched:
                         v_use = matched
+                if len(v_use) > 1:
+                    # pack size disambiguates further: «…30 g GEL» keeps only
+                    # the 30 g variant (identical form/strength in a different
+                    # pack is a different priced product).
+                    row_nums = set(re.findall(
+                        r"\d+(?:\.\d+)?", str(name).translate(_DIGIT_FIX)))
+                    packed = [v for v in v_use if v.get("pack_size") and
+                              set(re.findall(r"\d+(?:\.\d+)?",
+                                             str(v["pack_size"]))) & row_nums]
+                    if packed:
+                        v_use = packed
                 if not form:
                     v_forms = {f for f in (_form_of(v.get("dosage_form"))
                                            for v in variants) if f}

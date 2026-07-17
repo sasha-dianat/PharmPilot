@@ -17,12 +17,17 @@ from .schema import canonical_ingredient
 REFERENCE_PATH = Path("data/reference/drug_enrichments.json")
 
 SUGGESTION_FIELDS = ("generic", "brand", "manufacturer", "country",
-                     "dosage_form", "strengths", "confidence", "sources", "notes",
+                     "dosage_form", "strengths", "pack_size",
+                     "confidence", "sources", "notes",
                      "item_kind", "variants")
 
 ITEM_KINDS = ("drug", "supply", "supplement", "other")
 
-_VARIANT_KEYS = ("dosage_form", "strength", "brand_name", "manufacturer", "notes")
+# pack_size (۳۰ g / ۷۰ g / ۱۰ mL / ۱۰۰ عددی) is an identity dimension of its
+# own: identical form+strength in different pack sizes are different priced
+# products (metronidazole 0.75% gel 30 g ≠ 70 g).
+_VARIANT_KEYS = ("dosage_form", "strength", "pack_size",
+                 "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
 # are environment-specific and intentionally excluded — all exported rows are approved).
@@ -80,7 +85,7 @@ def validate_suggestion(d: dict) -> tuple[dict, list[str]]:
             v = str(v).strip().lower()
             if v not in ITEM_KINDS:
                 continue                       # unknown kind → default handled later
-        elif f in ("dosage_form", "brand"):
+        elif f in ("dosage_form", "brand", "pack_size"):
             # A product sold as several forms/brands legitimately answers with a
             # list — PRESERVE it for variant fan-out (the researcher stores the
             # first value in the scalar column and expands the rest).
@@ -130,8 +135,9 @@ def expand_variants(clean: dict) -> list[dict]:
         wrong form would fabricate products."""
     out: list[dict] = []
 
-    def add(form, strength, brand):
-        v = {"dosage_form": form, "strength": strength, "brand_name": brand,
+    def add(form, strength, brand, pack=None):
+        v = {"dosage_form": form, "strength": strength, "pack_size": pack,
+             "brand_name": brand,
              "manufacturer": clean.get("manufacturer") or None, "notes": None}
         if any(v.values()) and v not in out:
             out.append(v)
@@ -149,15 +155,23 @@ def expand_variants(clean: dict) -> list[dict]:
     brands = clean.get("brand")
     brands = brands if isinstance(brands, list) else [brands or None]
     strengths = clean.get("strengths") or []
+    packs = clean.get("pack_size")
+    packs = packs if isinstance(packs, list) else ([packs] if packs else [])
 
     for brand in brands:
         if len(forms) <= 1:
             form = forms[0] if forms else None
-            if strengths:
-                for s in strengths:
-                    add(form, s, brand)
-            elif form or brand:
-                add(form, None, brand)
+            base = [(form, s) for s in strengths] if strengths else \
+                   ([(form, None)] if (form or brand or packs) else [])
+            for form_, s in base:
+                # pack sizes fan out only against a SINGLE form (identity is
+                # unambiguous); multi-form pack attribution must come from the
+                # model's variants[] to avoid fabricating combinations.
+                if len(packs) >= 1 and len(forms) <= 1:
+                    for p in packs:
+                        add(form_, s, brand, p)
+                else:
+                    add(form_, s, brand)
         else:
             for form in forms:
                 add(form, None, brand)
