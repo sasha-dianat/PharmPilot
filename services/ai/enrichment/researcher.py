@@ -69,7 +69,21 @@ RESEARCH_SYSTEM = (
     "مثال: لیورگل ⇒ "
     '{"scientific_name":"Silybum marianum","plant_part":"seed",'
     '"extract_type":"dry extract","marker":"silymarin 70 mg",'
-    '"dosage_form":"tablet"}. چندجزئی گیاهی ⇒ components با نام علمی هر گیاه.\n'
+    '"dosage_form":"tablet","category":"flavonolignan"}. '
+    "چندجزئی گیاهی ⇒ components با نام علمی هر گیاه؛ category = کلاس فارماکوگنوزی "
+    "(essential_oil، anthraquinone، mucilage، saponin، coumarin، alkaloid، …).\n"
+    "۱۳) نمک دارویی جزو هویت است و در salt_form می‌آید — mechlorethamine "
+    "HYDROCHLORIDE با بازِ آزاد یک فرآورده نیست. مثال: والکلر ⇒ "
+    '{"salt_form":"hydrochloride","dosage_form":"topical gel",'
+    '"concentration":"0.016 %","pack_size":"60 g","brand_name":"Valchlor"}. '
+    "generic را بدون نمک بده و نمک را جدا.\n"
+    "۱۴) تجهیزات و ملزومات پزشکی/بیمارستانی ⇒ item_kind: «device» و category از "
+    "فرهنگ دسته‌ها (injection_infusion، wound_care، urology، respiratory، "
+    "gloves_ppe، sutures، tubes_drains، diagnostics، …) + معیارهای اندازه: "
+    "size (گیج G / فرنچ Fr / طول)، material (لاتکس/سیلیکون/PVC/استیل)، "
+    "sterility (sterile/non-sterile). مثال: آنژیوکت ⇒ "
+    '{"category":"injection_infusion","dosage_form":"IV cannula",'
+    '"size":"20 G","material":"PTFE","sterility":"sterile"}.\n'
     "۱۱) برای قلم‌های تزریق (انسولین و غیره) نوع دقیق قلم جزو هویت فرآورده است و در "
     "container می‌آید: prefilled disposable pen، reusable pen، cartridge/Penfill، و نام "
     "سیستم قلم اگر دارد (SoloStar، FlexPen، KwikPen، …). هر نوع قلم/کارتریج یک واریانت جدا است. "

@@ -785,6 +785,9 @@ function DrugDrawer({ irc, insurer, onClose }: { irc: string; insurer: string; o
 interface EnrichVariant {
   dosage_form: string | null; route?: string | null; strength: string | null
   concentration?: string | null; pack_size?: string | null; container?: string | null
+  salt_form?: string | null; category?: string | null
+  scientific_name?: string | null; marker?: string | null
+  size?: string | null; material?: string | null; sterility?: string | null
   brand_name: string | null; manufacturer: string | null; notes: string | null
 }
 interface Suggestion {
@@ -796,7 +799,7 @@ interface Suggestion {
   confidence: number | null; status: string
 }
 const KIND_FA: Record<string, string> = {
-  herbal: 'گیاهی', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
+  herbal: 'گیاهی', device: 'تجهیزات', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number
@@ -1043,8 +1046,10 @@ function EnrichmentPanel({ onMsg, onError }: {
                       <div className="flex flex-wrap gap-1 pt-0.5">
                         {(s.variants || []).map((v, i) => (
                           <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200">
-                            {[v.dosage_form, v.route, v.strength, v.concentration,
-                              v.pack_size, v.container, v.brand_name]
+                            {[v.category, v.dosage_form, v.route, v.salt_form,
+                              v.strength, v.concentration, v.size, v.material,
+                              v.sterility, v.pack_size, v.container,
+                              v.scientific_name, v.marker, v.brand_name]
                               .filter(Boolean).join(' · ') || '—'}
                           </span>
                         ))}

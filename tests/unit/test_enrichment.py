@@ -208,6 +208,25 @@ def test_linker_pen_type_disambiguates():
     assert link.matched and link.record.irc == "P300"
 
 
+def test_variant_keeps_salt_form_and_device_criteria():
+    # Valchlor: the HCl salt is identity; devices carry category/size/material/
+    # sterility from the device dictionary.
+    from services.core.drug_catalog.enrichment import expand_variants, validate_suggestion
+    clean, errors = validate_suggestion({"generic": "mechlorethamine", "variants": [
+        {"dosage_form": "topical gel", "salt_form": "hydrochloride",
+         "concentration": "0.016 %", "pack_size": "60 g", "brand_name": "Valchlor"}]})
+    assert errors == []
+    assert expand_variants(clean)[0]["salt_form"] == "hydrochloride"
+
+    clean2, errors2 = validate_suggestion({"item_kind": "device", "variants": [
+        {"category": "injection_infusion", "dosage_form": "IV cannula",
+         "size": "20 G", "material": "PTFE", "sterility": "sterile"}]})
+    assert errors2 == [] and clean2["item_kind"] == "device"
+    v = expand_variants(clean2)[0]
+    assert (v["category"], v["size"], v["sterility"]) == \
+        ("injection_infusion", "20 G", "sterile")
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"

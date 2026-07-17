@@ -1,0 +1,18 @@
+{"version": 1,
+ "note": "Dictionary of clinical device/instrument categories for item_kind='device'. Each category lists its IDENTITY CRITERIA — the fields that distinguish priced products within it. Owner-editable; the researcher prompt and review GUI consume category ids.",
+ "categories": [
+  {"id": "injection_infusion", "fa": "تزریق و انفوزیون", "examples": ["syringe", "needle", "IV cannula/angiocath", "infusion set", "three-way stopcock", "extension tube", "heparin cap"], "criteria": ["size (G/mL)", "needle length", "luer type (slip/lock)", "material", "sterility", "count/pack"]},
+  {"id": "wound_care", "fa": "زخم و پانسمان", "examples": ["gauze", "adhesive dressing", "hydrocolloid", "alginate", "elastic bandage", "adhesive tape"], "criteria": ["dimensions (cm)", "sterility", "adhesive type", "count/pack"]},
+  {"id": "urology", "fa": "اورولوژی", "examples": ["Foley catheter", "nelaton catheter", "urine bag", "urometer"], "criteria": ["size (Fr)", "lumens (2/3-way)", "balloon volume", "material (latex/silicone)", "sterility"]},
+  {"id": "respiratory", "fa": "تنفسی", "examples": ["oxygen mask", "nasal cannula", "nebulizer kit", "airway (Guedel)", "suction catheter", "spacer/آسم‌یار"], "criteria": ["size", "adult/pediatric", "material", "sterility"]},
+  {"id": "tubes_drains", "fa": "لوله و درن", "examples": ["NG tube", "feeding tube", "chest drain", "hemovac"], "criteria": ["size (Fr)", "length", "material", "sterility"]},
+  {"id": "gloves_ppe", "fa": "دستکش و حفاظت فردی", "examples": ["exam gloves", "surgical gloves", "mask", "gown", "shoe cover"], "criteria": ["size (S/M/L or numeric)", "material (latex/nitrile/vinyl)", "powdered/powder-free", "sterility", "count/pack"]},
+  {"id": "sutures_surgical", "fa": "نخ و لوازم جراحی", "examples": ["suture", "surgical blade", "skin stapler", "scalpel handle"], "criteria": ["USP size (2-0, 3-0…)", "needle type/curvature", "material (absorbable/non)", "length", "sterility"]},
+  {"id": "diagnostics_monitoring", "fa": "تشخیص و پایش", "examples": ["glucometer strip", "lancet", "urine test strip", "pregnancy test", "thermometer", "BP cuff"], "criteria": ["compatible meter/model", "count/pack", "parameter measured"]},
+  {"id": "ostomy_incontinence", "fa": "استومی و بی‌اختیاری", "examples": ["colostomy bag", "underpad", "adult diaper"], "criteria": ["size", "one/two-piece", "count/pack"]},
+  {"id": "orthopedic_support", "fa": "ارتوپدی و بریس", "examples": ["cervical collar", "wrist splint", "knee support", "crutch"], "criteria": ["size", "side (L/R)", "material"]},
+  {"id": "sterilization_disinfection", "fa": "استریل و ضدعفونی", "examples": ["autoclave indicator", "disinfectant solution", "alcohol pad"], "criteria": ["concentration", "volume", "count/pack"]},
+  {"id": "compounding_supply", "fa": "ملزومات داروسازی/ترکیبی", "examples": ["empty bottle (e.g. 240 cc)", "ointment jar", "capsule shell", "dropper"], "criteria": ["volume/capacity", "material", "count/pack"]},
+  {"id": "dental", "fa": "دندانپزشکی", "examples": ["dental needle", "cartridge anesthetic", "floss", "interdental brush"], "criteria": ["size/gauge", "count/pack"]},
+  {"id": "maternal_infant", "fa": "مادر و نوزاد", "examples": ["feeding bottle", "breast pump", "nipple", "umbilical clamp"], "criteria": ["volume", "flow size", "material", "sterility"]}
+]}

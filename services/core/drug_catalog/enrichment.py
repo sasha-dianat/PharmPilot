@@ -21,7 +21,7 @@ SUGGESTION_FIELDS = ("generic", "brand", "manufacturer", "country",
                      "confidence", "sources", "notes",
                      "item_kind", "variants")
 
-ITEM_KINDS = ("drug", "herbal", "supply", "supplement", "other")
+ITEM_KINDS = ("drug", "herbal", "device", "supply", "supplement", "other")
 
 # pack_size (۳۰ g / ۷۰ g / ۱۰ mL / ۱۰۰ عددی) is an identity dimension of its
 # own: identical form+strength in different pack sizes are different priced
@@ -38,9 +38,15 @@ ITEM_KINDS = ("drug", "herbal", "supply", "supplement", "other")
 # scientific_name (Latin binomial), plant_part (root/leaf/flower/…),
 # extract_type (dry/hydroalcoholic/essential oil/…), marker (standardized
 # constituent, e.g. "silymarin 70 mg").
+# salt_form: the salt IS identity (mechlorethamine HYDROCHLORIDE ≠ free base —
+# different solubility, form, and product). category: structured class — for
+# herbals the pharmacognosy class (flavonolignan/essential_oil/…), for devices
+# the dictionary category (data/reference/device_categories.json). Devices add
+# size (gauge/Fr/length), material, sterility.
 _VARIANT_KEYS = ("dosage_form", "route", "strength", "concentration",
-                 "pack_size", "container", "components",
+                 "pack_size", "container", "components", "salt_form", "category",
                  "scientific_name", "plant_part", "extract_type", "marker",
+                 "size", "material", "sterility",
                  "brand_name", "manufacturer", "notes")
 
 # Fields persisted in the committed canonical JSON artifact (id/status/timestamps
