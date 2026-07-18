@@ -325,11 +325,14 @@ def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
     links = link_rows(normalized, catalog, enrichments=enrichments)
     # هوش تطبیق: the fitted model (owner-decision-calibrated) demotes matches
     # it distrusts — FS score or learned price band — into the review queue.
-    from .match_intel import load_model, verify_links
-    intel_demoted = verify_links(links, load_model(), insurer)
+    from .match_intel import annotate_review_fs, load_model, verify_links
+    model = load_model()
+    intel_demoted = verify_links(links, model, insurer)
     cov = build_coverage(links, insurer=insurer, min_confidence=min_confidence,
                          catalog=catalog)
-    review = [{"id": i, **item, "accepted": False} for i, item in enumerate(cov.review)]
+    by_irc = {r.irc: r for r in catalog}
+    review = [{"id": i, **item, "accepted": False}
+              for i, item in enumerate(annotate_review_fs(cov.review, by_irc, model))]
     return {
         "stats": {**cov.stats, "columns": roles, "intel_demoted": intel_demoted},
         "staged": cov.applied,

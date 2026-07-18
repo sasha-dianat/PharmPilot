@@ -92,6 +92,47 @@ def test_coded_refusals_train_with_double_weight():
     assert score(bad, m_coded) < score(bad, m_plain)      # stricter after coding
 
 
+def test_score_suggestion_second_boundary():
+    # Same engine, research boundary: coherent research scores high, research
+    # for a DIFFERENT drug scores low; no model → None (never a fake number).
+    from services.core.drug_catalog.match_intel import score_suggestion
+    m = _toy_model()
+    good = score_suggestion("METFORMIN 500MG TABLET",
+                            {"generic_name": "metformin hydrochloride",
+                             "dosage_form": "tablet", "strengths": ["500 mg"]}, m)
+    bad = score_suggestion("METFORMIN 500MG TABLET",
+                           {"generic_name": "salbutamol", "dosage_form": "syrup",
+                            "strengths": ["2 mg/5 mL"]}, m)
+    assert good is not None and bad is not None and good > bad
+    assert score_suggestion("x", {"generic_name": "y"}, None) is None
+
+
+def test_score_suggestion_reads_variant_strengths():
+    from services.core.drug_catalog.match_intel import score_suggestion
+    m = _toy_model()
+    s = score_suggestion("TOLMETIN 600MG CAPSULE",
+                         {"generic_name": "tolmetin", "dosage_form": None,
+                          "strengths": None,
+                          "variants": [{"dosage_form": "capsule", "strength": "400 mg"},
+                                       {"dosage_form": "capsule", "strength": "600 mg"}]}, m)
+    weak = score_suggestion("TOLMETIN 600MG CAPSULE",
+                            {"generic_name": "tolmetin"}, m)
+    assert s is not None and weak is not None and s > weak   # variants supplied evidence
+
+
+def test_annotate_review_fs_orders_boundary_first():
+    from services.core.drug_catalog.match_intel import annotate_review_fs
+    m = _toy_model()
+    rec = _rec()
+    review = [{"id": 0, "irc": "R1", "row": {"drug_name": "METFORMIN 500MG TABLET"}},
+              {"id": 1, "irc": "MISSING", "row": {"drug_name": "x"}},
+              "not-a-dict"]
+    out = annotate_review_fs(review, {"R1": rec}, m)
+    assert out[0]["fs"] > 0                        # scored
+    assert "fs" not in out[1] and out[2] == "not-a-dict"   # tolerant
+    assert annotate_review_fs(review, {"R1": rec}, None) == review  # no model → untouched
+
+
 def test_verify_is_noop_without_model():
     link = LinkResult({"drug_name": "x"}, _rec(), 0.9, "fuzzy")
     assert verify_links([link], None, "salamat") == 0 and link.confidence == 0.9

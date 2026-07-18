@@ -333,12 +333,15 @@ function RunPreview({ runId, onDone, onError }: {
             <button onClick={() => setAccepted(new Set())}
               className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px]">لغو همه</button>
           </div>
-          {run.review.map((item: any) => (
+          {[...run.review].sort((a: any, b: any) =>
+            Math.abs(a.fs ?? 999) - Math.abs(b.fs ?? 999)   // active learning: boundary cases first
+          ).map((item: any) => (
             <div key={item.id} className="flex flex-wrap items-center gap-2 font-mono text-slate-400">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={accepted.has(item.id)}
                   onChange={e => { const s = new Set(accepted); e.target.checked ? s.add(item.id) : s.delete(item.id); setAccepted(s) }} />
-                {item.name} ← «{String(item.row?.drug_name ?? '')}» (اطمینان {item.confidence})
+                {item.name} ← «{String(item.row?.drug_name ?? '')}» (اطمینان {item.confidence}
+                {item.fs != null && <span title="امتیاز هوش تطبیق">{' '}· FS {item.fs}</span>})
               </label>
               {!accepted.has(item.id) && (
                 <span className="flex items-center gap-1">
@@ -827,7 +830,7 @@ interface Suggestion {
   country: string | null; dosage_form: string | null; strengths: string[] | null
   variants: EnrichVariant[] | null; item_kind: string
   notes: string | null; sources: string[] | null; researched_by: string
-  confidence: number | null; status: string
+  confidence: number | null; status: string; fs_score?: number | null
 }
 const KIND_FA: Record<string, string> = {
   herbal: 'گیاهی', device: 'تجهیزات', bulk: 'مادهٔ اولیه', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
@@ -871,7 +874,9 @@ function EnrichmentPanel({ onMsg, onError }: {
     queryFn: () => pricingApi.enrichSuggestions('suggested').then(r => r.data),
     refetchInterval: run?.running ? 5_000 : 30_000,
   })
-  const rows = sugg?.suggestions || []
+  // suspect-first: low FS score = the model doubts the research matches the name
+  const rows = [...(sugg?.suggestions || [])]
+    .sort((a, b) => (a.fs_score ?? 999) - (b.fs_score ?? 999))
 
   const startRun = async () => {
     onMsg({ kind: 'ok', text: 'پژوهش آغاز شد…' })
@@ -1109,6 +1114,14 @@ function EnrichmentPanel({ onMsg, onError }: {
                     )}
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                       <span className="px-1.5 py-0.5 rounded bg-slate-700">{s.researched_by}</span>
+                      {s.fs_score != null && (
+                        <span className={`px-1.5 py-0.5 rounded border ${s.fs_score < 0
+                          ? 'bg-red-500/10 border-red-500/40 text-red-300'
+                          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'}`}
+                          title="امتیاز هوش تطبیق — منفی یعنی پژوهش مشکوک است">
+                          FS {s.fs_score}
+                        </span>
+                      )}
                       {s.confidence != null &&
                         <span>اطمینان: {new Intl.NumberFormat('fa-IR', { style: 'percent' }).format(s.confidence)}</span>}
                       {(s.sources || []).slice(0, 3).map((u, i) => (

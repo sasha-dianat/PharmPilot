@@ -364,7 +364,13 @@ async def list_enrichments(db, status: str | None = "suggested",
     if status:
         q = q.where(DrugEnrichment.status == status)
     rows = (await db.execute(q)).scalars().all()
+    from .match_intel import load_model, score_suggestion
+    model = load_model()
     return [{
+        "fs_score": score_suggestion(r.raw_name, {
+            "generic_name": r.generic_name, "brand_name": r.brand_name,
+            "dosage_form": r.dosage_form, "strengths": r.strengths,
+            "variants": r.variants}, model),
         "id": str(r.id), "key": r.key, "raw_name": r.raw_name, "irc": r.irc,
         "generic_name": r.generic_name, "brand_name": r.brand_name,
         "manufacturer": r.manufacturer, "country": r.country,

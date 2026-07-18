@@ -135,6 +135,48 @@ def price_verdict(reference_price, announced_price, model: dict, insurer: str) -
     return "in_band" if band["lo"] <= ratio <= band["hi"] else "out_band"
 
 
+def score_suggestion(raw_name: str, sugg: dict, model: dict | None) -> float | None:
+    """FS score for a RESEARCH suggestion vs the name it claims to identify —
+    the same engine judging a second boundary: «is this research really that
+    drug?». Low score ⇒ suspect extraction, surfaced first for review."""
+    if not model or not model.get("mu"):
+        return None
+    from types import SimpleNamespace
+    strengths = list(sugg.get("strengths") or [])
+    for v in (sugg.get("variants") or []):
+        for s in (v.get("strength"), v.get("concentration")):
+            if s and s not in strengths:
+                strengths.append(s)
+    forms = [sugg.get("dosage_form")] + [v.get("dosage_form")
+                                         for v in (sugg.get("variants") or [])]
+    rec = SimpleNamespace(
+        generic_name=sugg.get("generic_name"),
+        name_fa=sugg.get("raw_name") or None,
+        brand_name=sugg.get("brand_name"),
+        strength=" ".join(str(s) for s in strengths),
+        dosage_form=" ".join(str(f) for f in forms if f),
+    )
+    return score(extract_features(raw_name, rec), model)
+
+
+def annotate_review_fs(review: list, by_irc: dict, model: dict | None) -> list:
+    """Attach an 'fs' score to each coverage-review item (pair: row name vs its
+    candidate record). The GUI orders by |fs| ascending — ACTIVE LEARNING: the
+    pairs nearest the decision boundary are exactly the ones whose human verdict
+    teaches the model most."""
+    if not model or not model.get("mu"):
+        return review
+    out = []
+    for item in (review or []):
+        if isinstance(item, dict):
+            rec = by_irc.get(item.get("irc"))
+            name = (item.get("row") or {}).get("drug_name")
+            if rec is not None and name:
+                item = {**item, "fs": score(extract_features(name, rec), model)}
+        out.append(item)
+    return out
+
+
 # ── verification seam (called from stage_run_payload) ───────────────────────
 
 def verify_links(links, model: dict | None, insurer: str) -> int:
