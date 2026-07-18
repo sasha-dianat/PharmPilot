@@ -206,14 +206,15 @@ class DrugResearcher:
         if not any(clean.get(f) for f in ("generic", "brand", "manufacturer",
                                           "dosage_form", "strengths", "item_kind")):
             return None, ["مدل هیچ فیلد مفیدی برنگرداند"]
-        from services.core.drug_catalog.enrichment import expand_variants, infer_item_kind
+        from services.core.drug_catalog.enrichment import (
+            apply_row_attributes, expand_variants, infer_item_kind)
         suggestion = {_COL_MAP[k]: v for k, v in clean.items() if k in _COL_MAP}
         # dosage_form/brand may be lists (multi-form/-brand products): the scalar
         # column takes the first value; the full set lives in variants.
         for col in ("dosage_form", "brand_name"):
             if isinstance(suggestion.get(col), list):
                 suggestion[col] = suggestion[col][0]
-        suggestion["variants"] = expand_variants(clean)
+        suggestion["variants"] = apply_row_attributes(raw_name, expand_variants(clean))
         suggestion["item_kind"] = infer_item_kind(raw_name, clean)
         suggestion["confidence"] = clean.get("confidence")
         suggestion["sources"] = clean.get("sources") or []

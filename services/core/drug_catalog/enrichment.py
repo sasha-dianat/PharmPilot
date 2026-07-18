@@ -173,6 +173,123 @@ def infer_item_kind(raw_name: str, clean: dict) -> str:
     return kind if kind in ITEM_KINDS else "drug"
 
 
+# Attributes a formulary row STATES in its own name are ground truth and must
+# survive into the variant even when the model's web sources omit them (capreomycin
+# «INTRAMUSCULAR» → route; barium «SACHET» → container; simethicone «30 mL» → pack).
+_ROUTE_WORDS = {
+    "intramuscular": "intramuscular", "im": "intramuscular",
+    "intravenous": "intravenous", "iv": "intravenous",
+    "subcutaneous": "subcutaneous", "sc": "subcutaneous", "sq": "subcutaneous",
+    "oral": "oral", "ophthalmic": "ophthalmic", "otic": "otic",
+    "nasal": "nasal", "rectal": "rectal", "vaginal": "vaginal",
+    "topical": "topical", "inhalation": "inhalation", "respiratory": "inhalation",
+    "sublingual": "sublingual", "intrathecal": "intrathecal",
+}
+_CONTAINER_WORDS = {
+    "sachet": "sachet", "ساشه": "sachet", "vial": "vial", "ampoule": "ampoule",
+    "ampule": "ampoule", "amp": "ampoule", "prefilled": "prefilled syringe",
+    "cartridge": "cartridge", "penfill": "cartridge (Penfill)", "pen": "pen",
+    "dropper": "dropper bottle", "tube": "tube", "bottle": "bottle",
+}
+_VOL_RE = None  # lazy
+
+
+def extract_row_attributes(raw_name: str) -> dict:
+    """Pull route / container / pack_size / concentration that the FORMULARY ROW
+    already states, deterministically — no model, no network. These are facts the
+    source printed; research must not lose them."""
+    import re
+    global _VOL_RE
+    if _VOL_RE is None:
+        _VOL_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|mل|میلی\s*لیتر|cc|g|گرم|mg|mcg|µg|ug)\b", re.I)
+    low = str(raw_name or "").lower()
+    words = set(re.findall(r"[a-zµ]+", low))
+    out: dict = {}
+    for w, route in _ROUTE_WORDS.items():
+        if w in words:
+            out["route"] = route
+            break
+    for w, cont in _CONTAINER_WORDS.items():
+        if w in low:
+            out["container"] = cont
+            break
+    # concentration «40 mg/1mL», then total pack volume «30 mL» / weight «135 g»
+    conc = re.search(r"\d+(?:\.\d+)?\s*(?:mg|mcg|µg|ug|g|iu)\s*/\s*\d*\s*ml", low)
+    if conc:
+        out["concentration"] = conc.group(0).replace(" ", "").replace("/", " / ")
+    vols = [m.group(0).strip() for m in _VOL_RE.finditer(low)
+            if m.group(2).lower() in ("ml", "cc", "g", "گرم", "میلی لیتر")]
+    if vols:
+        out["pack_size"] = vols[-1].replace("cc", "mL").replace("ml", "mL")
+    return out
+
+
+def apply_row_attributes(raw_name: str, variants: list[dict]) -> list[dict]:
+    """Backfill row-stated route/container/pack_size/concentration into variants
+    the model left blank. Never overwrites a value the model DID provide."""
+    attrs = extract_row_attributes(raw_name)
+    if not attrs or not variants:
+        return variants
+    for v in variants:
+        for k in ("route", "container", "pack_size", "concentration"):
+            if attrs.get(k) and not v.get(k):
+                v[k] = attrs[k]
+    return variants
+
+
+def classify_ingredient_groups(row_names: list[str]) -> dict:
+    """Formulary-level disambiguation pre-pass. Gathers rows by canonical active
+    ingredient, then classifies each within its group using ONLY what each name
+    states (form/strength/route/pack). The payoff is confident BULK detection:
+    a row with no form AND no strength AND no route, sitting in a group whose
+    OTHER members DO carry those, is a raw ingredient (its finished siblings
+    prove it) — far surer than judging that row alone.
+
+    → {ingredient_key: {members: [{name, form, route, strengths, attrs, is_bulk}],
+                        forms: [...], has_finished: bool}}"""
+    import re
+    from .schema import canonical_ingredient
+
+    def _form_tok(name):
+        for tok in re.findall(r"[a-z]+", str(name).lower()):
+            if tok in _FORM_HINTS:
+                return _FORM_HINTS[tok]
+        return None
+
+    groups: dict[str, dict] = {}
+    for name in row_names:
+        canon = canonical_ingredient(normalize(str(name)) or str(name)) or str(name).lower()
+        attrs = extract_row_attributes(name)
+        form = _form_tok(name)
+        strengths = re.findall(r"\d+(?:\.\d+)?\s*(?:mg|mcg|µg|g|iu|%)", str(name).lower())
+        g = groups.setdefault(canon, {"members": [], "forms": set()})
+        g["members"].append({"name": name, "form": form, "route": attrs.get("route"),
+                             "strengths": strengths, "attrs": attrs, "is_bulk": False})
+        if form:
+            g["forms"].add(form)
+    for g in groups.values():
+        multi = len(g["members"]) > 1
+        for m in g["members"]:
+            bare = not m["form"] and not m["strengths"] and not m["route"]
+            # bulk only when siblings prove finished forms exist (or single bare row
+            # that is itself formless — still a bulk candidate, lower certainty)
+            m["is_bulk"] = bare and (bool(g["forms"]) or not multi)
+        g["forms"] = sorted(g["forms"])
+        g["has_finished"] = bool(g["forms"])
+    return groups
+
+
+# Minimal form-word map for grouping (avoids importing coverage_import cycle).
+_FORM_HINTS = {
+    "tablet": "tablet", "tab": "tablet", "capsule": "capsule", "cap": "capsule",
+    "syrup": "syrup", "suspension": "suspension", "solution": "solution",
+    "injection": "injection", "powder": "powder", "gel": "gel", "cream": "cream",
+    "ointment": "ointment", "drops": "drops", "drop": "drops", "spray": "spray",
+    "inhaler": "inhaler", "patch": "patch", "suppository": "suppository",
+    "sachet": "sachet", "lotion": "lotion", "shampoo": "shampoo",
+}
+
+
 def expand_variants(clean: dict) -> list[dict]:
     """Deterministic fan-out into registrable variants (never trusts the LLM to
     enumerate combinations):

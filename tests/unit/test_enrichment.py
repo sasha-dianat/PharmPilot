@@ -227,6 +227,39 @@ def test_variant_keeps_salt_form_and_device_criteria():
         ("injection_infusion", "20 G", "sterile")
 
 
+def test_extract_row_attributes_route_container_pack():
+    from services.core.drug_catalog.enrichment import extract_row_attributes
+    a = extract_row_attributes(
+        "CAPREOMYCIN (AS SULFATE) 1 g INJECTION, POWDER, FOR SUSPENSION INTRAMUSCULAR INJECTION")
+    assert a["route"] == "intramuscular"
+    b = extract_row_attributes("BARIUM SULFATE 135 g POWDER, FOR SUSPENSION ORAL SACHET")
+    assert b["route"] == "oral" and b["container"] == "sachet" and b["pack_size"] == "135 g"
+    c = extract_row_attributes(
+        "SIMETHICONE 40 mg/1mL 30 mL SUSPENSION, DROPS ORAL 40MG/ML DROPS")
+    assert c["concentration"].startswith("40mg") and c["pack_size"] == "30 mL"
+
+
+def test_apply_row_attributes_backfills_without_overwrite():
+    from services.core.drug_catalog.enrichment import apply_row_attributes
+    vs = apply_row_attributes(
+        "BARIUM SULFATE 135 g POWDER, FOR SUSPENSION ORAL SACHET",
+        [{"dosage_form": "powder for oral suspension", "container": None,
+          "route": "topical", "pack_size": None}])
+    assert vs[0]["container"] == "sachet"          # backfilled
+    assert vs[0]["pack_size"] == "135 g"           # backfilled
+    assert vs[0]["route"] == "topical"             # model value NOT overwritten
+
+
+def test_classify_groups_finds_bulk_by_siblings():
+    from services.core.drug_catalog.enrichment import classify_ingredient_groups
+    rows = ["METFORMIN 500 mg TABLET", "METFORMIN 1000 mg TABLET", "METFORMIN"]
+    g = classify_ingredient_groups(rows)
+    grp = next(v for v in g.values() if len(v["members"]) == 3)
+    bulk = [m["name"] for m in grp["members"] if m["is_bulk"]]
+    assert bulk == ["METFORMIN"]                   # the bare sibling is the raw ingredient
+    assert grp["has_finished"] and "tablet" in grp["forms"]
+
+
 def test_infer_item_kind_bulk_first_ingredient():
     # No dosage form + no strength + powder/bulk wording ⇒ compounding raw
     # ingredient; a finished «POWDER FOR SUSPENSION» must NOT be bulk.
