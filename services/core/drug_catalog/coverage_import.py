@@ -425,6 +425,10 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
                            "name": link.record.name_fa, "confidence": link.confidence,
                            "entry": entry})
             continue
+        # ingredient_key = generic|strength|form, so this group is ONLY the
+        # clinically interchangeable set (same product, different brands) — a
+        # 15 mg row's entry (incl. reference_price, which insurers define per
+        # interchangeable group) can never reach the 30 mg sibling.
         targets = group.get(link.record.ingredient_key, [link.record.irc]) or [link.record.irc]
         for irc in targets:
             applied.setdefault(irc, {})[insurer] = entry

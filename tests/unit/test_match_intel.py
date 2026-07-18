@@ -68,3 +68,22 @@ def test_verify_links_never_touches_irc_or_good_matches():
 def test_verify_is_noop_without_model():
     link = LinkResult({"drug_name": "x"}, _rec(), 0.9, "fuzzy")
     assert verify_links([link], None, "salamat") == 0 and link.confidence == 0.9
+
+
+def test_price_spreads_only_to_interchangeable_group_never_other_strengths():
+    # EPHEDRINE 15 mg row: price reaches same-strength brand siblings
+    # (interchangeable group — insurer reference prices are defined per group)
+    # but NEVER the 30 mg product.
+    from services.core.drug_catalog.coverage_import import build_coverage
+    r15a = _rec(irc="E15A", name_fa="افدرین ۱۵ الف", generic_name="ephedrine",
+                strength="15 mg")
+    r15b = _rec(irc="E15B", name_fa="افدرین ۱۵ ب", generic_name="ephedrine",
+                strength="15 mg", brand_name="OtherBrand")
+    r30 = _rec(irc="E30", name_fa="افدرین ۳۰", generic_name="ephedrine",
+               strength="30 mg")
+    link = LinkResult({"drug_name": "EPHEDRINE HCL TABLET 15 mg",
+                       "covered": "1", "reference_price": "50000"}, r15a, 0.95, "fuzzy")
+    cov = build_coverage([link], insurer="salamat", catalog=[r15a, r15b, r30])
+    assert cov.applied["E15A"]["salamat"]["reference_price"] == 50000
+    assert cov.applied["E15B"]["salamat"]["reference_price"] == 50000   # brand sibling
+    assert "E30" not in cov.applied                                     # other strength

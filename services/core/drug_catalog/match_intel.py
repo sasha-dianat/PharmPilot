@@ -191,14 +191,19 @@ def save_model(model: dict, path=MODEL_PATH) -> None:
     _cache.clear()
 
 
-async def fit_from_db(db) -> dict:
-    """Build the labeled corpus from decisions already recorded and fit.
+async def fit_from_db(db, mode: str = "decisions") -> dict:
+    """Build a labeled corpus and fit. Two training regimes:
 
-    Labels: review items of APPROVED runs — accepted=True ⇒ positive pair,
-    accepted=False ⇒ negative pair (the owner looked at exactly that pair and
-    said no). u-side is additionally stabilized by pairing each labeled row
-    against a rotating other record (a known non-match). Price ratios come
-    from live approved coverage vs catalog announced prices."""
+    mode='decisions' (strict): review items of APPROVED runs only —
+      accepted=True ⇒ positive, accepted=False ⇒ negative (the owner looked at
+      exactly that pair and decided).
+    mode='bootstrap' (weak supervision over ALL formulary data): adds the
+      linker's own very-high-confidence pairings (conf ≥ 0.85 on any
+      non-rejected run) as weak positives — classic FS self-training. Arms the
+      model before enough human labels exist; a later 'decisions' refit
+      supersedes it as approvals accrue.
+    Both regimes stabilize the u-side with deterministic decoy pairs (known
+    non-matches). Price ratios come from live approved coverage."""
     from sqlalchemy import select
     from shared.models.coverage import CoverageRun
     from shared.models.drug_catalog import DrugCatalogItem
@@ -207,10 +212,12 @@ async def fit_from_db(db) -> dict:
     by_irc = {r.irc: r for r in recs}
 
     pairs: list[tuple[dict, bool]] = []
+    statuses = ("approved",) if mode == "decisions" else ("approved", "parsed")
     runs = (await db.execute(select(CoverageRun)
-                             .where(CoverageRun.status == "approved"))).scalars().all()
+                             .where(CoverageRun.status.in_(statuses)))).scalars().all()
     rec_list = list(by_irc.values())
     for run in runs:
+        approved = run.status == "approved"
         for i, item in enumerate(run.review or []):
             if not isinstance(item, dict):
                 continue
@@ -219,11 +226,36 @@ async def fit_from_db(db) -> dict:
             name = row.get("drug_name")
             if not name or rec is None:
                 continue
-            pairs.append((extract_features(name, rec), bool(item.get("accepted"))))
+            if item.get("accepted"):
+                pairs.append((extract_features(name, rec), True))
+            elif approved and mode == "decisions":
+                pairs.append((extract_features(name, rec), False))
+            elif mode == "bootstrap":
+                conf = item.get("confidence") or 0
+                if conf >= 0.85:               # linker's own strong pairings
+                    pairs.append((extract_features(name, rec), True))
+                elif approved:
+                    pairs.append((extract_features(name, rec), False))
             if rec_list:   # deterministic decoy → robust u estimates
                 decoy = rec_list[(i * 7919) % len(rec_list)]
                 if decoy.irc != rec.irc:
                     pairs.append((extract_features(name, decoy), False))
+
+    if mode == "bootstrap":
+        # Review items are sub-threshold BY CONSTRUCTION (that is why they are
+        # in review), so they cannot supply strong positives. Template weak
+        # supervision instead: each catalog record vs its own composed name is
+        # a perfect match by construction — teaching the m-side what
+        # high/exact/same levels look like; decoys keep teaching the u-side.
+        step = max(1, len(rec_list) // 1500)
+        for i, r in enumerate(rec_list[::step]):
+            row_text = f"{r.generic_name or r.name_fa} {r.strength or ''} {r.dosage_form or ''}"
+            if i % 3 == 0 and r.brand_name:
+                row_text = f"{r.brand_name} {row_text}"
+            pairs.append((extract_features(row_text, r), True))
+            decoy = rec_list[(i * 6329 + 13) % len(rec_list)]
+            if decoy.irc != r.irc:
+                pairs.append((extract_features(row_text, decoy), False))
 
     price_ratios: dict[str, list[float]] = {}
     for r in recs:

@@ -788,15 +788,24 @@ async def enrichment_run_stop(staff: Staff = Depends(require_permission("invento
         raise HTTPException(status_code=409, detail=str(e))
 
 
+class RetrainRequest(BaseModel):
+    mode: str = "decisions"      # decisions (strict labels) | bootstrap (all formulary data)
+
+
 @router.post("/match-intel/retrain")
-async def match_intel_retrain(staff: Staff = Depends(require_permission("inventory:write")),
+async def match_intel_retrain(body: RetrainRequest,
+                              staff: Staff = Depends(require_permission("inventory:write")),
                               db: AsyncSession = Depends(get_db)):
-    """Refit هوش تطبیق from the owner's decision history (approved runs'
-    accepted/rejected review pairs + live coverage price ratios). Saves the
-    versioned model artifact; subsequent harvests verify through it."""
+    """Refit هوش تطبیق. mode='decisions': the owner's accepted/rejected review
+    pairs only. mode='bootstrap': weak supervision over ALL formulary rows
+    (linker's high-confidence pairings as positives). Both learn price bands
+    from live approved coverage. Saves the versioned model artifact."""
+    if body.mode not in ("decisions", "bootstrap"):
+        raise HTTPException(status_code=400, detail="mode must be decisions|bootstrap")
     from services.core.drug_catalog.match_intel import fit_from_db
-    m = await fit_from_db(db)
-    return {"fitted_at": m["fitted_at"], "pairs": m["counts"],
+    m = await fit_from_db(db, mode=body.mode)
+    return {"mode": body.mode, "fitted_at": m["fitted_at"], "pairs": m["counts"],
+            "fs_armed": m.get("fs_armed", False),
             "price_bands": {k: v.get("n") for k, v in (m.get("price_bands") or {}).items()}}
 
 
