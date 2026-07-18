@@ -788,6 +788,28 @@ async def enrichment_run_stop(staff: Staff = Depends(require_permission("invento
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@router.post("/match-intel/retrain")
+async def match_intel_retrain(staff: Staff = Depends(require_permission("inventory:write")),
+                              db: AsyncSession = Depends(get_db)):
+    """Refit هوش تطبیق from the owner's decision history (approved runs'
+    accepted/rejected review pairs + live coverage price ratios). Saves the
+    versioned model artifact; subsequent harvests verify through it."""
+    from services.core.drug_catalog.match_intel import fit_from_db
+    m = await fit_from_db(db)
+    return {"fitted_at": m["fitted_at"], "pairs": m["counts"],
+            "price_bands": {k: v.get("n") for k, v in (m.get("price_bands") or {}).items()}}
+
+
+@router.get("/match-intel/status")
+async def match_intel_status(staff: Staff = Depends(require_permission("inventory:read"))):
+    from services.core.drug_catalog.match_intel import load_model
+    m = load_model()
+    if not m:
+        return {"fitted": False}
+    return {"fitted": True, "fitted_at": m.get("fitted_at"), "counts": m.get("counts"),
+            "price_bands": {k: v.get("n") for k, v in (m.get("price_bands") or {}).items()}}
+
+
 @router.post("/enrichment/provider-test")
 async def enrichment_provider_test(body: EnrichmentRunRequest,
                                    staff: Staff = Depends(require_permission("inventory:write"))):

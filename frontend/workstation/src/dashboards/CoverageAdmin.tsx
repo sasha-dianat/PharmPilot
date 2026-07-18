@@ -882,6 +882,17 @@ function EnrichmentPanel({ onMsg, onError }: {
     } catch (e) { onError(e, 'ثبت تصمیم ناموفق بود.') }
     finally { setBusy(false) }
   }
+  const retrainIntel = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.matchIntelRetrain()
+      const bands = Object.entries(data.price_bands || {})
+        .map(([k, n]) => `${k}: ${fa(n as number)}`).join('، ')
+      onMsg({ kind: 'ok', text:
+        `هوش تطبیق بازآموزی شد — جفت‌های آموزشی: ${fa(data.pairs?.pos)}+ / ${fa(data.pairs?.neg)}− · باند قیمت: ${bands || '—'}` })
+    } catch (e) { onError(e, 'بازآموزی ناموفق بود.') }
+    finally { setBusy(false) }
+  }
   const exportRef = async () => {
     try {
       const { data } = await pricingApi.enrichExport()
@@ -960,6 +971,9 @@ function EnrichmentPanel({ onMsg, onError }: {
           </button>
         )}
         <div className="mr-auto flex gap-2">
+          <button onClick={retrainIntel} disabled={busy}
+            className="px-2.5 py-1 text-[12px] rounded bg-cyan-800 hover:bg-cyan-700 disabled:opacity-40">
+            🧠 بازآموزی هوش تطبیق</button>
           <button onClick={exportRef} className="px-2.5 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600">
             برون‌سپاری مرجع ⬇</button>
           <button onClick={importRef} className="px-2.5 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600">

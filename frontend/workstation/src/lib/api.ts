@@ -186,6 +186,8 @@ export const pricingApi = {
     apiClient.get('/pricing/enrichment/suggestions', { params: { status } }),
   enrichDecide: (ids: string[], approve: boolean) =>
     apiClient.post('/pricing/enrichment/decide', { ids, approve }),
+  matchIntelRetrain: () => apiClient.post('/pricing/match-intel/retrain', {}),
+  matchIntelStatus: () => apiClient.get('/pricing/match-intel/status'),
   enrichExport: () => apiClient.post('/pricing/enrichment/export', {}),
   enrichImport: () => apiClient.post('/pricing/enrichment/import', {}),
 }

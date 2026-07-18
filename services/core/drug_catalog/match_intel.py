@@ -1,0 +1,241 @@
+"""هوش تطبیق — self-calibrating match verifier (Fellegi–Sunter record linkage).
+
+Learns from the owner's OWN decision history — approved/rejected review items
+and live approved coverage — and verifies every formulary↔catalog match:
+
+  * per-feature m/u likelihoods (name similarity, strength agreement, form
+    agreement, brand token hit): m = P(level|true match), u = P(level|false
+    match), fitted from labeled pairs with Laplace smoothing; a pair's score
+    is Σ log2(m/u) — the classic Fellegi–Sunter log-likelihood ratio;
+  * a learned per-insurer PRICE-RATIO band (reference_price / announced_price
+    quantiles from approved coverage): a price outlier demotes a match even
+    when the name looks right — wrong strength/pack links betray themselves
+    through price.
+
+Deterministic-first invariant preserved: fitting is an explicit owner action
+(retrain endpoint), the fitted model is a versioned JSON artifact, scoring is
+pure arithmetic — no LLM, no network, fully offline-testable. Verified matches
+are only ever DEMOTED to review (with a reason), never auto-promoted.
+"""
+from __future__ import annotations
+
+import json
+import math
+import re
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+from pathlib import Path
+
+from .coverage_import import _FORM_WORDS, _strength_mg  # deterministic helpers
+from .schema import normalize
+
+MODEL_PATH = Path("data/reference/match_model.json")
+
+_FEATURES = ("name", "strength", "form", "brand")
+# score below which a matched link is demoted to review (log2 units); a fresh
+# unfitted model never demotes (verify is a no-op without an artifact).
+_DEFAULT_REVIEW_THRESHOLD = 0.0
+_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+# ── feature extraction (discrete levels) ─────────────────────────────────────
+
+def _form_token(text) -> str | None:
+    for tok in re.findall(r"[A-Za-z]+|[؀-ۿ]+", str(text or "").lower()):
+        if tok in _FORM_WORDS:
+            return _FORM_WORDS[tok]
+    return None
+
+
+def extract_features(row_name: str, rec) -> dict:
+    """Discrete feature levels for one (formulary row, catalog record) pair."""
+    n_row = normalize(str(row_name or "").lower()) or str(row_name or "").lower()
+    best_sim = 0.0
+    for target in (rec.generic_name, rec.name_fa, rec.brand_name):
+        if target:
+            t = normalize(str(target).lower()) or str(target).lower()
+            best_sim = max(best_sim, SequenceMatcher(None, n_row, t).ratio())
+    name_level = "high" if best_sim >= 0.85 else ("mid" if best_sim >= 0.6 else "low")
+
+    row_mg = _strength_mg(str(row_name).translate(_DIGITS))
+    rec_mg = _strength_mg(f"{rec.strength or ''}")
+    if not row_mg or not rec_mg:
+        s_level = "unknown"
+    elif row_mg & rec_mg:
+        s_level = "exact"
+    else:
+        s_level = "conflict"
+
+    rf, cf = _form_token(row_name), _form_token(rec.dosage_form)
+    f_level = "unknown" if not rf or not cf else ("same" if rf == cf else "different")
+
+    b_level = "no"
+    for tok in re.findall(r"[A-Za-z]{4,}", str(row_name or "")):
+        hay = f"{rec.brand_name or ''} {rec.name_fa or ''}".lower()
+        if tok.lower() in hay:
+            b_level = "hit"
+            break
+    return {"name": name_level, "strength": s_level, "form": f_level, "brand": b_level}
+
+
+# ── fitting (the autodidact part) ────────────────────────────────────────────
+
+def fit(pairs: list[tuple[dict, bool]],
+        price_ratios: dict[str, list[float]]) -> dict:
+    """pairs: [(features, is_true_match)]; price_ratios: insurer → observed
+    reference/announced ratios from APPROVED coverage. → model dict."""
+    mu: dict = {}
+    pos = [f for f, y in pairs if y] or []
+    neg = [f for f, y in pairs if not y] or []
+    for feat in _FEATURES:
+        levels = sorted({f[feat] for f, _ in pairs} | {"unknown"})
+        mu[feat] = {}
+        for lv in levels:
+            m = (sum(1 for f in pos if f[feat] == lv) + 1) / (len(pos) + len(levels))
+            u = (sum(1 for f in neg if f[feat] == lv) + 1) / (len(neg) + len(levels))
+            mu[feat][lv] = [round(m, 5), round(u, 5)]
+    bands = {}
+    for ins, ratios in price_ratios.items():
+        rs = sorted(r for r in ratios if r and r > 0)
+        if len(rs) >= 8:
+            q = lambda p: rs[min(len(rs) - 1, int(p * len(rs)))]
+            bands[ins] = {"lo": round(q(0.05) / 1.5, 4), "hi": round(q(0.95) * 1.5, 4),
+                          "median": round(q(0.5), 4), "n": len(rs)}
+    return {"version": 1, "fitted_at": datetime.now(timezone.utc).isoformat(),
+            "mu": mu, "price_bands": bands,
+            "thresholds": {"review": _DEFAULT_REVIEW_THRESHOLD},
+            # FS demotion arms only with enough of BOTH labels — a model fitted
+            # from (say) zero positives has uniform m-priors and would demote
+            # good matches. Price-band demotion arms independently (its corpus
+            # is live approved coverage, thousands of entries).
+            "fs_armed": len(pos) >= 20 and len(neg) >= 20,
+            "counts": {"pos": len(pos), "neg": len(neg)}}
+
+
+def score(features: dict, model: dict) -> float:
+    """Fellegi–Sunter log-likelihood ratio (log2). Positive ⇒ evidence FOR."""
+    total = 0.0
+    for feat in _FEATURES:
+        lv = features.get(feat, "unknown")
+        m, u = model["mu"].get(feat, {}).get(lv) or model["mu"].get(feat, {}).get("unknown") or [0.5, 0.5]
+        total += math.log2(max(m, 1e-6) / max(u, 1e-6))
+    return round(total, 3)
+
+
+def price_verdict(reference_price, announced_price, model: dict, insurer: str) -> str:
+    """'in_band' | 'out_band' | 'unknown' against the learned insurer band."""
+    band = (model.get("price_bands") or {}).get(insurer)
+    try:
+        ref, ann = float(reference_price), float(announced_price)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not band or ann <= 0 or ref <= 0:
+        return "unknown"
+    ratio = ref / ann
+    return "in_band" if band["lo"] <= ratio <= band["hi"] else "out_band"
+
+
+# ── verification seam (called from stage_run_payload) ───────────────────────
+
+def verify_links(links, model: dict | None, insurer: str) -> int:
+    """Demote matched links the model distrusts: FS score below threshold, or a
+    price ratio outside the learned band. Demotion = confidence capped under
+    the review cutoff + reason attached to the row (visible in the review GUI).
+    Never promotes. Returns the number demoted."""
+    if not model or not model.get("mu"):
+        return 0
+    thr = (model.get("thresholds") or {}).get("review", _DEFAULT_REVIEW_THRESHOLD)
+    demoted = 0
+    for link in links:
+        if not link.matched or link.method == "irc":   # exact code = ground truth
+            continue
+        feats = extract_features(link.row.get("drug_name", ""), link.record)
+        s = score(feats, model)
+        pv = price_verdict(link.row.get("reference_price"),
+                           getattr(link.record, "announced_price", None),
+                           model, insurer)
+        reasons = []
+        if s < thr and model.get("fs_armed"):
+            reasons.append(f"امتیاز تطبیق پایین ({s})")
+        if pv == "out_band":
+            reasons.append("قیمت خارج از الگوی آموخته‌شده")
+        if reasons:
+            link.confidence = min(link.confidence, 0.74)   # under default cutoff
+            link.matched = link.record is not None and link.confidence >= 0.55
+            link.method = f"{link.method}+intel"
+            link.row = {**link.row, "هشدار_هوش_تطبیق": "؛ ".join(reasons),
+                        "امتیاز_FS": s}
+            demoted += 1
+    return demoted
+
+
+# ── artifact + DB fitting ────────────────────────────────────────────────────
+
+_cache: dict = {}
+
+
+def load_model(path=MODEL_PATH) -> dict | None:
+    path = Path(path)
+    if not path.exists():
+        return None
+    mtime = path.stat().st_mtime
+    if _cache.get("mtime") != mtime:
+        _cache.update(mtime=mtime, model=json.loads(path.read_text(encoding="utf-8")))
+    return _cache["model"]
+
+
+def save_model(model: dict, path=MODEL_PATH) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(model, ensure_ascii=False, indent=1), encoding="utf-8")
+    _cache.clear()
+
+
+async def fit_from_db(db) -> dict:
+    """Build the labeled corpus from decisions already recorded and fit.
+
+    Labels: review items of APPROVED runs — accepted=True ⇒ positive pair,
+    accepted=False ⇒ negative pair (the owner looked at exactly that pair and
+    said no). u-side is additionally stabilized by pairing each labeled row
+    against a rotating other record (a known non-match). Price ratios come
+    from live approved coverage vs catalog announced prices."""
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    from shared.models.drug_catalog import DrugCatalogItem
+
+    recs = (await db.execute(select(DrugCatalogItem))).scalars().all()
+    by_irc = {r.irc: r for r in recs}
+
+    pairs: list[tuple[dict, bool]] = []
+    runs = (await db.execute(select(CoverageRun)
+                             .where(CoverageRun.status == "approved"))).scalars().all()
+    rec_list = list(by_irc.values())
+    for run in runs:
+        for i, item in enumerate(run.review or []):
+            if not isinstance(item, dict):
+                continue
+            row = item.get("row") or {}
+            rec = by_irc.get(item.get("irc"))
+            name = row.get("drug_name")
+            if not name or rec is None:
+                continue
+            pairs.append((extract_features(name, rec), bool(item.get("accepted"))))
+            if rec_list:   # deterministic decoy → robust u estimates
+                decoy = rec_list[(i * 7919) % len(rec_list)]
+                if decoy.irc != rec.irc:
+                    pairs.append((extract_features(name, decoy), False))
+
+    price_ratios: dict[str, list[float]] = {}
+    for r in recs:
+        cov = r.coverage if isinstance(r.coverage, dict) else {}
+        for ins, entry in cov.items():
+            rp, ap = (entry or {}).get("reference_price"), r.announced_price
+            if rp and ap:
+                try:
+                    price_ratios.setdefault(ins, []).append(float(rp) / float(ap))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+    model = fit(pairs, price_ratios)
+    save_model(model)
+    return model
