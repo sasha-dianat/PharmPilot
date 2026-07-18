@@ -799,7 +799,7 @@ interface Suggestion {
   confidence: number | null; status: string
 }
 const KIND_FA: Record<string, string> = {
-  herbal: 'گیاهی', device: 'تجهیزات', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
+  herbal: 'گیاهی', device: 'تجهیزات', bulk: 'مادهٔ اولیه', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
 }
 interface EnrichRunStatus {
   running: boolean; phase: string; total: number; done: number; saved: number

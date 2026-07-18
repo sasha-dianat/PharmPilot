@@ -21,7 +21,11 @@ SUGGESTION_FIELDS = ("generic", "brand", "manufacturer", "country",
                      "confidence", "sources", "notes",
                      "item_kind", "variants")
 
-ITEM_KINDS = ("drug", "herbal", "device", "supply", "supplement", "other")
+# bulk: compounding raw ingredient (مادهٔ اولیه) — an API/excipient sold as
+# powder/bulk with no finished dosage form or strength, used as the first
+# ingredient of compounded drugs. Distinct from finished products AND from
+# supply (containers).
+ITEM_KINDS = ("drug", "herbal", "device", "bulk", "supply", "supplement", "other")
 
 # pack_size (۳۰ g / ۷۰ g / ۱۰ mL / ۱۰۰ عددی) is an identity dimension of its
 # own: identical form+strength in different pack sizes are different priced
@@ -154,6 +158,17 @@ def infer_item_kind(raw_name: str, clean: dict) -> str:
             r"(bottle|container|jar|بطری|ظرف|شیشه)\s*.{0,15}?\d+\s*(cc|ml|میلی)", re.I)
     if _SUPPLY_RE.search(str(raw_name)) and not clean.get("generic"):
         return "supply"
+    # Compounding first-ingredient: explicitly bulk/فله, or a bare powder with
+    # NO dosage form and NO strength — but never a finished powder product
+    # («POWDER FOR SUSPENSION», sachets), which names its form.
+    low = str(raw_name).lower()
+    if re.search(r"\b(bulk|فله)\b", low):
+        return "bulk"
+    if (("powder" in low or "پودر" in low)
+            and not clean.get("dosage_form") and not clean.get("strengths")
+            and not re.search(r"for\s+(oral\s+)?(suspension|injection|solution)"
+                              r"|sachet|ساشه|شربت", low)):
+        return "bulk"
     kind = clean.get("item_kind")
     return kind if kind in ITEM_KINDS else "drug"
 

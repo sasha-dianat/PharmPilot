@@ -84,6 +84,13 @@ RESEARCH_SYSTEM = (
     "sterility (sterile/non-sterile). مثال: آنژیوکت ⇒ "
     '{"category":"injection_infusion","dosage_form":"IV cannula",'
     '"size":"20 G","material":"PTFE","sterility":"sterile"}.\n'
+    "۱۵) اگر نامی «هیچ» شکل دارویی و قدرتی ندارد یا با powder/فله توصیف شده، "
+    "به‌احتمال زیاد مادهٔ اولیهٔ داروسازی ترکیبی است ⇒ item_kind: «bulk» و در "
+    "category نقش آن: active_ingredient | excipient | base/vehicle. "
+    "مثال: SALICYLIC ACID (بدون شکل/قدرت) ⇒ "
+    '{"item_kind":"bulk","category":"active_ingredient",'
+    '"variants":[{"dosage_form":"powder"}]}. '
+    "ولی «POWDER FOR SUSPENSION» فرآوردهٔ نهایی است، نه فله.\n"
     "۱۱) برای قلم‌های تزریق (انسولین و غیره) نوع دقیق قلم جزو هویت فرآورده است و در "
     "container می‌آید: prefilled disposable pen، reusable pen، cartridge/Penfill، و نام "
     "سیستم قلم اگر دارد (SoloStar، FlexPen، KwikPen، …). هر نوع قلم/کارتریج یک واریانت جدا است. "

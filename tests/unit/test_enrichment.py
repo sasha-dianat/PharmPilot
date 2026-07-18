@@ -227,6 +227,22 @@ def test_variant_keeps_salt_form_and_device_criteria():
         ("injection_infusion", "20 G", "sterile")
 
 
+def test_infer_item_kind_bulk_first_ingredient():
+    # No dosage form + no strength + powder/bulk wording ⇒ compounding raw
+    # ingredient; a finished «POWDER FOR SUSPENSION» must NOT be bulk.
+    from services.core.drug_catalog.enrichment import infer_item_kind
+    assert infer_item_kind("SALICYLIC ACID POWDER", {"generic": "salicylic acid"}) == "bulk"
+    assert infer_item_kind("MENTHOL BULK", {"generic": "menthol",
+                                            "strengths": ["1 g"]}) == "bulk"
+    assert infer_item_kind("پودر تالک", {}) == "bulk"
+    assert infer_item_kind("AMOXICILLIN POWDER FOR SUSPENSION",
+                           {"generic": "amoxicillin"}) == "drug"
+    assert infer_item_kind("ORS POWDER SACHET", {"generic": "ors"}) == "drug"
+    assert infer_item_kind("SALICYLIC ACID POWDER",
+                           {"generic": "salicylic acid",
+                            "dosage_form": "topical solution"}) == "drug"
+
+
 def test_infer_item_kind_bottle_is_supply():
     from services.core.drug_catalog.enrichment import infer_item_kind
     assert infer_item_kind("BOTTLE 240 CC", {}) == "supply"
