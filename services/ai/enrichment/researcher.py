@@ -91,6 +91,23 @@ RESEARCH_SYSTEM = (
     '{"item_kind":"bulk","category":"active_ingredient",'
     '"variants":[{"dosage_form":"powder"}]}. '
     "ولی «POWDER FOR SUSPENSION» فرآوردهٔ نهایی است، نه فله.\n"
+    "۱۶) مشخصاتی که در «خود نام» آمده (شکل، راه مصرف، قدرت/غلظت) قید قطعی هستند: "
+    "پاسخ باید «همان» فرآورده باشد. اگر منابع فقط شکل/قدرت دیگری را مستند می‌کنند "
+    "(مثلاً برای TRIENTINE ... INJECTION 1 mg/1mL فقط کپسول ۲۵۰ پیدا شود)، "
+    "هرگز دادهٔ فرآوردهٔ دیگر را جایگزین نکن — فیلدهای تأییدنشده را null بگذار، "
+    "confidence را پایین بیاور و در notes بنویس که این شکل/قدرت در منابع یافت نشد.\n"
+    "۱۷) قدرت فرآورده‌های مایع باید «لنگر حجمی» داشته باشد:\n"
+    "   - شربت/سوسپانسیون/محلول خوراکی ⇒ بر ۵ میلی‌لیتر (mg/5 mL)، مگر عرف "
+    "دوزبندی خاص فرآورده چیز دیگری باشد (مثل سوسپانسیون پریمیدون ⇒ همان عرف).\n"
+    "   - قطرهٔ چشمی، قطرهٔ خوراکی و تزریقی ⇒ غلظت بر ۱ میلی‌لیتر (per mL).\n"
+    "   - قلم و سرنگ آماده ⇒ «هر دو»: غلظت per mL در concentration و مقدار کل "
+    "هر ظرف در strength.\n"
+    "   - محلول تک‌دوز استنشاقی/نبولایزر ⇒ مقدار کل هر ظرف + حجم ظرف. مثال: "
+    "IPRATROPIUM/SALBUTAMOL SOLUTION RESPIRATORY 200 ug/1 mg/1mL 2.5MILLILITER ⇒ "
+    '{"dosage_form":"inhalation solution (unit-dose nebulizer)",'
+    '"concentration":"200 µg/mL + 1 mg/mL","strength":"0.5 mg / 2.5 mg per 2.5 mL",'
+    '"pack_size":"2.5 mL","components":[{"name":"ipratropium bromide","strength":"0.5 mg"},'
+    '{"name":"salbutamol sulfate","strength":"2.5 mg"}]}.\n'
     "۱۱) برای قلم‌های تزریق (انسولین و غیره) نوع دقیق قلم جزو هویت فرآورده است و در "
     "container می‌آید: prefilled disposable pen، reusable pen، cartridge/Penfill، و نام "
     "سیستم قلم اگر دارد (SoloStar، FlexPen، KwikPen، …). هر نوع قلم/کارتریج یک واریانت جدا است. "
@@ -200,7 +217,45 @@ class DrugResearcher:
         suggestion["item_kind"] = infer_item_kind(raw_name, clean)
         suggestion["confidence"] = clean.get("confidence")
         suggestion["sources"] = clean.get("sources") or []
+        _check_row_consistency(raw_name, suggestion)
         return suggestion, []
+
+
+def _check_row_consistency(raw_name: str, suggestion: dict) -> None:
+    """Deterministic guard behind prompt rule ۱۶: attributes stated in the
+    row's OWN name (form, strength) are ground truth. Research contradicting
+    them (trientine INJECTION 1 mg/1mL answered as capsule 250 mg) gets its
+    confidence capped and a visible warning — the suspect-first queue then
+    surfaces it. Mutates `suggestion` in place; never raises."""
+    try:
+        from services.core.drug_catalog.match_intel import (
+            _DIGITS, _form_token, _strength_mg)
+        row_form = _form_token(raw_name)
+        row_mg = _strength_mg(str(raw_name).translate(_DIGITS))
+        sug_forms = set()
+        for f in [suggestion.get("dosage_form")] + \
+                [v.get("dosage_form") for v in (suggestion.get("variants") or [])]:
+            tok = _form_token(f)
+            if tok:
+                sug_forms.add(tok)
+        strength_bits = list(suggestion.get("strengths") or [])
+        for v in (suggestion.get("variants") or []):
+            strength_bits += [v.get("strength"), v.get("concentration")]
+        sug_mg = _strength_mg(" ".join(str(s) for s in strength_bits if s))
+        conflicts = []
+        if row_form and sug_forms and row_form not in sug_forms:
+            conflicts.append("شکل دارویی با خودِ نام مغایر است")
+        if row_mg and sug_mg and not (row_mg & sug_mg):
+            conflicts.append("قدرت با خودِ نام مغایر است")
+        if conflicts:
+            cur = suggestion.get("confidence")
+            suggestion["confidence"] = min(float(cur), 0.3) if cur is not None else 0.3
+            suggestion["notes"] = (
+                f"{suggestion.get('notes') or ''} ⚠ {'؛ '.join(conflicts)} — "
+                "پژوهش با مشخصات صریح نام هم‌خوان نیست؛ احتمالاً منابع فقط "
+                "شکل/قدرت دیگری را پوشش داده‌اند").strip()
+    except Exception:
+        pass   # the guard must never break research itself
 
 
 async def save_suggestion(db, raw_name: str, suggestion: dict, *,

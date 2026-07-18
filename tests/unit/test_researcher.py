@@ -50,6 +50,25 @@ def test_research_reports_search_failure_without_raising():
     assert any("network down" in e for e in errors)
 
 
+def test_row_consistency_guard_caps_conflicting_research():
+    # The trientine case: row says INJECTION 1 mg/1mL; web only documents the
+    # capsule 250 mg → research must come back flagged and low-confidence.
+    reply = ('{"generic":"trientine","brand":"Syprine","dosage_form":"capsule",'
+             '"strengths":["250 mg"],"confidence":0.9,"sources":["https://x"]}')
+    sug, errors = DrugResearcher(search_fn=lambda p, s: reply).research(
+        "TRIENTINE DIHYDROCHLORIDE INJECTION INTRAMUSCULAR 1 mg/1mL")
+    assert errors == [] and sug is not None
+    assert sug["confidence"] <= 0.3                     # capped, was 0.9
+    assert "مغایر" in (sug["notes"] or "")              # visible warning
+    # consistent research passes untouched
+    ok = ('{"generic":"trientine","dosage_form":"injection",'
+          '"strengths":["1 mg/1 mL"],"confidence":0.9,"sources":["https://x"]}')
+    sug2, _ = DrugResearcher(search_fn=lambda p, s: ok).research(
+        "TRIENTINE DIHYDROCHLORIDE INJECTION INTRAMUSCULAR 1 mg/1mL")
+    assert sug2 is not None and sug2["confidence"] == 0.9
+    assert "مغایر" not in (sug2.get("notes") or "")
+
+
 def test_research_rejects_all_null_fields():
     reply = '{"generic":null,"brand":null,"strengths":[],"confidence":0.1,"sources":[]}'
     sug, errors = DrugResearcher(search_fn=lambda p, s: reply).research("x")
