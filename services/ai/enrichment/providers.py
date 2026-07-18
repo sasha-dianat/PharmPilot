@@ -281,6 +281,57 @@ def _name_from_prompt(prompt: str) -> str:
     return m.group(1).strip() if m else prompt.strip().splitlines()[0][:120]
 
 
+# ── search-side intelligence: ranking, query enrichment, latin retry ────────
+
+# Authoritative pharma sources first — Iranian drug references, regulators,
+# then international monograph sites. Unknown domains are kept, just ranked
+# after (recall preserved; precision ordered).
+_TRUSTED_DOMAINS = (
+    "darooyab.ir", "irc.fda.gov.ir", "fda.gov.ir", "darukade.com",
+    "dailymed.nlm.nih.gov", "drugs.com", "medlineplus.gov", "rxlist.com",
+    "ema.europa.eu", "wikipedia.org",
+)
+
+
+def rank_results(results: list[dict], raw_name: str) -> list[dict]:
+    """Order search results by evidence quality BEFORE extraction: trusted
+    pharma domain (+2) and title↔name similarity (0–2). Deterministic and
+    stable — nothing is dropped, only reordered, so recall is untouched."""
+    from difflib import SequenceMatcher
+    low_name = str(raw_name).lower()
+
+    def key(r):
+        host = re.sub(r"^https?://(www\.)?", "", str(r.get("url", ""))).split("/")[0]
+        domain_boost = 2.0 if any(host.endswith(d) for d in _TRUSTED_DOMAINS) else 0.0
+        sim = SequenceMatcher(None, low_name, str(r.get("title", "")).lower()).ratio()
+        return -(domain_boost + 2.0 * sim)
+
+    return sorted(results, key=key)
+
+
+def _approved_generic(raw_name: str) -> str | None:
+    """Generic name from the OWNER-APPROVED reference artifact (file-backed so
+    the search path stays sync and DB-free), keyed spelling-proof. Lets a
+    second research pass query «برند + generic» for sharper recall."""
+    try:
+        from services.core.drug_catalog import enrichment as enr
+        path = enr.REFERENCE_PATH
+        if not path.exists():
+            return None
+        mtime = path.stat().st_mtime
+        if _ref_cache.get("mtime") != mtime:
+            data = json.loads(path.read_text(encoding="utf-8")) or {}
+            _ref_cache.update(mtime=mtime, index={
+                (e.get("key") or ""): (e.get("generic_name") or "")
+                for e in data.get("entries", []) if isinstance(e, dict)})
+        return _ref_cache["index"].get(enr.enrich_key(raw_name)) or None
+    except Exception:
+        return None            # enrichment is a bonus, never a failure mode
+
+
+_ref_cache: dict = {}
+
+
 def gemini_search_fn(prompt: str, system: str, *, _post=None, _search=None) -> str:
     """Free-tier pipeline: free external search → Gemini 3.1 Flash-Lite
     EXTRACTION over those results (no google_search tool — not available on
@@ -291,9 +342,23 @@ def gemini_search_fn(prompt: str, system: str, *, _post=None, _search=None) -> s
     list; if it returns none, the top search URLs are used — either way,
     sources are pages a real search surfaced, never invented links."""
     raw_name = _name_from_prompt(prompt)
-    results = (_search or web_search)(f"{raw_name} دارو")
+    search = _search or web_search
+    # Query enrichment: an approved generic sharpens recall («تداژل» alone
+    # finds less than «تداژل vitamin a»).
+    q = f"{raw_name} دارو"
+    gen = _approved_generic(raw_name)
+    if gen and gen.lower() not in raw_name.lower():
+        q = f"{raw_name} {gen} دارو"
+    results = search(q)
+    if not results:
+        # Latin retry: mixed/Persian-styled names sometimes only hit under
+        # their bare latin form.
+        latin = " ".join(re.findall(r"[A-Za-z][A-Za-z.\-]{2,}", raw_name))
+        if len(latin) >= 4:
+            results = search(f"{latin} drug")
     if not results:
         raise RuntimeError(f"جستجوی وب نتیجه‌ای برای «{raw_name}» نداشت")
+    results = rank_results(results, raw_name)
     listing = json.dumps(results, ensure_ascii=False, indent=1)
     input_text = (
         f"{system}\n\n{prompt}\n\n"

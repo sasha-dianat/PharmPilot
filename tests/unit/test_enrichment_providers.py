@@ -218,6 +218,53 @@ def test_youcom_older_hits_shape_fallback(monkeypatch):
     assert rs == [{"title": "hit", "url": "https://h.example", "snippet": "d"}]
 
 
+def test_rank_results_trusted_domain_and_similarity_first():
+    from services.ai.enrichment.providers import rank_results
+    rs = [{"title": "random shop", "url": "https://shop.example/x"},
+          {"title": "ANGIPARS capsule", "url": "https://www.darooyab.ir/angipars"},
+          {"title": "ANGIPARS", "url": "https://blog.example/angipars"}]
+    ranked = rank_results(rs, "ANGIPARS")
+    assert ranked[0]["url"].startswith("https://www.darooyab.ir")   # trusted + similar
+    assert ranked[-1]["title"] == "random shop"                     # nothing dropped
+    assert len(ranked) == 3
+
+
+def test_query_enriched_with_approved_generic(monkeypatch, tmp_path):
+    import json as _json
+    from services.core.drug_catalog import enrichment as enr
+    from services.core.drug_catalog.enrichment import enrich_key
+    art = tmp_path / "ref.json"
+    art.write_text(_json.dumps({"entries": [
+        {"key": enrich_key("تداژل-ایکس"), "generic_name": "vitamin a"}]}), encoding="utf-8")
+    monkeypatch.setattr(enr, "REFERENCE_PATH", art)
+    import services.ai.enrichment.providers as ep
+    monkeypatch.setattr(ep, "_ref_cache", {})
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
+    seen = {}
+    def searcher(q, **kw):
+        seen["q"] = q
+        return list(_RESULTS)
+    ep.gemini_search_fn("نام: «تداژل-ایکس»", "s", _search=searcher,
+                        _post=lambda u, b, headers=None:
+                        _interaction([_model_output('{"generic":"vitamin a"}')]))
+    assert "vitamin a" in seen["q"] and "دارو" in seen["q"]
+
+
+def test_latin_retry_when_first_query_empty(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.k")
+    import services.ai.enrichment.providers as ep
+    monkeypatch.setattr(ep, "_ref_cache", {})
+    calls = []
+    def searcher(q, **kw):
+        calls.append(q)
+        return [] if len(calls) == 1 else list(_RESULTS)
+    ep.gemini_search_fn("نام: «ETHACRIDINE  LANTATE»", "s", _search=searcher,
+                        _post=lambda u, b, headers=None:
+                        _interaction([_model_output('{"generic":"x"}')]))
+    assert len(calls) == 2
+    assert calls[1] == "ETHACRIDINE LANTATE drug"     # bare latin retry
+
+
 def test_404_retired_model_is_model_unavailable_not_key_failure():
     import io
     import urllib.error
