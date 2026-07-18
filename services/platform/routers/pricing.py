@@ -345,6 +345,9 @@ class CoverageSourceIn(BaseModel):
 class ApproveRunRequest(BaseModel):
     remove_missing: bool = False
     accepted_review_ids: list[int] = []
+    # review-id → {code, note}: WHY a pair was refused. Codes feed هوش تطبیق as
+    # feature-targeted negatives; notes are audit context.
+    reject_reasons: dict[str, dict] = {}
 
 
 def _source_json(s, lock_holder: str | None) -> dict:
@@ -512,6 +515,7 @@ async def approve_coverage_run(run_id: UUID, body: ApproveRunRequest,
     try:
         return await ch.apply_run(db, run_id, remove_missing=body.remove_missing,
                                   accepted_review_ids=body.accepted_review_ids,
+                                  reject_reasons=body.reject_reasons,
                                   staff_id=staff.id)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))

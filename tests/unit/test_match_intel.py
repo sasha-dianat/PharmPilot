@@ -65,6 +65,33 @@ def test_verify_links_never_touches_irc_or_good_matches():
     assert good.confidence == 0.9 and exact.method == "irc"
 
 
+def test_stamp_reject_reasons_only_on_refused_items():
+    from services.core.drug_catalog.coverage_harvest import stamp_reject_reasons
+    review = [{"id": 0, "irc": "A"}, {"id": 1, "irc": "B"}, {"id": 2, "irc": "C"}]
+    out = stamp_reject_reasons(review, accepted={1},
+                               reasons={"0": {"code": "wrong_strength", "note": "۱۵ نه ۳۰"},
+                                        "1": {"code": "wrong_form"},        # accepted → ignored
+                                        "2": {"code": "bogus_code", "note": "n"}})
+    assert out[0]["reject_reason"] == "wrong_strength" and out[0]["reject_note"] == "۱۵ نه ۳۰"
+    assert "reject_reason" not in out[1]                 # accepted item untouched
+    assert "reject_reason" not in out[2] and out[2]["reject_note"] == "n"  # bad code dropped, note kept
+    assert review[0] is not out[0]                        # new objects (JSONB reassignment)
+
+
+def test_coded_refusals_train_with_double_weight():
+    # Same negative evidence, once coded — the coded corpus must push u for the
+    # conflicting level higher (the model becomes more suspicious of it).
+    good = {"name": "high", "strength": "exact", "form": "same", "brand": "no"}
+    bad = {"name": "high", "strength": "conflict", "form": "same", "brand": "no"}
+    base = [(good, True)] * 20 + [(bad, False)] * 20
+    coded = base + [(bad, False)] * 20                    # what double-weight produces
+    m_plain, m_coded = fit(base, {}), fit(coded, {})
+    u_plain = m_plain["mu"]["strength"]["conflict"][1]
+    u_coded = m_coded["mu"]["strength"]["conflict"][1]
+    assert u_coded > u_plain
+    assert score(bad, m_coded) < score(bad, m_plain)      # stricter after coding
+
+
 def test_verify_is_noop_without_model():
     link = LinkResult({"drug_name": "x"}, _rec(), 0.9, "fuzzy")
     assert verify_links([link], None, "salamat") == 0 and link.confidence == 0.9

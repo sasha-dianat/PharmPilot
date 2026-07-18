@@ -492,8 +492,32 @@ def start_harvest(source_id, insurer: str) -> dict:
 
 
 # ── approve / reject ─────────────────────────────────────────────────────────
+# Owner-teachable rejection vocabulary — codes map 1:1 onto هوش تطبیق features,
+# so a coded rejection is a feature-targeted training label, not just a "no".
+REJECT_REASONS = ("wrong_product", "wrong_strength", "wrong_form",
+                  "wrong_brand", "wrong_pack", "price_implausible", "other")
+
+
+def stamp_reject_reasons(review: list, accepted: set,
+                         reasons: dict | None) -> list:
+    """Return a new review list with reject_reason/reject_note stamped onto
+    non-accepted items (JSONB → must reassign, never mutate in place)."""
+    out = []
+    for item in (review or []):
+        if isinstance(item, dict) and item.get("id") not in accepted:
+            r = (reasons or {}).get(str(item.get("id"))) or {}
+            code = r.get("code")
+            if code in REJECT_REASONS or r.get("note"):
+                item = {**item,
+                        **({"reject_reason": code} if code in REJECT_REASONS else {}),
+                        **({"reject_note": str(r["note"])[:300]} if r.get("note") else {})}
+        out.append(item)
+    return out
+
+
 async def apply_run(db, run_id, *, remove_missing: bool = False,
                     accepted_review_ids: list[int] | None = None,
+                    reject_reasons: dict | None = None,
                     staff_id=None) -> dict:
     from datetime import datetime, timezone
     from sqlalchemy import select
@@ -534,6 +558,7 @@ async def apply_run(db, run_id, *, remove_missing: bool = False,
                 row.coverage = cov or None
                 removed_cleared += 1
 
+    run.review = stamp_reject_reasons(run.review, accepted, reject_reasons)
     run.status = "approved"
     run.applied_by = staff_id
     run.applied_at = datetime.now(timezone.utc)

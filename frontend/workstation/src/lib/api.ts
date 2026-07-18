@@ -165,7 +165,8 @@ export const pricingApi = {
   coverageRuns: (sourceId?: string) =>
     apiClient.get('/pricing/coverage/runs', { params: sourceId ? { source_id: sourceId } : {} }),
   coverageRun: (id: string) => apiClient.get(`/pricing/coverage/runs/${id}`),
-  coverageApprove: (id: string, body: { remove_missing: boolean; accepted_review_ids: number[] }) =>
+  coverageApprove: (id: string, body: { remove_missing: boolean; accepted_review_ids: number[]
+                                        reject_reasons?: Record<string, { code?: string; note?: string }> }) =>
     apiClient.post(`/pricing/coverage/runs/${id}/approve`, body),
   coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
   inconsistencies: (insurer: string, threshold: number) =>

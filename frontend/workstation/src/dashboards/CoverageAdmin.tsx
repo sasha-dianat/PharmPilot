@@ -258,6 +258,7 @@ function RunPreview({ runId, onDone, onError }: {
 }) {
   const [removeMissing, setRemoveMissing] = useState(false)
   const [accepted, setAccepted] = useState<Set<number>>(new Set())
+  const [reasons, setReasons] = useState<Record<number, { code?: string; note?: string }>>({})
   const [busy, setBusy] = useState(false)
   const { data: run } = useQuery<any>({
     queryKey: ['coverage-run', runId],
@@ -271,8 +272,16 @@ function RunPreview({ runId, onDone, onError }: {
       'کل این اجرا رد می‌شود و هیچ پوششی اعمال نمی‌شود — حتی موارد تأییدشده. ادامه؟')) return
     setBusy(true)
     try {
-      if (approve) await pricingApi.coverageApprove(runId,
-        { remove_missing: removeMissing, accepted_review_ids: [...accepted] })
+      if (approve) {
+        // Only reasons for items NOT accepted (a coded refusal is a training label)
+        const reject_reasons: Record<string, { code?: string; note?: string }> = {}
+        for (const [id, r] of Object.entries(reasons)) {
+          if (!accepted.has(Number(id)) && (r.code || r.note)) reject_reasons[id] = r
+        }
+        await pricingApi.coverageApprove(runId,
+          { remove_missing: removeMissing, accepted_review_ids: [...accepted],
+            reject_reasons })
+      }
       else await pricingApi.coverageReject(runId)
       onDone()
     } catch (e) { onError(e, 'تصمیم اعمال نشد.') } finally { setBusy(false) }
@@ -325,11 +334,33 @@ function RunPreview({ runId, onDone, onError }: {
               className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px]">لغو همه</button>
           </div>
           {run.review.map((item: any) => (
-            <label key={item.id} className="flex items-center gap-2 font-mono text-slate-400">
-              <input type="checkbox" checked={accepted.has(item.id)}
-                onChange={e => { const s = new Set(accepted); e.target.checked ? s.add(item.id) : s.delete(item.id); setAccepted(s) }} />
-              {item.name} ← «{String(item.row?.drug_name ?? '')}» (اطمینان {item.confidence})
-            </label>))}
+            <div key={item.id} className="flex flex-wrap items-center gap-2 font-mono text-slate-400">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={accepted.has(item.id)}
+                  onChange={e => { const s = new Set(accepted); e.target.checked ? s.add(item.id) : s.delete(item.id); setAccepted(s) }} />
+                {item.name} ← «{String(item.row?.drug_name ?? '')}» (اطمینان {item.confidence})
+              </label>
+              {!accepted.has(item.id) && (
+                <span className="flex items-center gap-1">
+                  <select value={reasons[item.id]?.code || ''}
+                    onChange={e => setReasons(r => ({ ...r, [item.id]: { ...r[item.id], code: e.target.value || undefined } }))}
+                    className="bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[11px]">
+                    <option value="">دلیل رد…</option>
+                    <option value="wrong_product">داروی دیگر</option>
+                    <option value="wrong_strength">قدرت اشتباه</option>
+                    <option value="wrong_form">شکل اشتباه</option>
+                    <option value="wrong_brand">برند اشتباه</option>
+                    <option value="wrong_pack">بستهٔ اشتباه</option>
+                    <option value="price_implausible">قیمت نامعقول</option>
+                    <option value="other">سایر</option>
+                  </select>
+                  <input type="text" placeholder="توضیح (اختیاری)"
+                    value={reasons[item.id]?.note || ''}
+                    onChange={e => setReasons(r => ({ ...r, [item.id]: { ...r[item.id], note: e.target.value || undefined } }))}
+                    className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] w-40" />
+                </span>
+              )}
+            </div>))}
         </div>)}
       <label className="flex items-center gap-2 text-amber-300">
         <input type="checkbox" checked={removeMissing} onChange={e => setRemoveMissing(e.target.checked)} />

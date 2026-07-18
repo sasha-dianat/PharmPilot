@@ -212,6 +212,7 @@ async def fit_from_db(db, mode: str = "decisions") -> dict:
     by_irc = {r.irc: r for r in recs}
 
     pairs: list[tuple[dict, bool]] = []
+    reason_counts: dict[str, int] = {}
     statuses = ("approved",) if mode == "decisions" else ("approved", "parsed")
     runs = (await db.execute(select(CoverageRun)
                              .where(CoverageRun.status.in_(statuses)))).scalars().all()
@@ -229,7 +230,15 @@ async def fit_from_db(db, mode: str = "decisions") -> dict:
             if item.get("accepted"):
                 pairs.append((extract_features(name, rec), True))
             elif approved and mode == "decisions":
-                pairs.append((extract_features(name, rec), False))
+                feats = extract_features(name, rec)
+                pairs.append((feats, False))
+                code = item.get("reject_reason")
+                if code:
+                    # A coded refusal is a feature-targeted label — the owner
+                    # SAID what was wrong — so it teaches with double weight
+                    # and is tallied for the training report.
+                    pairs.append((feats, False))
+                    reason_counts[code] = reason_counts.get(code, 0) + 1
             elif mode == "bootstrap":
                 conf = item.get("confidence") or 0
                 if conf >= 0.85:               # linker's own strong pairings
@@ -269,5 +278,7 @@ async def fit_from_db(db, mode: str = "decisions") -> dict:
                     pass
 
     model = fit(pairs, price_ratios)
+    if reason_counts:
+        model["counts"]["reasons"] = reason_counts
     save_model(model)
     return model
