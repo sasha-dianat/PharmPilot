@@ -40,6 +40,24 @@ _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890
 
 # ── feature extraction (discrete levels) ─────────────────────────────────────
 
+# Matching-oriented Persian→Latin romanization: not linguistic perfection, just
+# enough that «سالبوتامول» lands within edit distance of "salbutamol". Latin
+# text passes through unchanged, so the transliterated comparison is safe to
+# run on every pair.
+_P2L = {
+    "ا": "a", "آ": "a", "أ": "a", "إ": "a", "ب": "b", "پ": "p", "ت": "t",
+    "ط": "t", "ث": "s", "س": "s", "ص": "s", "ج": "j", "چ": "ch", "ح": "h",
+    "ه": "h", "خ": "kh", "د": "d", "ذ": "z", "ز": "z", "ض": "z", "ظ": "z",
+    "ر": "r", "ژ": "zh", "ش": "sh", "ع": "", "ء": "", "ئ": "", "غ": "gh",
+    "ق": "gh", "ف": "f", "ک": "k", "ك": "k", "گ": "g", "ل": "l", "م": "m",
+    "ن": "n", "و": "o", "ی": "i", "ي": "i", "ۀ": "e", "ة": "e",
+}
+
+
+def _translit(s: str) -> str:
+    return "".join(_P2L.get(ch, ch) for ch in str(s or "").lower())
+
+
 def _form_token(text) -> str | None:
     for tok in re.findall(r"[A-Za-z]+|[؀-ۿ]+", str(text or "").lower()):
         if tok in _FORM_WORDS:
@@ -50,11 +68,21 @@ def _form_token(text) -> str | None:
 def extract_features(row_name: str, rec) -> dict:
     """Discrete feature levels for one (formulary row, catalog record) pair."""
     n_row = normalize(str(row_name or "").lower()) or str(row_name or "").lower()
+    row_tr = _translit(n_row)
+    # Token-level candidates too: «سالبوتامول ۲ میلی گرم قرص» whole-string vs
+    # "salbutamol" dilutes below threshold; its NAME token alone matches.
+    row_tokens = [tk for tk in re.split(r"[\s\-/]+", row_tr) if len(tk) >= 4]
     best_sim = 0.0
     for target in (rec.generic_name, rec.name_fa, rec.brand_name):
         if target:
             t = normalize(str(target).lower()) or str(target).lower()
-            best_sim = max(best_sim, SequenceMatcher(None, n_row, t).ratio())
+            t_tr = _translit(t)
+            best_sim = max(best_sim,
+                           SequenceMatcher(None, n_row, t).ratio(),
+                           # cross-script: «سالبوتامول» ↔ "salbutamol"
+                           SequenceMatcher(None, row_tr, t_tr).ratio(),
+                           *(SequenceMatcher(None, tk, t_tr).ratio()
+                             for tk in row_tokens))
     name_level = "high" if best_sim >= 0.85 else ("mid" if best_sim >= 0.6 else "low")
 
     row_mg = _strength_mg(str(row_name).translate(_DIGITS))

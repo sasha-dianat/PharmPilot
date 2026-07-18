@@ -92,6 +92,20 @@ def test_coded_refusals_train_with_double_weight():
     assert score(bad, m_coded) < score(bad, m_plain)      # stricter after coding
 
 
+def test_transliteration_bridges_scripts():
+    # «سالبوتامول» must be seen as similar to "salbutamol" — SequenceMatcher
+    # alone scores cross-script pairs near zero.
+    from services.core.drug_catalog.match_intel import _translit
+    from difflib import SequenceMatcher
+    assert SequenceMatcher(None, _translit("سالبوتامول"),
+                           "salbutamol").ratio() >= 0.7
+    f = extract_features("سالبوتامول ۲ میلی گرم قرص",
+                         _rec(generic_name="salbutamol", strength="2 mg",
+                              dosage_form="TABLET"))
+    assert f["name"] in ("high", "mid")          # was "low" pre-transliteration
+    assert _translit("aspirin 100") == "aspirin 100"   # latin passes through
+
+
 def test_score_suggestion_second_boundary():
     # Same engine, research boundary: coherent research scores high, research
     # for a DIFFERENT drug scores low; no model → None (never a fake number).
