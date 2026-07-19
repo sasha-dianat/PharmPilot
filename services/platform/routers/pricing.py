@@ -866,6 +866,41 @@ async def enrichment_decide(body: EnrichmentDecideRequest,
     return await decide_enrichments(db, ids, approve=body.approve, staff_id=staff.id)
 
 
+@router.post("/price-history/backfill")
+async def price_history_backfill(staff: Staff = Depends(require_permission("inventory:write")),
+                                 db: AsyncSession = Depends(get_db)):
+    """Seed the price time-series from today's catalog prices (one-time / idempotent)."""
+    from services.core.drug_catalog.price_history import backfill_from_catalog
+    return await backfill_from_catalog(db)
+
+
+@router.get("/price-history/stale")
+async def price_history_stale(max_age_days: int = 180, price_type: str = "announced",
+                              staff: Staff = Depends(require_permission("inventory:read")),
+                              db: AsyncSession = Depends(get_db)):
+    """Products whose current price is older than max_age_days — the structural
+    replacement for stale-price re-crawl guesswork."""
+    from services.core.drug_catalog.price_history import stale_prices
+    return await stale_prices(db, max_age_days=max_age_days, price_type=price_type)
+
+
+@router.get("/price-history/{irc}")
+async def price_history_for(irc: str,
+                            staff: Staff = Depends(require_permission("inventory:read")),
+                            db: AsyncSession = Depends(get_db)):
+    """Full dated price series for one product (newest first)."""
+    from sqlalchemy import select
+    from shared.models.price_history import PriceHistory
+    rows = (await db.execute(
+        select(PriceHistory).where(PriceHistory.irc == irc)
+        .order_by(PriceHistory.valid_from.desc()).limit(200))).scalars().all()
+    return {"irc": irc, "history": [
+        {"price_type": r.price_type, "insurer": r.insurer, "value": r.value,
+         "source": r.source, "current": r.valid_to is None,
+         "valid_from": r.valid_from.isoformat() if r.valid_from else None,
+         "valid_to": r.valid_to.isoformat() if r.valid_to else None} for r in rows]}
+
+
 class MarkBulkRequest(BaseModel):
     names: list[str]
 

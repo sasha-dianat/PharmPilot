@@ -46,6 +46,7 @@ from . import clinical    # noqa: F401  (Medication, ClinicalAlert, ClinicalAudi
 from . import coverage    # noqa: F401  (CoverageSource, CoverageRun — دارونامه harvest)
 from . import drug_catalog  # noqa: F401  (DrugCatalogItem — IRC-keyed priced product list)
 from . import enrichment  # noqa: F401  (DrugEnrichment — owner-approved web-researched reference)
+from . import price_history  # noqa: F401  (PriceHistory — dated price time-series, Phase C)
 from . import insurance   # noqa: F401  (InsurancePlan, PatientInsurance, ...)
 from . import inventory   # noqa: F401  (DrugProduct, InventoryLot, StockLevel, PurchaseOrder, ...)
 from . import depot       # noqa: F401  (PharmacyShelf, ShelfPlacement, ReplenishmentSession, ShelfTransferEvent, SurveillanceEvent, ShiftHandoverReport)

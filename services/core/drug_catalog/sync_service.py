@@ -49,13 +49,19 @@ async def _apply_to_catalog(db: AsyncSession, pr: DrugPriceProposal) -> None:
     item = (await db.execute(select(DrugCatalogItem).where(
         DrugCatalogItem.irc == pr.irc))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
+    # Phase C: every approved price change also appends a dated history point.
+    from .price_history import record_price
     if item:
         if pr.proposed_announced is not None:
             item.announced_price = int(pr.proposed_announced)
             item.announced_price_at = now
+            await record_price(db, pr.irc, "announced", pr.proposed_announced,
+                               source=pr.source or "sync", at=now)
         if pr.proposed_invoice is not None:
             item.last_invoice_price = int(pr.proposed_invoice)
             item.last_invoice_at = now
+            await record_price(db, pr.irc, "invoice", pr.proposed_invoice,
+                               source=pr.source or "sync", at=now)
     else:
         # 'new' item from a price feed — stub row; enrich via a full catalog ingest.
         db.add(DrugCatalogItem(

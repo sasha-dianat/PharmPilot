@@ -189,6 +189,10 @@ export const pricingApi = {
     apiClient.post('/pricing/enrichment/decide', { ids, approve }),
   enrichMarkBulk: (names: string[]) =>
     apiClient.post('/pricing/enrichment/mark-bulk', { names }),
+  priceHistoryBackfill: () => apiClient.post('/pricing/price-history/backfill', {}),
+  priceHistoryStale: (maxAgeDays = 180) =>
+    apiClient.get('/pricing/price-history/stale', { params: { max_age_days: maxAgeDays } }),
+  priceHistory: (irc: string) => apiClient.get(`/pricing/price-history/${irc}`),
   matchIntelRetrain: (mode: 'decisions' | 'bootstrap' = 'decisions') =>
     apiClient.post('/pricing/match-intel/retrain', { mode }),
   matchIntelStatus: () => apiClient.get('/pricing/match-intel/status'),
