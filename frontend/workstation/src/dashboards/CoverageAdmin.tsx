@@ -322,6 +322,17 @@ function RunPreview({ runId, onDone, onError }: {
               </div>))}
           </div>
         </details>)}
+      {(run.groups?.bulk_candidates || []).length > 0 && (
+        <details className="border border-cyan-600/30 rounded p-2">
+          <summary className="cursor-pointer text-cyan-300">
+            گروه‌بندی مادهٔ مؤثره — {fa(run.stats?.ingredient_groups)} گروه ·
+            {' '}{fa(run.groups.bulk_candidates.length)} نامزد «مادهٔ اولیه»
+          </summary>
+          <div className="max-h-32 overflow-y-auto mt-1 space-y-0.5 font-mono text-[11px] text-slate-400">
+            {run.groups.bulk_candidates.map((n: string, i: number) => (
+              <div key={i}><span className="text-cyan-400">فله؟</span> {n}</div>))}
+          </div>
+        </details>)}
       {(run.review || []).length > 0 && (
         <div className="max-h-40 overflow-y-auto space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">

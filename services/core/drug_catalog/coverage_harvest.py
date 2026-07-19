@@ -333,12 +333,25 @@ def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
     by_irc = {r.irc: r for r in catalog}
     review = [{"id": i, **item, "accepted": False}
               for i, item in enumerate(annotate_review_fs(cov.review, by_irc, model))]
+    # Ingredient-family pre-pass: group THIS run's rows by canonical active,
+    # surfacing bulk candidates (a bare row beside finished-form siblings) and
+    # multi-form families for grouped review. Deterministic, no DB.
+    from .enrichment import classify_ingredient_groups
+    row_names = [str(r.get("drug_name")) for r in normalized if r.get("drug_name")]
+    groups = classify_ingredient_groups(row_names)
+    bulk_candidates = sorted({m["name"] for g in groups.values()
+                              for m in g["members"] if m["is_bulk"]})
+    multiform = {k: g["forms"] for k, g in groups.items() if len(g["forms"]) > 1}
     return {
-        "stats": {**cov.stats, "columns": roles, "intel_demoted": intel_demoted},
+        "stats": {**cov.stats, "columns": roles, "intel_demoted": intel_demoted,
+                  "ingredient_groups": len(groups),
+                  "bulk_candidates": len(bulk_candidates)},
         "staged": cov.applied,
         "review": review,
         "unmatched": cov.unmatched[:200],
         "diff": compute_diff(cov.applied, current, insurer=insurer),
+        "groups": {"bulk_candidates": bulk_candidates[:200],
+                   "multiform": dict(list(multiform.items())[:200])},
     }
 
 

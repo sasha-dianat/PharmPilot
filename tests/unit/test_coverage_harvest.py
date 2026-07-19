@@ -175,6 +175,22 @@ def test_stage_run_payload_builds_stats_review_ids_and_diff():
     assert all("id" in item for item in payload["review"])
 
 
+def test_stage_run_payload_surfaces_ingredient_groups_and_bulk():
+    from services.core.drug_catalog.schema import CatalogRecord
+    from decimal import Decimal
+    catalog = [CatalogRecord(irc="M5", name_fa="مت ۵۰۰", generic_name="metformin",
+                             dosage_form="TABLET", strength="500 mg",
+                             announced_price=Decimal("1"))]
+    rows = [{"نام دارو": "METFORMIN 500 mg TABLET"},
+            {"نام دارو": "METFORMIN 1000 mg TABLET"},
+            {"نام دارو": "METFORMIN"}]        # bare sibling → bulk candidate
+    payload = stage_run_payload(rows, catalog, insurer="tamin",
+                                overrides=None, current={}, min_confidence=0.75)
+    assert "METFORMIN" in payload["groups"]["bulk_candidates"]
+    assert payload["stats"]["bulk_candidates"] >= 1
+    assert payload["stats"]["ingredient_groups"] >= 1
+
+
 def test_harvest_state_snapshot_has_lock_holder():
     harvest_lock.force_release()
     st = CoverageHarvestState(running=True, insurer="tamin", phase="fetching")
