@@ -124,12 +124,18 @@ RESEARCH_SYSTEM = (
 )
 
 
-def build_prompt(raw_name: str) -> str:
-    return (
+def build_prompt(raw_name: str, hint_forms: list | None = None) -> str:
+    p = (
         f"نام فرآورده (همان‌طور که در فهرست بیمه/دارونامه آمده): «{raw_name}»\n"
         "این نام ممکن است غلط املایی، ترکیب برند+ژنریک، یا ناقص باشد. "
         "هویت واقعی آن را با جستجوی وب پیدا کن و طبق قالب JSON پاسخ بده."
     )
+    if hint_forms:
+        p += ("\nاین مادهٔ مؤثره در فهرست به این شکل‌های دارویی دیده شده است: "
+              f"{'، '.join(str(f) for f in hint_forms)} — "
+              "برای هر شکل مرتبط یک واریانت جدا بده تا کل خانوادهٔ فرآورده پوشش داده شود "
+              "(شکل ناموجود نساز).")
+    return p
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -186,7 +192,8 @@ class DrugResearcher:
     def __init__(self, search_fn: SearchFn):
         self._search = search_fn
 
-    def research(self, raw_name: str) -> tuple[Optional[dict], list[str]]:
+    def research(self, raw_name: str,
+                 hint_forms: list | None = None) -> tuple[Optional[dict], list[str]]:
         """Returns (suggestion, errors). `suggestion` is a dict of DrugEnrichment
         column values (plus confidence/sources) ready for persistence, or None on
         failure. Never raises for a bad model reply — it reports via errors."""
@@ -194,7 +201,7 @@ class DrugResearcher:
         if not raw_name:
             return None, ["نام خالی است"]
         try:
-            text = self._search(build_prompt(raw_name), RESEARCH_SYSTEM)
+            text = self._search(build_prompt(raw_name, hint_forms), RESEARCH_SYSTEM)
         except Exception as e:  # network/SDK/key failures are reported, not raised
             return None, [f"جستجو ناموفق بود: {type(e).__name__}: {e}"]
         raw = extract_json(text)

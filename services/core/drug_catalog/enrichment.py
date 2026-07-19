@@ -521,6 +521,40 @@ async def decide_enrichments(db, ids: list, *, approve: bool,
     return {"updated": len(rows), "status": new_status}
 
 
+async def mark_bulk(db, names: list[str], *, staff_id=None) -> dict:
+    """Owner confirms formulary rows as compounding raw ingredients. Upserts an
+    APPROVED enrichment (item_kind='bulk') per spelling-proof key, so load_approved
+    keeps them OUT of drug matching. Never downgrades an existing drug row that
+    already holds real detail — only bare/absent rows become bulk.
+    → {marked, skipped}."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from shared.models.enrichment import DrugEnrichment
+
+    marked = skipped = 0
+    now = datetime.now(timezone.utc)
+    for name in names or []:
+        key = enrich_key(name)
+        if not key:
+            skipped += 1
+            continue
+        row = (await db.execute(
+            select(DrugEnrichment).where(DrugEnrichment.key == key))).scalar_one_or_none()
+        if row is not None and row.item_kind == "drug" and (row.variants or row.strengths):
+            skipped += 1        # a real finished-drug row — don't reclassify
+            continue
+        if row is None:
+            row = DrugEnrichment(key=key, raw_name=str(name), researched_by="manual")
+            db.add(row)
+        row.item_kind = "bulk"
+        row.status = "approved"
+        row.decided_by = staff_id
+        row.decided_at = now
+        marked += 1
+    await db.commit()
+    return {"marked": marked, "skipped": skipped}
+
+
 async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
     """Deterministic research worklist, deduped by spelling-proof key.
 
@@ -539,10 +573,12 @@ async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
 
     existing = set((await db.execute(select(DrugEnrichment.key))).scalars().all())
     items: dict[str, dict] = {}
+    all_names: list[str] = []          # every row name seen, for family grouping
 
     def add(raw_name, reason, insurer):
         if not raw_name:
             return
+        all_names.append(str(raw_name))
         key = enrich_key(raw_name)
         if not key or key in existing or key in items:
             return
@@ -588,5 +624,18 @@ async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
             strength_ok = bool(c.strength and str(c.strength).strip())
             if not form_ok or not strength_ok:
                 add(c.name_fa, "missing_details", staged_map.get(c.irc))
+
+    # Family annotation: attach the dosage forms this ingredient appears in
+    # across the formulary, so ONE research pass can be told to cover the whole
+    # family (metformin → tablet + XR tablet + oral solution) instead of one form.
+    from .schema import canonical_ingredient
+    groups = classify_ingredient_groups(all_names)
+    canon_forms = {ck: g["forms"] for ck, g in groups.items() if g["forms"]}
+    for it in items.values():
+        ck = canonical_ingredient(normalize(it["raw_name"]) or it["raw_name"]) \
+            or it["raw_name"].lower()
+        forms = canon_forms.get(ck)
+        if forms and len(forms) > 1:
+            it["forms"] = forms
 
     return list(items.values())

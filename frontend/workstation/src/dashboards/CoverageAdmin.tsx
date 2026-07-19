@@ -259,6 +259,7 @@ function RunPreview({ runId, onDone, onError }: {
   const [removeMissing, setRemoveMissing] = useState(false)
   const [accepted, setAccepted] = useState<Set<number>>(new Set())
   const [reasons, setReasons] = useState<Record<number, { code?: string; note?: string }>>({})
+  const [bulkMsg, setBulkMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const { data: run } = useQuery<any>({
     queryKey: ['coverage-run', runId],
@@ -328,9 +329,29 @@ function RunPreview({ runId, onDone, onError }: {
             گروه‌بندی مادهٔ مؤثره — {fa(run.stats?.ingredient_groups)} گروه ·
             {' '}{fa(run.groups.bulk_candidates.length)} نامزد «مادهٔ اولیه»
           </summary>
+          <p className="text-[11px] text-slate-500 mt-1">
+            این‌ها ماده‌های اولیهٔ داروسازی به‌نظر می‌رسند (بدون شکل/قدرت، کنارِ اقلام نهاییِ همان ماده).
+            تأیید ⇒ به‌عنوان «فله» ثبت و از تطبیق دارو کنار گذاشته می‌شوند.
+          </p>
+          <button onClick={async () => {
+            setBusy(true)
+            try {
+              const { data } = await pricingApi.enrichMarkBulk(run.groups.bulk_candidates)
+              setBulkMsg(`${fa(data.marked)} مورد به‌عنوان «مادهٔ اولیه» ثبت شد (${fa(data.skipped)} رد شد).`)
+            } catch (e) { onError(e, 'ثبت فله ناموفق بود.') } finally { setBusy(false) }
+          }} disabled={busy}
+            className="mt-1 mb-1 px-2 py-0.5 text-[11px] rounded bg-cyan-800 hover:bg-cyan-700 disabled:opacity-40">
+            تأیید همه به‌عنوان «مادهٔ اولیه» ({fa(run.groups.bulk_candidates.length)})
+          </button>
+          {bulkMsg && <span className="text-[11px] text-emerald-400 mr-2">{bulkMsg}</span>}
           <div className="max-h-32 overflow-y-auto mt-1 space-y-0.5 font-mono text-[11px] text-slate-400">
             {run.groups.bulk_candidates.map((n: string, i: number) => (
-              <div key={i}><span className="text-cyan-400">فله؟</span> {n}</div>))}
+              <div key={i} className="flex items-center gap-2">
+                <button onClick={async () => {
+                  try { await pricingApi.enrichMarkBulk([n]) } catch (e) { onError(e, 'ثبت فله ناموفق بود.') }
+                }} className="text-cyan-400 hover:text-cyan-200" title="ثبت این مورد به‌عنوان مادهٔ اولیه">فله ✓</button>
+                <span>{n}</span>
+              </div>))}
           </div>
         </details>)}
       {(run.review || []).length > 0 && (

@@ -187,6 +187,8 @@ export const pricingApi = {
     apiClient.get('/pricing/enrichment/suggestions', { params: { status } }),
   enrichDecide: (ids: string[], approve: boolean) =>
     apiClient.post('/pricing/enrichment/decide', { ids, approve }),
+  enrichMarkBulk: (names: string[]) =>
+    apiClient.post('/pricing/enrichment/mark-bulk', { names }),
   matchIntelRetrain: (mode: 'decisions' | 'bootstrap' = 'decisions') =>
     apiClient.post('/pricing/match-intel/retrain', { mode }),
   matchIntelStatus: () => apiClient.get('/pricing/match-intel/status'),

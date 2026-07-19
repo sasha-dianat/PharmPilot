@@ -864,6 +864,20 @@ async def enrichment_decide(body: EnrichmentDecideRequest,
     return await decide_enrichments(db, ids, approve=body.approve, staff_id=staff.id)
 
 
+class MarkBulkRequest(BaseModel):
+    names: list[str]
+
+
+@router.post("/enrichment/mark-bulk")
+async def enrichment_mark_bulk(body: MarkBulkRequest,
+                               staff: Staff = Depends(require_permission("inventory:write")),
+                               db: AsyncSession = Depends(get_db)):
+    """Owner confirms formulary rows as compounding raw ingredients (item_kind=
+    'bulk', approved) — kept out of drug matching thereafter."""
+    from services.core.drug_catalog.enrichment import mark_bulk
+    return await mark_bulk(db, body.names, staff_id=staff.id)
+
+
 @router.post("/enrichment/export")
 async def enrichment_export(staff: Staff = Depends(require_permission("inventory:write")),
                             db: AsyncSession = Depends(get_db)):

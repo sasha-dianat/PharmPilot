@@ -69,6 +69,22 @@ def test_row_consistency_guard_caps_conflicting_research():
     assert "مغایر" not in (sug2.get("notes") or "")
 
 
+def test_build_prompt_family_hint():
+    from services.ai.enrichment.researcher import build_prompt
+    p = build_prompt("METFORMIN", hint_forms=["tablet", "solution"])
+    assert "tablet" in p and "solution" in p and "خانواده" in p
+    assert "خانواده" not in build_prompt("METFORMIN")     # no hint → no family clause
+
+
+def test_research_passes_family_hint_to_search():
+    seen = {}
+    def fake(prompt, system):
+        seen["prompt"] = prompt
+        return '{"generic":"metformin","dosage_form":"tablet","confidence":0.9,"sources":["https://x"]}'
+    DrugResearcher(search_fn=fake).research("METFORMIN", hint_forms=["tablet", "injection"])
+    assert "injection" in seen["prompt"]                  # family reached the model
+
+
 def test_research_rejects_all_null_fields():
     reply = '{"generic":null,"brand":null,"strengths":[],"confidence":0.1,"sources":[]}'
     sug, errors = DrugResearcher(search_fn=lambda p, s: reply).research("x")

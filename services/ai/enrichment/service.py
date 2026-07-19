@@ -145,7 +145,7 @@ class _Pacer:
 
 async def _research_with_backoff(researcher: DrugResearcher, raw_name: str,
                                  backoffs=_RATE_BACKOFFS, gate: _RateGate | None = None,
-                                 pacer: _Pacer | None = None):
+                                 pacer: _Pacer | None = None, hint_forms=None):
     """research() once, retrying only 429/rate-limit failures with escalating
     waits. Non-rate-limit failures return immediately (retrying won't fix a
     bad name). With a gate, the cooldown is shared across the pool; with a
@@ -175,7 +175,7 @@ async def _research_with_backoff(researcher: DrugResearcher, raw_name: str,
         if _CANCEL.is_set():
             return None, ["cancelled"]
         _STATE.current = raw_name
-        suggestion, errors = await asyncio.to_thread(researcher.research, raw_name)
+        suggestion, errors = await asyncio.to_thread(researcher.research, raw_name, hint_forms)
     if pacer and suggestion is not None:
         pacer.on_success()
     return suggestion, errors
@@ -209,7 +209,8 @@ async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
             show()
             try:
                 suggestion, errors = await _research_with_backoff(
-                    researcher, raw_name, gate=gate, pacer=pacer)
+                    researcher, raw_name, gate=gate, pacer=pacer,
+                    hint_forms=item.get("forms"))
                 if suggestion is None and _CANCEL.is_set():
                     return          # aborted mid-item: not a real failure, stays in worklist
                 if suggestion is None:
