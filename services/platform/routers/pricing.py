@@ -736,6 +736,7 @@ class EnrichmentRunRequest(BaseModel):
     min_confidence: float = 0.7
     workers: int = 5             # concurrent researchers, clamped 1-15 in service
     provider: str = "mistral"    # web-searching backend: mistral | gemini
+    refresh: bool = False        # re-research existing 'suggested' rows w/ latest rules
 
 
 class EnrichmentDecideRequest(BaseModel):
@@ -767,7 +768,8 @@ async def enrichment_run(body: EnrichmentRunRequest,
     from services.ai.enrichment import service as es
     try:
         return es.start_batch_background(limit=body.limit, min_confidence=body.min_confidence,
-                                         workers=body.workers, provider=body.provider)
+                                         workers=body.workers, provider=body.provider,
+                                         refresh=body.refresh)
     except ValueError as e:                       # unknown/non-searching provider
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:

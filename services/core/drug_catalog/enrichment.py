@@ -521,6 +521,32 @@ async def decide_enrichments(db, ids: list, *, approve: bool,
     return {"updated": len(rows), "status": new_status}
 
 
+async def build_refresh_worklist(db) -> list[dict]:
+    """Re-research worklist: every existing status='suggested' row, so the
+    latest prompt rules / ML changes re-run over items already searched.
+    Approved & rejected rows are NOT included (owner decisions stand — and
+    save_suggestion refuses to downgrade them anyway). Carries family form
+    hints like the normal worklist.
+    → [{key, raw_name, reason:'refresh', forms?}]."""
+    from sqlalchemy import select
+    from shared.models.enrichment import DrugEnrichment
+
+    rows = (await db.execute(
+        select(DrugEnrichment).where(DrugEnrichment.status == "suggested"))).scalars().all()
+    items = [{"key": r.key, "raw_name": r.raw_name, "reason": "refresh"}
+             for r in rows if r.raw_name]
+
+    from .schema import canonical_ingredient
+    groups = classify_ingredient_groups([it["raw_name"] for it in items])
+    canon_forms = {ck: g["forms"] for ck, g in groups.items() if len(g["forms"]) > 1}
+    for it in items:
+        ck = canonical_ingredient(normalize(it["raw_name"]) or it["raw_name"]) \
+            or it["raw_name"].lower()
+        if ck in canon_forms:
+            it["forms"] = canon_forms[ck]
+    return items
+
+
 async def mark_bulk(db, names: list[str], *, staff_id=None) -> dict:
     """Owner confirms formulary rows as compounding raw ingredients. Upserts an
     APPROVED enrichment (item_kind='bulk') per spelling-proof key, so load_approved

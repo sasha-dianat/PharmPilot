@@ -239,7 +239,7 @@ async def _run_pool(items: list[dict], researcher: DrugResearcher, *,
 
 
 async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
-                    provider: str = "mistral",
+                    provider: str = "mistral", refresh: bool = False,
                     researcher: Optional[DrugResearcher] = None,
                     throttle_sec: float = _THROTTLE_SEC,
                     workers: int = 5) -> dict:
@@ -265,7 +265,11 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
         _STATE.started_at = time.time()
         try:
             async with AsyncSessionLocal() as db:
-                worklist = await build_worklist(db, min_confidence=min_confidence)
+                if refresh:
+                    from services.core.drug_catalog.enrichment import build_refresh_worklist
+                    worklist = await build_refresh_worklist(db)
+                else:
+                    worklist = await build_worklist(db, min_confidence=min_confidence)
             _STATE.total = min(len(worklist), limit)
 
             async def save(raw_name: str, suggestion: dict):

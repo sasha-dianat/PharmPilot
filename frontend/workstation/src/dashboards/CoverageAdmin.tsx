@@ -910,10 +910,10 @@ function EnrichmentPanel({ onMsg, onError }: {
   const rows = [...(sugg?.suggestions || [])]
     .sort((a, b) => (a.fs_score ?? 999) - (b.fs_score ?? 999))
 
-  const startRun = async () => {
-    onMsg({ kind: 'ok', text: 'پژوهش آغاز شد…' })
+  const startRun = async (refresh = false) => {
+    onMsg({ kind: 'ok', text: refresh ? 'پژوهش دوبارهٔ موارد قبلی آغاز شد…' : 'پژوهش آغاز شد…' })
     try {
-      await pricingApi.enrichRun({ limit, min_confidence: 0.7, workers, provider })
+      await pricingApi.enrichRun({ limit, min_confidence: 0.7, workers, provider, refresh })
       qc.invalidateQueries({ queryKey: ['enrich-run-status'] })
     } catch (e) { onError(e, 'شروع پژوهش ناموفق بود.') }
   }
@@ -1024,9 +1024,14 @@ function EnrichmentPanel({ onMsg, onError }: {
         <input type="number" min={1} max={15} value={workers}
           onChange={e => setWorkers(Math.max(1, Math.min(15, Number(e.target.value) || 1)))}
           className="w-16 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm tabular-nums" />
-        <button onClick={startRun} disabled={run?.running}
+        <button onClick={() => startRun(false)} disabled={run?.running}
           className="px-3 py-1.5 text-sm rounded-md bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-40">
           {run?.running ? 'در حال پژوهش…' : 'شروع پژوهش'}
+        </button>
+        <button onClick={() => startRun(true)} disabled={run?.running}
+          title="پژوهش دوبارهٔ همهٔ موارد «پیشنهادی» با آخرین قواعد و تغییرات هوش تطبیق"
+          className="px-3 py-1.5 text-sm rounded-md bg-fuchsia-800 hover:bg-fuchsia-700 disabled:opacity-40">
+          🔄 پژوهش دوباره
         </button>
         {run?.running && (
           <button onClick={stopRun} disabled={run.phase === 'cancelling'}

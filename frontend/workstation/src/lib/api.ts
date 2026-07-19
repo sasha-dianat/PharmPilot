@@ -177,7 +177,7 @@ export const pricingApi = {
   enrichWorklist: (insurer?: string) =>
     apiClient.get('/pricing/enrichment/worklist', { params: insurer ? { insurer } : {} }),
   enrichRun: (body: { limit: number; min_confidence: number; workers?: number
-                      provider?: string }) =>
+                      provider?: string; refresh?: boolean }) =>
     apiClient.post('/pricing/enrichment/run', body),
   enrichRunStatus: () => apiClient.get('/pricing/enrichment/run/status'),
   enrichStop: () => apiClient.post('/pricing/enrichment/run/stop', {}),
