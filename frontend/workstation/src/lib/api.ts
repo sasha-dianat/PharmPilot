@@ -169,6 +169,8 @@ export const pricingApi = {
                                         reject_reasons?: Record<string, { code?: string; note?: string }> }) =>
     apiClient.post(`/pricing/coverage/runs/${id}/approve`, body),
   coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
+  coverageProposePrices: (id: string, body: { min_confidence: number; min_pct: number }) =>
+    apiClient.post(`/pricing/coverage/runs/${id}/propose-prices`, body),
   inconsistencies: (insurer: string, threshold: number) =>
     apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
   inconsistencyDrug: (irc: string, insurer: string) =>

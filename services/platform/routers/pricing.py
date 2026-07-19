@@ -521,6 +521,23 @@ async def approve_coverage_run(run_id: UUID, body: ApproveRunRequest,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+class PriceRefreshRequest(BaseModel):
+    min_confidence: float = 0.85
+    min_pct: float = 25.0
+
+
+@router.post("/coverage/runs/{run_id}/propose-prices")
+async def propose_prices_from_run(run_id: UUID, body: PriceRefreshRequest,
+                                  staff: Staff = Depends(require_permission("inventory:write")),
+                                  db: AsyncSession = Depends(get_db)):
+    """Price-refresh: turn this run's high-confidence matched insurer prices into
+    price proposals (reviewed & applied via the existing proposals flow, dated in
+    price_history). Nothing changes catalog prices without approval."""
+    from services.core.drug_catalog import sync_service
+    return await sync_service.propose_prices_from_run(
+        db, run_id, min_confidence=body.min_confidence, min_pct=body.min_pct)
+
+
 @router.post("/coverage/runs/{run_id}/reject")
 async def reject_coverage_run(run_id: UUID,
                               staff: Staff = Depends(require_permission("inventory:write")),

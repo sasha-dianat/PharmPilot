@@ -287,6 +287,15 @@ function RunPreview({ runId, onDone, onError }: {
       onDone()
     } catch (e) { onError(e, 'تصمیم اعمال نشد.') } finally { setBusy(false) }
   }
+  const proposePrices = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.coverageProposePrices(runId,
+        { min_confidence: 0.85, min_pct: 25 })
+      setBulkMsg(`${fa(data.proposals_created)} پیشنهاد قیمت از ${fa(data.qualified)} تطبیق مطمئن ساخته شد `
+        + `(↑${fa(data.by_kind?.increase || 0)} / ↓${fa(data.by_kind?.decrease || 0)}) — در «پیشنهادهای قیمت» بازبینی کنید.`)
+    } catch (e) { onError(e, 'ساخت پیشنهاد قیمت ناموفق بود.') } finally { setBusy(false) }
+  }
   const d = run.diff || { added: 0, changed: 0, removed: 0, samples: {} }
   return (
     <div className="border border-amber-500/40 rounded-lg p-3 space-y-2 text-[12px]">
@@ -408,6 +417,9 @@ function RunPreview({ runId, onDone, onError }: {
         </button>
         <button onClick={() => decide(false)} disabled={busy}
           className="px-4 py-1.5 bg-red-600/70 hover:bg-red-500 rounded disabled:opacity-50">رد کل اجرا</button>
+        <button onClick={proposePrices} disabled={busy}
+          title="قیمت‌های جاری این بیمه‌گر را برای تطبیق‌های مطمئن به‌عنوان پیشنهاد به‌روزرسانی قیمت بساز (بازبینی جداگانه)"
+          className="px-4 py-1.5 bg-cyan-700 hover:bg-cyan-600 rounded disabled:opacity-50">💰 به‌روزرسانی قیمت از این اجرا</button>
         <span className="text-[11px] text-slate-500">موارد تأییدشده فقط همراه «اعمال اجرا» اعمال می‌شوند.</span>
       </div>
     </div>
