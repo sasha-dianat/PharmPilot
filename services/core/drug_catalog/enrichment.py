@@ -470,6 +470,60 @@ async def import_reference(db, path=REFERENCE_PATH) -> int:
     return count
 
 
+async def _nfi_candidates(db, rows, per_item: int = 4) -> dict[str, list[dict]]:
+    """Suspect NFI catalog rows for each enrichment, so the reviewer compares
+    formulary ↔ candidate side by side. Blocked by canonical ingredient prefix
+    (the same discipline as the linker — never a full scan), then ranked by
+    name similarity against the researched generic/raw name."""
+    from difflib import SequenceMatcher
+    from sqlalchemy import select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from .schema import canonical_ingredient
+
+    wanted: dict[str, str] = {}          # key → probe text (generic or raw name)
+    prefixes: set[str] = set()
+    for r in rows:
+        probe = (r.generic_name or r.raw_name or "").strip()
+        canon = canonical_ingredient(normalize(probe) or probe.lower()) or probe.lower()
+        if not canon:
+            continue
+        wanted[r.key] = canon
+        prefixes.add(canon[:3])
+    if not prefixes:
+        return {}
+
+    items = (await db.execute(
+        select(DrugCatalogItem.irc, DrugCatalogItem.name_fa, DrugCatalogItem.generic_name,
+               DrugCatalogItem.dosage_form, DrugCatalogItem.strength,
+               DrugCatalogItem.announced_price, DrugCatalogItem.manufacturer,
+               DrugCatalogItem.country, DrugCatalogItem.coverage,
+               DrugCatalogItem.ingredient_key)
+        .where(DrugCatalogItem.ingredient_key.isnot(None)))).all()
+
+    blocks: dict[str, list] = {}
+    for it in items:
+        canon = (it.ingredient_key or "").split("|")[0]
+        if canon[:3] in prefixes:
+            blocks.setdefault(canon[:3], []).append((canon, it))
+
+    out: dict[str, list[dict]] = {}
+    for key, canon in wanted.items():
+        scored = []
+        for c_canon, it in blocks.get(canon[:3], []):
+            sim = SequenceMatcher(None, canon, c_canon).ratio()
+            if sim >= 0.55:
+                scored.append((sim, it))
+        scored.sort(key=lambda t: -t[0])
+        out[key] = [{
+            "irc": it.irc, "name_fa": it.name_fa, "generic_name": it.generic_name,
+            "dosage_form": it.dosage_form, "strength": it.strength,
+            "announced_price": it.announced_price, "manufacturer": it.manufacturer,
+            "country": it.country, "coverage": it.coverage,
+            "similarity": round(sim, 2),
+        } for sim, it in scored[:per_item]]
+    return out
+
+
 async def list_enrichments(db, status: str | None = "suggested",
                            limit: int = 500) -> list[dict]:
     """Return enrichment rows (newest first) as JSON dicts for the review GUI.
@@ -483,11 +537,14 @@ async def list_enrichments(db, status: str | None = "suggested",
     rows = (await db.execute(q)).scalars().all()
     from .match_intel import load_model, score_suggestion
     model = load_model()
+    candidates = await _nfi_candidates(db, rows)
     return [{
         "fs_score": score_suggestion(r.raw_name, {
             "generic_name": r.generic_name, "brand_name": r.brand_name,
             "dosage_form": r.dosage_form, "strengths": r.strengths,
             "variants": r.variants}, model),
+        "context": r.context,
+        "nfi_candidates": candidates.get(r.key, []),
         "id": str(r.id), "key": r.key, "raw_name": r.raw_name, "irc": r.irc,
         "generic_name": r.generic_name, "brand_name": r.brand_name,
         "manufacturer": r.manufacturer, "country": r.country,
@@ -601,15 +658,27 @@ async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
     items: dict[str, dict] = {}
     all_names: list[str] = []          # every row name seen, for family grouping
 
-    def add(raw_name, reason, insurer):
+    def add(raw_name, reason, insurer, row=None):
         if not raw_name:
             return
         all_names.append(str(raw_name))
         key = enrich_key(raw_name)
         if not key or key in existing or key in items:
             return
+        # The formulary side travels WITH the item: which list it came from and
+        # what that list says (price / share / covered), so review can compare
+        # formulary ↔ NFI candidate without a second lookup.
+        row = row if isinstance(row, dict) else {}
+        ctx = {"insurer": insurer, "reason": reason}
+        for src, dst in (("reference_price", "reference_price"),
+                         ("share_pct", "share_pct"), ("covered", "covered"),
+                         ("ceiling", "ceiling")):
+            if row.get(src) not in (None, ""):
+                ctx[dst] = row[src]
+        if row:
+            ctx["row"] = {k: v for k, v in row.items() if v not in (None, "")}
         items[key] = {"key": key, "raw_name": str(raw_name),
-                      "reason": reason, "insurer": insurer}
+                      "reason": reason, "insurer": insurer, "context": ctx}
 
     insurers = (await db.execute(
         select(CoverageRun.insurer).distinct())).scalars().all()
@@ -627,7 +696,7 @@ async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
         for u in (run.unmatched or []):
             row = u.get("row") if isinstance(u, dict) else None
             name = row.get("drug_name") if isinstance(row, dict) else None
-            add(name, "unmatched", insurer)
+            add(name, "unmatched", insurer, row)
         for r in (run.review or []):
             if not isinstance(r, dict):
                 continue
@@ -635,7 +704,9 @@ async def build_worklist(db, min_confidence: float = 0.7) -> list[dict]:
             if conf is None or conf >= min_confidence:
                 continue
             row = r.get("row") if isinstance(r.get("row"), dict) else {}
-            add(row.get("drug_name") or r.get("name"), "low_confidence", insurer)
+            add(row.get("drug_name") or r.get("name"), "low_confidence", insurer,
+                {**row, "candidate_irc": r.get("irc"), "candidate_name": r.get("name"),
+                 "match_confidence": conf})
         if isinstance(run.staged, dict):
             for irc in run.staged:
                 staged_map.setdefault(irc, insurer)

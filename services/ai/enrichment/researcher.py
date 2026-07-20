@@ -267,7 +267,8 @@ def _check_row_consistency(raw_name: str, suggestion: dict) -> None:
 
 
 async def save_suggestion(db, raw_name: str, suggestion: dict, *,
-                          researched_by: str = "mistral") -> "object":   # noqa: D401
+                          researched_by: str = "mistral",
+                          context: dict | None = None) -> "object":   # noqa: D401
     """Upsert a researched suggestion by spelling-proof key as status='suggested'.
 
     NEVER downgrades an already-approved/rejected row: if a row for this key
@@ -301,6 +302,8 @@ async def save_suggestion(db, raw_name: str, suggestion: dict, *,
         researched_by=researched_by,
         status="suggested",
     )
+    if context:
+        fields["context"] = context
     if row is None:
         row = DrugEnrichment(key=key, **fields)
         db.add(row)

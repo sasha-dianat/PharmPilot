@@ -272,10 +272,14 @@ async def run_batch(*, limit: int = 50, min_confidence: float = 0.7,
                     worklist = await build_worklist(db, min_confidence=min_confidence)
             _STATE.total = min(len(worklist), limit)
 
+            ctx_by_name = {(i.get("raw_name") or ""): i.get("context")
+                           for i in worklist if i.get("context")}
+
             async def save(raw_name: str, suggestion: dict):
                 async with AsyncSessionLocal() as db:
                     return await save_suggestion(db, raw_name, suggestion,
-                                                 researched_by=provider)
+                                                 researched_by=provider,
+                                                 context=ctx_by_name.get(raw_name))
 
             await _run_pool(worklist[:limit], researcher,
                             workers=workers, throttle_sec=throttle_sec, save=save,

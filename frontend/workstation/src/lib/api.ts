@@ -144,6 +144,10 @@ export const pricingApi = {
     return apiClient.post('/pricing/catalog/import', fd, { headers: { 'Content-Type': undefined } })
   },
   catalogStats: () => apiClient.get('/pricing/catalog/stats'),
+  catalogItems: (params: { q?: string; missing?: string; limit?: number; offset?: number }) =>
+    apiClient.get('/pricing/catalog/items', { params }),
+  catalogEdit: (irc: string, fields: Record<string, unknown>, reason?: string) =>
+    apiClient.patch(`/pricing/catalog/items/${irc}`, { fields, reason }),
   importCoverage: (file: File, insurer: string) => {
     const fd = new FormData(); fd.append('file', file)
     return apiClient.post('/pricing/coverage/import', fd,

@@ -521,6 +521,102 @@ async def approve_coverage_run(run_id: UUID, body: ApproveRunRequest,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+# Fields an owner may correct on an NFI catalog row. Deliberately excludes irc
+# (identity) and ingredient_key (derived) — those are recomputed, never typed.
+CATALOG_EDITABLE = (
+    "name_fa", "name_en", "generic_name", "dosage_form", "strength", "brand_name",
+    "manufacturer", "atc", "package_count", "gtin", "erx_code", "country",
+    "license_owner", "brand_owner", "license_valid_until", "category",
+    "is_generic", "is_otc", "announced_price", "last_invoice_price",
+)
+
+
+def _catalog_json(it) -> dict:
+    return {f: getattr(it, f, None) for f in
+            ("irc", *CATALOG_EDITABLE, "ingredient_key", "coverage", "source",
+             "announced_price_at", "last_invoice_at")}
+
+
+@router.get("/catalog/items")
+async def catalog_items(q: str | None = None, limit: int = 50, offset: int = 0,
+                        missing: str | None = None,
+                        staff: Staff = Depends(require_permission("inventory:read")),
+                        db: AsyncSession = Depends(get_db)):
+    """Browse the NFI catalog with every column the owner may need to audit.
+    `q` matches IRC / Persian name / generic; `missing` filters rows lacking a
+    field (price|generic|country|atc|form|strength) — the usual gap hunt."""
+    from sqlalchemy import func, or_, select
+    from shared.models.drug_catalog import DrugCatalogItem as D
+
+    stmt = select(D)
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(or_(D.irc.ilike(like), D.name_fa.ilike(like),
+                              D.generic_name.ilike(like), D.brand_name.ilike(like)))
+    gap = {"price": D.announced_price.is_(None),
+           "generic": (D.generic_name.is_(None)) | (func.btrim(D.generic_name) == ""),
+           "country": D.country.is_(None), "atc": D.atc.is_(None),
+           "form": (D.dosage_form.is_(None)) | (func.btrim(D.dosage_form) == ""),
+           "strength": (D.strength.is_(None)) | (func.btrim(D.strength) == "")}
+    if missing in gap:
+        stmt = stmt.where(gap[missing])
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
+    rows = (await db.execute(
+        stmt.order_by(D.name_fa).limit(min(limit, 200)).offset(max(offset, 0)))).scalars().all()
+    return {"total": total, "limit": limit, "offset": offset,
+            "items": [_catalog_json(r) for r in rows]}
+
+
+class CatalogEditRequest(BaseModel):
+    fields: dict
+    reason: str | None = None
+
+
+@router.patch("/catalog/items/{irc}")
+async def catalog_edit(irc: str, body: CatalogEditRequest,
+                       staff: Staff = Depends(require_permission("inventory:write")),
+                       db: AsyncSession = Depends(get_db)):
+    """Correct an NFI catalog row. Only whitelisted fields; ingredient_key is
+    recomputed when identity fields change; price edits append a dated point to
+    price_history so the correction is auditable like any other price move."""
+    from sqlalchemy import select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.price_history import record_price
+    from services.core.drug_catalog.schema import ingredient_key
+
+    it = (await db.execute(select(DrugCatalogItem)
+                           .where(DrugCatalogItem.irc == irc))).scalar_one_or_none()
+    if it is None:
+        raise HTTPException(status_code=404, detail="قلم یافت نشد")
+
+    changed: dict = {}
+    for f, v in (body.fields or {}).items():
+        if f not in CATALOG_EDITABLE:
+            continue
+        old = getattr(it, f, None)
+        if f in ("announced_price", "last_invoice_price", "package_count"):
+            v = None if v in (None, "") else int(float(v))
+        elif f in ("is_generic", "is_otc"):
+            v = bool(v)
+        elif v is not None:
+            v = str(v).strip() or None
+        if (str(old) if old is not None else None) != (str(v) if v is not None else None):
+            setattr(it, f, v)
+            changed[f] = {"from": old, "to": v}
+    if not changed:
+        return {"irc": irc, "changed": {}, "note": "تغییری اعمال نشد"}
+
+    if {"generic_name", "strength", "dosage_form"} & set(changed):
+        it.ingredient_key = ingredient_key(it.generic_name or "", it.strength or "",
+                                           it.dosage_form or "")
+    it.source = "manual-edit"
+    for f, ptype in (("announced_price", "announced"), ("last_invoice_price", "invoice")):
+        if f in changed and changed[f]["to"]:
+            await record_price(db, irc, ptype, changed[f]["to"], source="manual-edit")
+    await db.commit()
+    return {"irc": irc, "changed": changed, "reason": body.reason}
+
+
 class TaminHarvestRequest(BaseModel):
     input_html: str | None = None
     delay: float = 1

@@ -26,6 +26,9 @@ class DrugEnrichment(TimestampedBase):
     variants: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # drug | supply | supplement | other — supply never enters drug matching
     item_kind: Mapped[str] = mapped_column(String(20), default="drug", nullable=False)
+    # formulary provenance: {insurer, reason, reference_price, share_pct, covered,
+    # row} — which list this item came from and what that list says about it.
+    context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)     # urls
     researched_by: Mapped[str] = mapped_column(String(20), nullable=False)  # mistral|claude|manual

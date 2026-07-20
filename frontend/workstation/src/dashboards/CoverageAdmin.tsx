@@ -40,6 +40,7 @@ const TABS = [
   { id: 'runs',    label: 'اجراها' },
   { id: 'issues',  label: 'ناسازگاری‌ها' },
   { id: 'enrich',  label: '✨ غنی‌سازی' },
+  { id: 'catalog', label: '🗂 کاتالوگ NFI' },
   { id: 'prices',  label: '📉 قیمت‌ها' },
 ] as const
 type TabId = typeof TABS[number]['id']
@@ -208,6 +209,7 @@ export default function CoverageAdmin() {
 
       {tab === 'issues' && <InconsistenciesPanel onError={err} />}
       {tab === 'enrich' && <EnrichmentPanel onMsg={setMsg} onError={err} />}
+      {tab === 'catalog' && <CatalogEditorPanel onMsg={setMsg} onError={err} />}
       {tab === 'prices' && <PriceHistoryPanel onMsg={setMsg} onError={err} />}
     </div>
   )
@@ -972,6 +974,21 @@ interface Suggestion {
   variants: EnrichVariant[] | null; item_kind: string
   notes: string | null; sources: string[] | null; researched_by: string
   confidence: number | null; status: string; fs_score?: number | null
+  context?: {
+    insurer?: string; reason?: string; reference_price?: number | string
+    share_pct?: number | string; covered?: unknown; ceiling?: number | string
+    row?: Record<string, unknown>
+  } | null
+  nfi_candidates?: NfiCandidate[]
+}
+interface NfiCandidate {
+  irc: string; name_fa: string; generic_name: string | null
+  dosage_form: string | null; strength: string | null
+  announced_price: number | null; manufacturer: string | null
+  country: string | null; coverage: Record<string, any> | null; similarity: number
+}
+const INSURER_FA: Record<string, string> = {
+  tamin: 'تأمین اجتماعی', salamat: 'بیمه سلامت', armed: 'نیروهای مسلح',
 }
 const KIND_FA: Record<string, string> = {
   herbal: 'گیاهی', device: 'تجهیزات', bulk: 'مادهٔ اولیه', supply: 'لوازم/ظرف', supplement: 'مکمل', other: 'سایر',
@@ -1258,6 +1275,45 @@ function EnrichmentPanel({ onMsg, onError }: {
                         ))}
                       </div>
                     )}
+                    {/* formulary side ↔ suspect NFI rows, compared side by side */}
+                    {(s.context || (s.nfi_candidates || []).length > 0) && (
+                      <div className="grid md:grid-cols-2 gap-2 pt-1.5">
+                        <div className="rounded border border-amber-500/30 bg-amber-500/5 p-2 space-y-0.5">
+                          <p className="text-[10px] text-amber-300/80">
+                            دارونامهٔ {INSURER_FA[s.context?.insurer || ''] || s.context?.insurer || '—'}
+                          </p>
+                          <p className="text-[11px] text-slate-200">{s.raw_name}</p>
+                          <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-400 tabular-nums">
+                            {s.context?.reference_price != null &&
+                              <span>قیمت مرجع: {fa(Number(s.context.reference_price))}</span>}
+                            {s.context?.share_pct != null &&
+                              <span>سهم بیمه: {fa(Number(s.context.share_pct))}٪</span>}
+                            {s.context?.covered != null &&
+                              <span>{s.context.covered ? 'تحت پوشش' : 'بدون پوشش'}</span>}
+                            {s.context?.reference_price == null && s.context?.share_pct == null &&
+                              <span className="text-slate-600">داده‌ای از دارونامه ثبت نشده</span>}
+                          </div>
+                        </div>
+                        <div className="rounded border border-sky-500/30 bg-sky-500/5 p-2 space-y-1">
+                          <p className="text-[10px] text-sky-300/80">
+                            نامزدهای کاتالوگ NFI ({fa((s.nfi_candidates || []).length)})
+                          </p>
+                          {(s.nfi_candidates || []).length === 0
+                            ? <p className="text-[11px] text-slate-600">نامزد مشابهی یافت نشد</p>
+                            : (s.nfi_candidates || []).map(c => (
+                              <div key={c.irc} className="text-[11px] border-b border-slate-700/40 pb-0.5">
+                                <div className="text-slate-200">{c.name_fa}</div>
+                                <div className="flex flex-wrap gap-x-2 text-slate-500 tabular-nums">
+                                  <span className="font-mono">{c.irc}</span>
+                                  {c.strength && <span>{c.strength}</span>}
+                                  {c.dosage_form && <span>{c.dosage_form}</span>}
+                                  {c.announced_price != null && <span>{fa(c.announced_price)} ﷼</span>}
+                                  <span className="text-sky-400">شباهت {c.similarity}</span>
+                                </div>
+                              </div>))}
+                        </div>
+                      </div>
+                    )}
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                       <span className="px-1.5 py-0.5 rounded bg-slate-700">{s.researched_by}</span>
                       {s.fs_score != null && (
@@ -1285,6 +1341,173 @@ function EnrichmentPanel({ onMsg, onError }: {
               ))}
             </div>}
       </div>
+    </div>
+  )
+}
+
+// ── کاتالوگ NFI — browse every column, correct any row ───────────────────────
+interface CatalogItem {
+  irc: string; name_fa: string; name_en: string | null; generic_name: string | null
+  dosage_form: string | null; strength: string | null; brand_name: string | null
+  manufacturer: string | null; atc: string | null; package_count: number | null
+  gtin: string | null; erx_code: string | null; country: string | null
+  license_owner: string | null; brand_owner: string | null
+  license_valid_until: string | null; category: string | null
+  is_generic: boolean | null; is_otc: boolean | null
+  announced_price: number | null; last_invoice_price: number | null
+  ingredient_key: string | null; coverage: Record<string, any> | null; source: string | null
+}
+// label, key, input kind — the owner-correctable surface of an NFI row
+const EDIT_FIELDS: [string, keyof CatalogItem, 'text' | 'num' | 'bool'][] = [
+  ['نام فارسی', 'name_fa', 'text'], ['نام لاتین', 'name_en', 'text'],
+  ['ژنریک (مادهٔ مؤثره)', 'generic_name', 'text'], ['شکل دارویی', 'dosage_form', 'text'],
+  ['قدرت', 'strength', 'text'], ['برند', 'brand_name', 'text'],
+  ['تولیدکننده', 'manufacturer', 'text'], ['کشور', 'country', 'text'],
+  ['ATC', 'atc', 'text'], ['تعداد در بسته', 'package_count', 'num'],
+  ['بارکد (GTIN)', 'gtin', 'text'], ['کد نسخه الکترونیک', 'erx_code', 'text'],
+  ['صاحب پروانه', 'license_owner', 'text'], ['صاحب برند', 'brand_owner', 'text'],
+  ['اعتبار پروانه', 'license_valid_until', 'text'], ['دسته', 'category', 'text'],
+  ['قیمت اعلامی', 'announced_price', 'num'], ['قیمت فاکتور', 'last_invoice_price', 'num'],
+  ['ژنریک است', 'is_generic', 'bool'], ['OTC است', 'is_otc', 'bool'],
+]
+const MISSING_FILTERS: [string, string][] = [
+  ['', 'همه'], ['price', 'بدون قیمت'], ['generic', 'بدون ژنریک'],
+  ['country', 'بدون کشور'], ['atc', 'بدون ATC'], ['form', 'بدون شکل'],
+  ['strength', 'بدون قدرت'],
+]
+
+function CatalogEditorPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [q, setQ] = useState('')
+  const [missing, setMissing] = useState('')
+  const [offset, setOffset] = useState(0)
+  const [openIrc, setOpenIrc] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Record<string, any>>({})
+  const [busy, setBusy] = useState(false)
+  const limit = 25
+
+  const { data } = useQuery<{ total: number; items: CatalogItem[] }>({
+    queryKey: ['catalog-items', q, missing, offset],
+    queryFn: () => pricingApi.catalogItems({ q: q || undefined,
+      missing: missing || undefined, limit, offset }).then(r => r.data),
+  })
+  const items = data?.items || []
+  const open = items.find(i => i.irc === openIrc) || null
+
+  const startEdit = (it: CatalogItem) => {
+    setOpenIrc(it.irc)
+    setDraft(Object.fromEntries(EDIT_FIELDS.map(([, k]) => [k, (it as any)[k]])))
+  }
+  const save = async () => {
+    if (!open) return
+    const changed: Record<string, unknown> = {}
+    EDIT_FIELDS.forEach(([, k]) => {
+      const before = (open as any)[k], after = draft[k]
+      if (String(before ?? '') !== String(after ?? '')) changed[k as string] = after
+    })
+    if (!Object.keys(changed).length) { onMsg({ kind: 'ok', text: 'تغییری برای ذخیره نیست.' }); return }
+    setBusy(true)
+    try {
+      const { data: res } = await pricingApi.catalogEdit(open.irc, changed, 'اصلاح دستی از کاتالوگ')
+      onMsg({ kind: 'ok', text: `${fa(Object.keys(res.changed || {}).length)} فیلد در ${open.irc} اصلاح شد.` })
+      qc.invalidateQueries({ queryKey: ['catalog-items'] })
+      setOpenIrc(null)
+    } catch (e) { onError(e, 'ذخیرهٔ اصلاح ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-slate-800/50 border border-violet-500/30 rounded-lg p-4 space-y-3" dir="rtl">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="font-bold text-violet-200">🗂 کاتالوگ NFI</h3>
+        <span className="text-[12px] text-slate-400">
+          مرور همهٔ ستون‌ها و اصلاح هر قلم — ناسازگاری‌ها اغلب از خطای همین فهرست‌اند.
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <input type="search" value={q} onChange={e => { setQ(e.target.value); setOffset(0) }}
+          placeholder="جست‌وجو: IRC، نام، ژنریک، برند…"
+          className="flex-1 min-w-[14rem] bg-slate-900 border border-slate-600 rounded px-3 py-1" />
+        <select value={missing} onChange={e => { setMissing(e.target.value); setOffset(0) }}
+          className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
+          {MISSING_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        <span className="text-slate-400">{fa(data?.total)} قلم</span>
+      </div>
+
+      <ScrollTable head={
+        <tr><th className="px-3 py-2 text-right font-medium">نام</th>
+            <th className="px-3 py-2 text-right font-medium">ژنریک</th>
+            <th className="px-3 py-2 text-right font-medium">شکل / قدرت</th>
+            <th className="px-3 py-2 text-left font-medium">قیمت</th>
+            <th className="px-3 py-2 text-left font-medium"></th></tr>}>
+        {items.map(it => (
+          <tr key={it.irc} className="hover:bg-slate-700/25">
+            <td className="px-3 py-2 text-right">
+              <div className="text-slate-200">{it.name_fa}</div>
+              <div className="text-[11px] font-mono text-slate-500">{it.irc}</div>
+            </td>
+            <td className="px-3 py-2 text-right text-slate-300">{it.generic_name || '—'}</td>
+            <td className="px-3 py-2 text-right text-slate-400">
+              {[it.dosage_form, it.strength].filter(Boolean).join(' · ') || '—'}
+            </td>
+            <td className="px-3 py-2 text-left tabular-nums text-slate-300">{fa(it.announced_price)}</td>
+            <td className="px-3 py-2 text-left">
+              <button onClick={() => startEdit(it)}
+                className="px-2 py-0.5 text-[11px] rounded bg-violet-700 hover:bg-violet-600">ویرایش</button>
+            </td>
+          </tr>))}
+      </ScrollTable>
+
+      <div className="flex items-center gap-2 text-[12px]">
+        <button onClick={() => setOffset(Math.max(0, offset - limit))} disabled={offset === 0}
+          className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">قبلی</button>
+        <span className="text-slate-500">{fa(offset + 1)}–{fa(Math.min(offset + limit, data?.total || 0))}</span>
+        <button onClick={() => setOffset(offset + limit)}
+          disabled={offset + limit >= (data?.total || 0)}
+          className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">بعدی</button>
+      </div>
+
+      {open && (
+        <div className="border border-violet-500/40 rounded-lg p-3 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-semibold text-sm text-violet-200">ویرایش {open.name_fa}</p>
+            <span className="text-[11px] font-mono text-slate-500">{open.irc}</span>
+            <button onClick={() => setOpenIrc(null)}
+              className="mr-auto text-slate-400 hover:text-slate-200 text-[12px]">بستن ✕</button>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {EDIT_FIELDS.map(([label, key, kind]) => (
+              <label key={key as string} className="space-y-0.5 text-[11px]">
+                <span className="text-slate-400">{label}</span>
+                {kind === 'bool' ? (
+                  <select value={String(draft[key] ?? false)}
+                    onChange={e => setDraft(d => ({ ...d, [key]: e.target.value === 'true' }))}
+                    className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1">
+                    <option value="true">بله</option><option value="false">خیر</option>
+                  </select>
+                ) : (
+                  <input type={kind === 'num' ? 'number' : 'text'}
+                    value={draft[key] ?? ''}
+                    onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}
+                    className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 tabular-nums" />
+                )}
+              </label>))}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={save} disabled={busy}
+              className="px-3 py-1.5 text-sm rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-40">
+              ذخیرهٔ اصلاح
+            </button>
+            <span className="text-[11px] text-slate-500">
+              تغییر قیمت به‌صورت نقطهٔ تاریخ‌دار در تاریخچهٔ قیمت ثبت می‌شود؛ کلید ترکیب خودکار بازمحاسبه می‌گردد.
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
