@@ -171,6 +171,11 @@ export const pricingApi = {
   coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
   coverageProposePrices: (id: string, body: { min_confidence: number; min_pct: number }) =>
     apiClient.post(`/pricing/coverage/runs/${id}/propose-prices`, body),
+  taminHarvestStart: (body: { input_html?: string; delay?: number; timeout?: number
+                              max_retries?: number; retry_delay?: number; pages?: string }) =>
+    apiClient.post('/pricing/coverage/tamin-harvest/start', body),
+  taminHarvestStatus: () => apiClient.get('/pricing/coverage/tamin-harvest/status'),
+  taminHarvestStop: () => apiClient.post('/pricing/coverage/tamin-harvest/stop', {}),
   inconsistencies: (insurer: string, threshold: number) =>
     apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
   inconsistencyDrug: (irc: string, insurer: string) =>

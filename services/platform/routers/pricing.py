@@ -521,6 +521,44 @@ async def approve_coverage_run(run_id: UUID, body: ApproveRunRequest,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+class TaminHarvestRequest(BaseModel):
+    input_html: str | None = None
+    delay: float = 1
+    timeout: int = 120
+    max_retries: int = 20
+    retry_delay: int = 5
+    pages: str | None = None
+
+
+@router.post("/coverage/tamin-harvest/start")
+async def tamin_harvest_start(body: TaminHarvestRequest,
+                              staff: Staff = Depends(require_permission("inventory:write"))):
+    """Run the تأمین اجتماعی formulary harvester (DevExpress callback replay) as
+    a supervised background subprocess. --resume continues an interrupted run."""
+    from services.core.drug_catalog import tamin_harvest as th
+    try:
+        return th.start(input_html=body.input_html, delay=body.delay, timeout=body.timeout,
+                        max_retries=body.max_retries, retry_delay=body.retry_delay,
+                        pages=body.pages)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/coverage/tamin-harvest/status")
+async def tamin_harvest_status(staff: Staff = Depends(require_permission("inventory:read"))):
+    from services.core.drug_catalog import tamin_harvest as th
+    return {**th.status(), "outputs": th.output_info()}
+
+
+@router.post("/coverage/tamin-harvest/stop")
+async def tamin_harvest_stop(staff: Staff = Depends(require_permission("inventory:write"))):
+    from services.core.drug_catalog import tamin_harvest as th
+    try:
+        return th.stop()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 class PriceRefreshRequest(BaseModel):
     min_confidence: float = 0.85
     min_pct: float = 25.0

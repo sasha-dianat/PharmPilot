@@ -33,14 +33,23 @@ const STRATEGIES = [
 const ROLES = ['irc', 'gtin', 'drug_name', 'covered', 'share_pct',
                'reference_price', 'ceiling', 'inpatient', 'ignore'] as const
 
+// Tabs mirror the real workflow order: configure → fetch → review → fix → price.
+const TABS = [
+  { id: 'sources', label: 'منابع' },
+  { id: 'tamin',   label: 'برداشت تأمین' },
+  { id: 'runs',    label: 'اجراها' },
+  { id: 'issues',  label: 'ناسازگاری‌ها' },
+  { id: 'enrich',  label: '✨ غنی‌سازی' },
+  { id: 'prices',  label: '📉 قیمت‌ها' },
+] as const
+type TabId = typeof TABS[number]['id']
+
 export default function CoverageAdmin() {
   const qc = useQueryClient()
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [probe, setProbe] = useState<{ sourceId: string; data: any } | null>(null)
   const [openRun, setOpenRun] = useState<string | null>(null)
-  const [showIncons, setShowIncons] = useState(false)
-  const [showEnrich, setShowEnrich] = useState(false)
-  const [showPrices, setShowPrices] = useState(false)
+  const [tab, setTab] = useState<TabId>('sources')
 
   const { data: sources } = useQuery<{ sources: Source[] }>({
     queryKey: ['coverage-sources'],
@@ -95,36 +104,53 @@ export default function CoverageAdmin() {
 
   const locked = !!(hs?.lock_holder || sources?.sources?.[0]?.lock_holder)
 
+  const runList = runs?.runs || []
+  const pendingReview = runList.filter(r => r.status === 'parsed').length
+  const lastRun = runList[0]
+
   return (
-    <div className="p-4 space-y-4 text-slate-100" dir="rtl">
-      <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="text-lg font-bold">پوشش بیمه — دارونامه بیمه‌گرها</h2>
-        <button onClick={() => setShowIncons(v => !v)}
-          className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
-            showIncons ? 'bg-indigo-600 border-indigo-500 hover:bg-indigo-500'
-                       : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
-          بازبینی ناسازگاری‌ها
-        </button>
-        <button onClick={() => setShowEnrich(v => !v)}
-          className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
-            showEnrich ? 'bg-fuchsia-600 border-fuchsia-500 hover:bg-fuchsia-500'
-                       : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
-          ✨ غنی‌سازی هوشمند
-        </button>
-        <button onClick={() => setShowPrices(v => !v)}
-          className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
-            showPrices ? 'bg-cyan-600 border-cyan-500 hover:bg-cyan-500'
-                       : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
-          📉 تاریخچهٔ قیمت
-        </button>
-      </div>
+    <div className="p-4 pb-10 space-y-4 text-slate-100" dir="rtl">
+      {/* ── header: title + at-a-glance state (no scrolling to learn status) ── */}
+      <header className="space-y-3">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h2 className="text-lg font-bold">پوشش بیمه</h2>
+          <span className="text-[12px] text-slate-500">دارونامهٔ بیمه‌گرها — برداشت، بازبینی و اعمال</span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <Stat label="منابع" value={fa((sources?.sources || []).length)}
+                hint={locked ? 'قفل برداشت فعال' : 'آماده'} tone={locked ? 'amber' : 'slate'} />
+          <Stat label="اجرای در انتظار تأیید" value={fa(pendingReview)}
+                hint={pendingReview ? 'نیازمند بازبینی' : 'موردی نیست'}
+                tone={pendingReview ? 'amber' : 'emerald'} />
+          <Stat label="آخرین اجرا" value={lastRun?.insurer || '—'}
+                hint={lastRun?.finished_at
+                  ? new Date(lastRun.finished_at).toLocaleDateString('fa-IR') : '—'} />
+          <Stat label="وضعیت برداشت" value={hs?.running ? 'در حال اجرا' : 'بی‌کار'}
+                hint={hs?.running ? `${hs.insurer} · ${hs.phase}` : 'آمادهٔ شروع'}
+                tone={hs?.running ? 'indigo' : 'slate'} />
+        </div>
+      </header>
+
+      {/* ── one concern per tab: the page no longer stacks every panel at once ── */}
+      <nav className="flex gap-1 border-b border-slate-700 overflow-x-auto" role="tablist">
+        {TABS.map(t => (
+          <button key={t.id} role="tab" aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              tab === t.id
+                ? 'border-indigo-400 text-indigo-200'
+                : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
+            {t.label}
+            {t.id === 'runs' && pendingReview > 0 && (
+              <span className="mr-1.5 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px]">
+                {fa(pendingReview)}
+              </span>)}
+          </button>
+        ))}
+      </nav>
+
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
 
-      {showIncons && <InconsistenciesPanel onError={err} />}
-      {showEnrich && <EnrichmentPanel onMsg={setMsg} onError={err} />}
-      {showPrices && <PriceHistoryPanel onMsg={setMsg} onError={err} />}
-
-      {/* live harvest strip */}
       {hs?.running && (
         <div className="bg-indigo-500/10 border border-indigo-500/40 rounded-lg p-3 text-[12px] font-mono flex flex-wrap gap-x-5">
           <span className="text-indigo-300">در حال برداشت: {hs.insurer}</span>
@@ -134,48 +160,73 @@ export default function CoverageAdmin() {
         </div>
       )}
 
-      {/* source cards */}
-      <div className="grid md:grid-cols-2 gap-3">
-        {(sources?.sources || []).map(s => (
-          <SourceCard key={s.id} s={s} locked={locked} lockHolder={hs?.lock_holder ?? s.lock_holder}
-                      onProbe={() => doProbe(s)} onHarvest={() => doHarvest(s)}
-                      onSave={patch => saveSource(s, patch)} />
-        ))}
-      </div>
-
-      {/* probe result */}
-      {probe && (
-        <ProbePanel data={probe.data} onClose={() => setProbe(null)}
-          onSaveOverrides={(ov) => {
-            const s = sources?.sources.find(x => x.id === probe.sourceId)
-            if (s) saveSource(s, { settings: { ...s.settings, column_overrides: ov },
-                                   strategy: probe.data.detected_strategy })
-            setProbe(null)
-          }} />
+      {tab === 'sources' && (
+        <div className="space-y-3">
+          <div className="grid md:grid-cols-2 gap-3">
+            {(sources?.sources || []).map(s => (
+              <SourceCard key={s.id} s={s} locked={locked} lockHolder={hs?.lock_holder ?? s.lock_holder}
+                          onProbe={() => doProbe(s)} onHarvest={() => doHarvest(s)}
+                          onSave={patch => saveSource(s, patch)} />
+            ))}
+          </div>
+          {probe && (
+            <ProbePanel data={probe.data} onClose={() => setProbe(null)}
+              onSaveOverrides={(ov) => {
+                const s = sources?.sources.find(x => x.id === probe.sourceId)
+                if (s) saveSource(s, { settings: { ...s.settings, column_overrides: ov },
+                                       strategy: probe.data.detected_strategy })
+                setProbe(null)
+              }} />
+          )}
+          <UploadCard onMsg={setMsg} />
+        </div>
       )}
 
-      {/* runs + preview */}
-      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
-        <p className="font-semibold text-sm">اجراهای برداشت</p>
-        {(runs?.runs || []).length === 0 && <p className="text-[12px] text-slate-500">هنوز اجرایی ثبت نشده.</p>}
-        {(runs?.runs || []).map(r => (
-          <div key={r.id} className="flex flex-wrap items-center gap-3 text-[12px] border-b border-slate-700/60 pb-1.5">
-            <span className="font-mono">{r.insurer}</span>
-            <StatusChip status={r.status} />
-            <span className="text-slate-500">{r.finished_at ? new Date(r.finished_at).toLocaleString('fa-IR') : '…'}</span>
-            {r.stats && <span>ردیف: {fa(r.stats.rows)} · اعمال‌پذیر: {fa(r.stats.applied)} · بازبینی: {fa(r.stats.review)}</span>}
-            <span className="text-slate-400">＋{fa(r.diff_counts.added)} / ✎{fa(r.diff_counts.changed)} / −{fa(r.diff_counts.removed)}</span>
-            {r.error && <span className="text-red-400 truncate max-w-[24rem]">{r.error}</span>}
-            {r.status === 'parsed' &&
-              <button onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
-                className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded">پیش‌نمایش</button>}
-          </div>
-        ))}
-        {openRun && <RunPreview runId={openRun} onDone={() => { setOpenRun(null)
-          qc.invalidateQueries({ queryKey: ['coverage-runs'] }) }} onError={err} />}
-      </div>
+      {tab === 'tamin' && <TaminHarvestPanel onMsg={setMsg} onError={err} />}
 
-      <UploadCard onMsg={setMsg} />
+      {tab === 'runs' && (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
+          <p className="font-semibold text-sm">اجراهای برداشت</p>
+          {runList.length === 0 && <p className="text-[12px] text-slate-500">هنوز اجرایی ثبت نشده.</p>}
+          {runList.map(r => (
+            <div key={r.id} className="flex flex-wrap items-center gap-3 text-[12px] border-b border-slate-700/60 pb-1.5">
+              <span className="font-mono">{r.insurer}</span>
+              <StatusChip status={r.status} />
+              <span className="text-slate-500">{r.finished_at ? new Date(r.finished_at).toLocaleString('fa-IR') : '…'}</span>
+              {r.stats && <span>ردیف: {fa(r.stats.rows)} · اعمال‌پذیر: {fa(r.stats.applied)} · بازبینی: {fa(r.stats.review)}</span>}
+              <span className="text-slate-400">＋{fa(r.diff_counts.added)} / ✎{fa(r.diff_counts.changed)} / −{fa(r.diff_counts.removed)}</span>
+              {r.error && <span className="text-red-400 truncate max-w-[24rem]">{r.error}</span>}
+              {r.status === 'parsed' &&
+                <button onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
+                  className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded">پیش‌نمایش</button>}
+            </div>
+          ))}
+          {openRun && <RunPreview runId={openRun} onDone={() => { setOpenRun(null)
+            qc.invalidateQueries({ queryKey: ['coverage-runs'] }) }} onError={err} />}
+        </div>
+      )}
+
+      {tab === 'issues' && <InconsistenciesPanel onError={err} />}
+      {tab === 'enrich' && <EnrichmentPanel onMsg={setMsg} onError={err} />}
+      {tab === 'prices' && <PriceHistoryPanel onMsg={setMsg} onError={err} />}
+    </div>
+  )
+}
+
+/** Compact KPI tile — the header's job is to answer "what needs me?" at a glance. */
+function Stat({ label, value, hint, tone = 'slate' }: {
+  label: string; value: React.ReactNode; hint?: string
+  tone?: 'slate' | 'amber' | 'emerald' | 'indigo'
+}) {
+  const ring: Record<string, string> = {
+    slate: 'border-slate-700', amber: 'border-amber-500/40',
+    emerald: 'border-emerald-500/30', indigo: 'border-indigo-500/40',
+  }
+  return (
+    <div className={`bg-slate-800/40 border ${ring[tone]} rounded-lg px-3 py-2`}>
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="text-sm font-semibold text-slate-100 truncate">{value}</p>
+      {hint && <p className="text-[11px] text-slate-500 truncate">{hint}</p>}
     </div>
   )
 }
@@ -538,9 +589,10 @@ interface DrugDetail {
   analysis: string[]
 }
 
-// The six drug-anchored issue types (order = chip order). label + list badge tone.
+// Drug-anchored issue types (order = chip order). label + list badge tone.
 const ISSUE_TYPES = [
-  ['price', 'مغایرت قیمت'], ['review', 'نیازمند بازبینی'], ['no_price', 'بدون قیمت'],
+  ['price', 'مغایرت قیمت'], ['review', 'نیازمند بازبینی'], ['unmatched', 'نامنطبق'],
+  ['no_price', 'بدون قیمت'],
   ['no_generic', 'بدون ژنریک'], ['no_country', 'بدون کشور'], ['no_atc', 'بدون ATC'],
 ] as const
 type IssueType = (typeof ISSUE_TYPES)[number][0]
@@ -548,6 +600,8 @@ const ISSUE_LABEL = Object.fromEntries(ISSUE_TYPES) as Record<IssueType, string>
 
 interface FlaggedDrug {
   irc: string; name: string; issues: Set<IssueType>
+  /** the insurer formulary's own row text — what the source actually printed */
+  formulary: string | null
   announced: number | null; reference: number | null; gap: number | null
 }
 
@@ -584,7 +638,8 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
     const m = new Map<string, FlaggedDrug>()
     const at = (irc: string, name?: string | null) => {
       let f = m.get(irc)
-      if (!f) { f = { irc, name: name || irc, issues: new Set(), announced: null, reference: null, gap: null }; m.set(irc, f) }
+      if (!f) { f = { irc, name: name || irc, issues: new Set(), formulary: null,
+                      announced: null, reference: null, gap: null }; m.set(irc, f) }
       else if (name && (f.name === f.irc)) f.name = name
       return f
     }
@@ -593,7 +648,24 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
       const f = at(c.irc, c.name_fa); f.issues.add('price')
       f.announced = c.announced_price; f.reference = c.reference_price; f.gap = c.gap_pct
     })
-    cov?.review.forEach((r: any) => { if (r?.irc) at(String(r.irc), r.name).issues.add('review') })
+    cov?.review.forEach((r: any) => {
+      if (!r?.irc) return
+      const f = at(String(r.irc), r.name)
+      f.issues.add('review')
+      // the formulary's own wording — the left-hand side of the incompatibility
+      f.formulary = f.formulary || r.row?.drug_name || null
+      if (f.reference == null && r.entry?.reference_price != null) f.reference = r.entry.reference_price
+    })
+    // unmatched formulary rows are incompatibilities too: they have a formulary
+    // item but NO target in the catalog. Keyed synthetically (no irc exists).
+    ;(cov?.unmatched ?? []).forEach((u: any, i: number) => {
+      const text = u?.row?.drug_name
+      if (!text) return
+      const f = at(`نامنطبق#${i}`, text)
+      f.issues.add('unmatched')
+      f.formulary = text
+      if (f.reference == null && u?.row?.reference_price != null) f.reference = Number(u.row.reference_price)
+    })
     nfi?.no_price.forEach(x => at(x.irc, x.name_fa).issues.add('no_price'))
     nfi?.no_generic.forEach(x => at(x.irc, x.name_fa).issues.add('no_generic'))
     nfi?.no_country.forEach(x => at(x.irc, x.name_fa).issues.add('no_country'))
@@ -602,7 +674,8 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
   }, [data])
 
   const chipCounts = useMemo(() => {
-    const c = { price: 0, review: 0, no_price: 0, no_generic: 0, no_country: 0, no_atc: 0 } as Record<IssueType, number>
+    const c = { price: 0, review: 0, unmatched: 0, no_price: 0,
+                no_generic: 0, no_country: 0, no_atc: 0 } as Record<IssueType, number>
     flagged.forEach(f => f.issues.forEach(i => { c[i] += 1 }))
     return c
   }, [flagged])
@@ -683,31 +756,47 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
               <Empty text={flagged.length === 0 ? 'هیچ قلم پرچم‌داری یافت نشد ✓' : 'موردی با این فیلترها یافت نشد.'} />
             ) : (
               <ScrollTable head={
-                <tr><th className="px-3 py-2 text-right font-medium">IRC</th>
-                    <th className="px-3 py-2 text-right font-medium">نام</th>
-                    <th className="px-3 py-2 text-right font-medium">نشان‌ها</th>
-                    <th className="px-3 py-2 text-left font-medium">اعلامی</th>
-                    <th className="px-3 py-2 text-left font-medium">مرجع</th>
-                    <th className="px-3 py-2 text-left font-medium">اختلاف٪</th></tr>}>
-                {shown.map(f => (
-                  <tr key={f.irc} onClick={() => setSelectedIrc(f.irc)}
-                    className={`cursor-pointer transition-colors ${
+                <tr><th className="px-3 py-2 text-right font-medium">قلم دارونامه</th>
+                    <th className="px-3 py-2 text-right font-medium">مورد ناسازگار هدف</th>
+                    <th className="px-3 py-2 text-left font-medium">قیمت</th></tr>}>
+                {shown.map(f => {
+                  const unmatchedOnly = f.issues.has('unmatched')
+                  return (
+                  <tr key={f.irc} onClick={() => !unmatchedOnly && setSelectedIrc(f.irc)}
+                    className={`transition-colors ${unmatchedOnly ? '' : 'cursor-pointer'} ${
                       selectedIrc === f.irc ? 'bg-indigo-500/15' : 'hover:bg-slate-700/25'}`}>
-                    <td className="px-3 py-2 text-right tabular-nums font-mono text-slate-400 whitespace-nowrap">{f.irc}</td>
-                    <td className="px-3 py-2 text-right text-slate-200">{f.name}</td>
-                    <td className="px-3 py-2 text-right">
-                      <span className="flex flex-wrap gap-1 justify-end">
+                    {/* 1 — what the insurer's formulary actually says */}
+                    <td className="px-3 py-2 text-right align-top">
+                      <div className="text-slate-200">{f.formulary || f.name}</div>
+                      <span className="flex flex-wrap gap-1 mt-1">
                         {[...f.issues].map(iss => (
                           <span key={iss} className={`text-[10px] px-1.5 py-0.5 rounded border ${issueTone(iss, f.gap)}`}>
                             {ISSUE_LABEL[iss]}</span>))}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(f.announced)}</td>
-                    <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">{fa(f.reference)}</td>
-                    <td className={`px-3 py-2 text-left tabular-nums font-semibold whitespace-nowrap ${gapTone(f.gap)}`}>
-                      {f.gap == null ? '—' : `${f.gap > 0 ? '+' : ''}${fa(f.gap)}٪`}
+                    {/* 2 — the catalog product it conflicts with (or none) */}
+                    <td className="px-3 py-2 text-right align-top">
+                      {unmatchedOnly ? (
+                        <span className="text-slate-500">در کاتالوگ یافت نشد</span>
+                      ) : (<>
+                        <div className="text-slate-200">{f.name}</div>
+                        <div className="text-[11px] font-mono text-slate-500 tabular-nums">{f.irc}</div>
+                      </>)}
                     </td>
-                  </tr>))}
+                    {/* 3 — the money: announced vs insurer reference, and the gap */}
+                    <td className="px-3 py-2 text-left align-top whitespace-nowrap tabular-nums">
+                      <div className="text-slate-300">
+                        {f.announced != null && <span title="قیمت اعلامی کاتالوگ">{fa(f.announced)}</span>}
+                        {f.announced != null && f.reference != null && <span className="text-slate-600"> → </span>}
+                        {f.reference != null && <span title="قیمت مرجع بیمه‌گر">{fa(f.reference)}</span>}
+                        {f.announced == null && f.reference == null && <span className="text-slate-600">—</span>}
+                      </div>
+                      {f.gap != null && (
+                        <div className={`text-[11px] font-semibold ${gapTone(f.gap)}`}>
+                          {f.gap > 0 ? '+' : ''}{fa(f.gap)}٪
+                        </div>)}
+                    </td>
+                  </tr>)})}
               </ScrollTable>)}
         </div>
 
@@ -1196,6 +1285,134 @@ function EnrichmentPanel({ onMsg, onError }: {
               ))}
             </div>}
       </div>
+    </div>
+  )
+}
+
+// ── برداشت تأمین — supervises the standalone DevExpress-replay harvester ─────
+interface TaminStatus {
+  running: boolean; phase: string; page: number; page_count: number; rows: number
+  pct: number; elapsed_sec: number; error: string | null; log: string[]
+  outputs?: { csv?: { rows?: number; bytes: number; mtime: number }
+              json?: { bytes: number; mtime: number } }
+}
+
+function TaminHarvestPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [inputHtml, setInputHtml] = useState('')
+  const [delay, setDelay] = useState(1)
+  const [timeout_, setTimeout_] = useState(120)
+  const [busy, setBusy] = useState(false)
+
+  const { data: st } = useQuery<TaminStatus>({
+    queryKey: ['tamin-harvest'],
+    queryFn: () => pricingApi.taminHarvestStatus().then(r => r.data),
+    refetchInterval: q => (q.state.data?.running ? 2_000 : 20_000),
+  })
+
+  const start = async () => {
+    setBusy(true)
+    try {
+      await pricingApi.taminHarvestStart({
+        input_html: inputHtml || undefined, delay, timeout: timeout_ })
+      onMsg({ kind: 'ok', text: 'برداشت تأمین آغاز شد — ادامه از آخرین صفحهٔ ذخیره‌شده.' })
+      qc.invalidateQueries({ queryKey: ['tamin-harvest'] })
+    } catch (e) { onError(e, 'شروع برداشت ناموفق بود.') } finally { setBusy(false) }
+  }
+  const stop = async () => {
+    try {
+      await pricingApi.taminHarvestStop()
+      onMsg({ kind: 'ok', text: 'توقف درخواست شد — ردیف‌های ذخیره‌شده حفظ می‌شوند.' })
+      qc.invalidateQueries({ queryKey: ['tamin-harvest'] })
+    } catch (e) { onError(e, 'توقف ناموفق بود.') }
+  }
+
+  const out = st?.outputs || {}
+  return (
+    <div className="bg-slate-800/50 border border-emerald-500/25 rounded-lg p-4 space-y-4" dir="rtl">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="font-bold text-emerald-200">برداشت دارونامهٔ تأمین اجتماعی</h3>
+        <span className="text-[12px] text-slate-400">
+          صفحه‌به‌صفحه از سامانهٔ ASPxGridView؛ با «ادامه» اجرای نیمه‌تمام از همان‌جا دنبال می‌شود.
+        </span>
+      </div>
+
+      {/* settings — defaults match the command the owner runs by hand */}
+      <div className="grid sm:grid-cols-3 gap-2 text-[12px]">
+        <label className="space-y-1">
+          <span className="text-slate-400">فایل HTML شروع</span>
+          <input value={inputHtml} onChange={e => setInputHtml(e.target.value)}
+            placeholder="پیش‌فرض: Downloads/معاونت درمان…html"
+            className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 font-mono text-[11px]" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-400">مکث بین درخواست‌ها (ثانیه)</span>
+          <input type="number" min={0} max={30} value={delay}
+            onChange={e => setDelay(Number(e.target.value) || 0)}
+            className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 tabular-nums" />
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-400">مهلت هر درخواست (ثانیه)</span>
+          <input type="number" min={10} max={600} value={timeout_}
+            onChange={e => setTimeout_(Number(e.target.value) || 120)}
+            className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 tabular-nums" />
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={start} disabled={busy || st?.running}
+          className="px-3 py-1.5 text-sm rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40">
+          {st?.running ? 'در حال برداشت…' : 'شروع برداشت'}
+        </button>
+        {st?.running && (
+          <button onClick={stop}
+            className="px-3 py-1.5 text-sm rounded-md bg-red-700 hover:bg-red-600">⏹ توقف</button>)}
+        <span className="text-[11px] text-slate-500">
+          پروکسی ایران باید فعال باشد؛ خطاهای شبکه تا ۲۰ بار بازآزمایی می‌شوند.
+        </span>
+      </div>
+
+      {/* live progress */}
+      {(st?.running || st?.page) ? (
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap gap-x-5 text-[12px] font-mono">
+            <span className={st?.running ? 'text-emerald-300' : 'text-slate-400'}>
+              مرحله: {st?.phase}
+            </span>
+            <span>صفحه: {fa(st?.page)}/{fa(st?.page_count)}</span>
+            <span>ردیف‌های این اجرا: {fa(st?.rows)}</span>
+            <span>{st?.elapsed_sec}s</span>
+          </div>
+          <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-500 transition-all"
+                 style={{ width: `${Math.min(100, st?.pct || 0)}%` }} />
+          </div>
+          {st?.error && <p className="text-[12px] text-red-400">{st.error}</p>}
+        </div>
+      ) : null}
+
+      {/* produced files — what the coverage source then ingests */}
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-slate-400 font-mono">
+        {out.csv
+          ? <span>CSV: {fa(out.csv.rows)} ردیف · {fa(Math.round(out.csv.bytes / 1024))}KB ·
+              {' '}{new Date(out.csv.mtime * 1000).toLocaleString('fa-IR')}</span>
+          : <span className="text-slate-600">هنوز CSV تولید نشده.</span>}
+        {out.json && <span>JSON: {fa(Math.round(out.json.bytes / 1024))}KB</span>}
+      </div>
+
+      {(st?.log || []).length > 0 && (
+        <details className="text-[11px]">
+          <summary className="cursor-pointer text-slate-400 hover:text-slate-200">
+            گزارش اجرا ({fa(st?.log.length)} خط)
+          </summary>
+          <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-500 font-mono">
+            {(st?.log || []).join('\n')}
+          </pre>
+        </details>
+      )}
     </div>
   )
 }
