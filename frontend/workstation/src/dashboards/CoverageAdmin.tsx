@@ -40,6 +40,7 @@ export default function CoverageAdmin() {
   const [openRun, setOpenRun] = useState<string | null>(null)
   const [showIncons, setShowIncons] = useState(false)
   const [showEnrich, setShowEnrich] = useState(false)
+  const [showPrices, setShowPrices] = useState(false)
 
   const { data: sources } = useQuery<{ sources: Source[] }>({
     queryKey: ['coverage-sources'],
@@ -110,11 +111,18 @@ export default function CoverageAdmin() {
                        : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
           ✨ غنی‌سازی هوشمند
         </button>
+        <button onClick={() => setShowPrices(v => !v)}
+          className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+            showPrices ? 'bg-cyan-600 border-cyan-500 hover:bg-cyan-500'
+                       : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
+          📉 تاریخچهٔ قیمت
+        </button>
       </div>
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
 
       {showIncons && <InconsistenciesPanel onError={err} />}
       {showEnrich && <EnrichmentPanel onMsg={setMsg} onError={err} />}
+      {showPrices && <PriceHistoryPanel onMsg={setMsg} onError={err} />}
 
       {/* live harvest strip */}
       {hs?.running && (
@@ -1188,6 +1196,117 @@ function EnrichmentPanel({ onMsg, onError }: {
               ))}
             </div>}
       </div>
+    </div>
+  )
+}
+
+// ── تاریخچهٔ قیمت — dated price series: stale list + per-drug timeline ────────
+interface StaleRow { irc: string; value: number; since: string | null; source: string | null }
+interface PricePoint {
+  price_type: string; insurer: string | null; value: number; source: string | null
+  current: boolean; valid_from: string | null; valid_to: string | null
+}
+const PTYPE_FA: Record<string, string> = {
+  announced: 'اعلامی', invoice: 'فاکتور', insurer_reference: 'مرجع بیمه',
+}
+
+function PriceHistoryPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [ageDays, setAgeDays] = useState(180)
+  const [openIrc, setOpenIrc] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const { data: stale } = useQuery<{ count: number; max_age_days: number; samples: StaleRow[] }>({
+    queryKey: ['price-stale', ageDays],
+    queryFn: () => pricingApi.priceHistoryStale(ageDays).then(r => r.data),
+  })
+  const { data: series } = useQuery<{ irc: string; history: PricePoint[] }>({
+    queryKey: ['price-series', openIrc],
+    queryFn: () => pricingApi.priceHistory(openIrc as string).then(r => r.data),
+    enabled: !!openIrc,
+  })
+
+  const backfill = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.priceHistoryBackfill()
+      onMsg({ kind: 'ok', text: `${fa(data.recorded)} نقطهٔ قیمت از کاتالوگ ثبت شد.` })
+      qc.invalidateQueries({ queryKey: ['price-stale'] })
+    } catch (e) { onError(e, 'ثبت اولیهٔ قیمت‌ها ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-slate-800/50 border border-cyan-500/30 rounded-lg p-4 space-y-3" dir="rtl">
+      <div className="flex items-center gap-2 flex-wrap">
+        <h3 className="font-bold text-cyan-200">📉 تاریخچهٔ قیمت</h3>
+        <span className="text-[12px] text-slate-400">
+          هر تغییر قیمت یک نقطهٔ تاریخ‌دار است؛ «کهنگی» یک پرس‌وجو است، نه حدس.
+        </span>
+        <button onClick={backfill} disabled={busy}
+          title="ثبت قیمت‌های فعلی کاتالوگ به‌عنوان نقطهٔ شروع سری زمانی"
+          className="mr-auto px-2.5 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">
+          ثبت اولیه از کاتالوگ
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <label className="text-slate-400">کهنه‌تر از</label>
+        <select value={ageDays} onChange={e => setAgeDays(Number(e.target.value))}
+          className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
+          <option value={90}>۹۰ روز</option>
+          <option value={180}>۱۸۰ روز</option>
+          <option value={365}>۱ سال</option>
+        </select>
+        <span className={`px-2 py-0.5 rounded-full border ${(stale?.count || 0) > 0
+          ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'}`}>
+          {fa(stale?.count)} قیمت کهنه
+        </span>
+      </div>
+
+      {(stale?.samples || []).length === 0
+        ? <Empty text="قیمت کهنه‌ای در این بازه نیست ✓" />
+        : <div className="max-h-56 overflow-y-auto space-y-0.5">
+            {(stale?.samples || []).map(s => (
+              <div key={s.irc} className="flex flex-wrap items-center gap-3 text-[12px] font-mono
+                                          border-b border-slate-700/50 pb-1">
+                <button onClick={() => setOpenIrc(openIrc === s.irc ? null : s.irc)}
+                  className="text-cyan-300 hover:text-cyan-100">{s.irc}</button>
+                <span className="tabular-nums">{fa(s.value)} ﷼</span>
+                <span className="text-slate-500">
+                  از {s.since ? new Date(s.since).toLocaleDateString('fa-IR') : '—'}
+                </span>
+                {s.source && <span className="text-slate-600">{s.source}</span>}
+              </div>))}
+          </div>}
+
+      {openIrc && (
+        <div className="border border-slate-700 rounded p-2 space-y-1">
+          <p className="text-[12px] font-semibold text-slate-300">روند قیمت — {openIrc}</p>
+          {(series?.history || []).length === 0
+            ? <Empty text="نقطه‌ای ثبت نشده." />
+            : <div className="max-h-48 overflow-y-auto space-y-0.5 font-mono text-[11px]">
+                {(series?.history || []).map((p, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-3 border-b border-slate-700/40 pb-0.5">
+                    <span className={p.current ? 'text-emerald-300' : 'text-slate-500'}>
+                      {p.current ? '● جاری' : '○ قبلی'}
+                    </span>
+                    <span className="text-slate-300">{PTYPE_FA[p.price_type] || p.price_type}</span>
+                    {p.insurer && <span className="text-indigo-300">{p.insurer}</span>}
+                    <span className="tabular-nums">{fa(p.value)} ﷼</span>
+                    <span className="text-slate-500">
+                      {p.valid_from ? new Date(p.valid_from).toLocaleDateString('fa-IR') : '—'}
+                      {' → '}
+                      {p.valid_to ? new Date(p.valid_to).toLocaleDateString('fa-IR') : 'اکنون'}
+                    </span>
+                    {p.source && <span className="text-slate-600">{p.source}</span>}
+                  </div>))}
+              </div>}
+        </div>
+      )}
     </div>
   )
 }
