@@ -316,13 +316,15 @@ def probe_payload(url: str, *, settings: dict, fetch) -> dict:
 def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
                       overrides: dict | None, current: dict[str, dict],
                       min_confidence: float = 0.75,
-                      enrichments: dict | None = None) -> dict:
+                      enrichments: dict | None = None,
+                      crosswalk: dict | None = None) -> dict:
     roles = resolve_roles(rows, overrides)
     if "drug_name" not in roles.values() and "irc" not in roles.values():
         raise RuntimeError(
             f"ستون نام دارو یا IRC شناسایی نشد — ستون‌ها: {list(rows[0].keys())[:12] if rows else []}")
     normalized = normalize_rows(rows, roles)
-    links = link_rows(normalized, catalog, enrichments=enrichments)
+    links = link_rows(normalized, catalog, enrichments=enrichments,
+                      crosswalk=crosswalk, insurer=insurer)
     # هوش تطبیق: the fitted model (owner-decision-calibrated) demotes matches
     # it distrusts — FS score or learned price band — into the review queue.
     from .match_intel import annotate_review_fs, load_model, verify_links
@@ -438,14 +440,16 @@ async def _run(source_id) -> None:
             _STATE.phase = "linking"
             catalog = await repo.fetch_all(db)
             current = await _current_coverage(db, src.insurer)
+            from .crosswalk import load_crosswalk
             from .enrichment import load_approved
             enrichments = await load_approved(db)
+            crosswalk = await load_crosswalk(db, src.insurer)
             _STATE.phase = "diffing"
             try:
                 payload = await asyncio.to_thread(
                     stage_run_payload, rows, catalog,
                     insurer=src.insurer, overrides=settings.get("column_overrides"),
-                    current=current, enrichments=enrichments)
+                    current=current, enrichments=enrichments, crosswalk=crosswalk)
             except Exception as pe:
                 recorder.note("parse_fail", f"{type(pe).__name__}: {pe}")
                 raise
@@ -575,12 +579,16 @@ async def apply_run(db, run_id, *, remove_missing: bool = False,
                 removed_cleared += 1
 
     run.review = stamp_reject_reasons(run.review, accepted, reject_reasons)
+    # X1: the owner's verdicts become DURABLE decisions — the next import of the
+    # same rows resolves from the crosswalk instead of re-running the matcher.
+    from .crosswalk import record_run_decisions
+    cw = await record_run_decisions(db, run, accepted, staff_id=staff_id)
     run.status = "approved"
     run.applied_by = staff_id
     run.applied_at = datetime.now(timezone.utc)
     await db.commit()
     return {"products_updated": updated, "review_applied": review_applied,
-            "removed_cleared": removed_cleared}
+            "removed_cleared": removed_cleared, **cw}
 
 
 async def reject_run(db, run_id) -> None:

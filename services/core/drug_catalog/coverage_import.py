@@ -225,7 +225,8 @@ class LinkResult:
 
 
 def link_rows(rows: list[dict], catalog: list[CatalogRecord],
-              enrichments: dict | None = None) -> list[LinkResult]:
+              enrichments: dict | None = None,
+              crosswalk: dict | None = None, insurer: str = "") -> list[LinkResult]:
     by_irc = {r.irc: r for r in catalog}
     by_gtin = {r.gtin: r for r in catalog if r.gtin}
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
@@ -262,6 +263,30 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
         if not name:
             out.append(LinkResult(row, None, 0.0, "none"))
             continue
+        # ── decision crosswalk (X2): the owner already ruled on this row ──────
+        # Consulted BEFORE any fuzzy work: a confirmed mapping is ground truth
+        # (confidence 1.0, never re-litigated), and a rejected one is left
+        # unmatched instead of being re-proposed every harvest. This is what
+        # makes review effort cumulative rather than repeated.
+        if crosswalk:
+            from .crosswalk import lookup_key, row_source_code
+            from .enrichment import enrich_key
+            for k in lookup_key(insurer, row_source_code(row), enrich_key(name)):
+                d = crosswalk.get(k)
+                if not d:
+                    continue
+                if d.get("status") == "confirmed" and d.get("irc") in by_irc:
+                    out.append(LinkResult(row, by_irc[d["irc"]], 1.0, "crosswalk"))
+                    break
+                if d.get("status") == "rejected":
+                    out.append(LinkResult(row, None, 0.0, "crosswalk-rejected"))
+                    break
+            else:
+                d = None
+            if d and (d.get("status") == "rejected"
+                      or (d.get("status") == "confirmed" and d.get("irc") in by_irc)):
+                continue
+
         canon, strengths, form, fa = _row_signals(name)
         row_mg = _strength_mg(name)
 

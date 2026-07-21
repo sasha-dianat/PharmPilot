@@ -87,7 +87,10 @@ async def _flush(batch: list[dict], source: str) -> int:
     if not records:
         return 0
     async with AsyncSessionLocal() as db:
-        return await upsert_catalog(db, records, source=source)
+        # X3: owner corrections re-assert themselves over each crawl's values.
+        from .crosswalk import load_overrides
+        overrides = await load_overrides(db)
+        return await upsert_catalog(db, records, source=source, overrides=overrides)
 
 
 async def _run(start: int, end: int, delay: float, proxy: str | None, source: str) -> None:

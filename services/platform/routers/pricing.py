@@ -281,7 +281,9 @@ async def import_catalog(file: UploadFile = File(...),
         records = records_from_file(tmp.name)
         if not records:
             raise HTTPException(status_code=422, detail="No rows recognized — check the file has an IRC/کد and نام column.")
-        n = await upsert_catalog(db, records, source=f"import:{file.filename}")
+        from services.core.drug_catalog.crosswalk import load_overrides
+        n = await upsert_catalog(db, records, source=f"import:{file.filename}",
+                                 overrides=await load_overrides(db))
     finally:
         os.unlink(tmp.name)
     sample = [{"irc": r.irc, "name": r.name_fa, "generic": r.generic_name,
@@ -570,6 +572,56 @@ async def catalog_items(q: str | None = None, limit: int = 50, offset: int = 0,
 class CatalogEditRequest(BaseModel):
     fields: dict
     reason: str | None = None
+    # persist as durable overrides so the next NFI crawl cannot erase the fix
+    persist: bool = True
+
+
+@router.get("/crosswalk")
+async def crosswalk_list(insurer: str | None = None, status: str | None = None,
+                         limit: int = 200,
+                         staff: Staff = Depends(require_permission("inventory:read")),
+                         db: AsyncSession = Depends(get_db)):
+    """Durable owner decisions: which insurer row IS which product."""
+    from sqlalchemy import func, select
+    from shared.models.crosswalk import CrosswalkEntry as C
+    q = select(C).order_by(C.decided_at.desc().nullslast())
+    if insurer:
+        q = q.where(C.insurer == insurer)
+    if status:
+        q = q.where(C.status == status)
+    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
+    rows = (await db.execute(q.limit(min(limit, 500)))).scalars().all()
+    return {"total": total, "entries": [
+        {"id": str(e.id), "insurer": e.insurer, "source_code": e.source_code,
+         "raw_key": e.raw_key, "raw_name": e.raw_name, "irc": e.irc,
+         "status": e.status, "reason": e.reason,
+         "decided_at": e.decided_at.isoformat() if e.decided_at else None} for e in rows]}
+
+
+@router.get("/overrides")
+async def overrides_list(staff: Staff = Depends(require_permission("inventory:read")),
+                         db: AsyncSession = Depends(get_db)):
+    """Field corrections that re-apply after every crawl."""
+    from sqlalchemy import select
+    from shared.models.crosswalk import FieldOverride as F
+    rows = (await db.execute(select(F).order_by(F.decided_at.desc().nullslast())
+                             .limit(500))).scalars().all()
+    return {"total": len(rows), "overrides": [
+        {"id": str(o.id), "irc": o.irc, "field": o.field, "value": o.value,
+         "reason": o.reason,
+         "decided_at": o.decided_at.isoformat() if o.decided_at else None} for o in rows]}
+
+
+@router.delete("/overrides/{override_id}")
+async def override_delete(override_id: UUID,
+                          staff: Staff = Depends(require_permission("inventory:write")),
+                          db: AsyncSession = Depends(get_db)):
+    """Drop an override — the field reverts to whatever the source publishes."""
+    from sqlalchemy import delete
+    from shared.models.crosswalk import FieldOverride as F
+    res = await db.execute(delete(F).where(F.id == override_id))
+    await db.commit()
+    return {"deleted": res.rowcount}
 
 
 @router.patch("/catalog/items/{irc}")
@@ -613,8 +665,17 @@ async def catalog_edit(irc: str, body: CatalogEditRequest,
     for f, ptype in (("announced_price", "announced"), ("last_invoice_price", "invoice")):
         if f in changed and changed[f]["to"]:
             await record_price(db, irc, ptype, changed[f]["to"], source="manual-edit")
+    # X3: record the correction as policy, so the next NFI crawl re-applies it
+    # instead of silently restoring the source's wrong value.
+    persisted = 0
+    if body.persist:
+        from services.core.drug_catalog.crosswalk import set_override
+        for f, d in changed.items():
+            await set_override(db, irc, f, d["to"], reason=body.reason, staff_id=staff.id)
+            persisted += 1
     await db.commit()
-    return {"irc": irc, "changed": changed, "reason": body.reason}
+    return {"irc": irc, "changed": changed, "reason": body.reason,
+            "overrides_persisted": persisted}
 
 
 class TaminHarvestRequest(BaseModel):

@@ -199,7 +199,8 @@ def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
 
 
 async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi",
-                         enrichments: dict | None = None) -> int:
+                         enrichments: dict | None = None,
+                         overrides: dict | None = None) -> int:
     """Upsert CatalogRecords into drug_catalog by IRC, computing ingredient_key.
     When `enrichments` (owner-approved reference) is supplied, blank catalog
     fields are gap-filled from it before write — NFI values are never overwritten.
@@ -211,6 +212,12 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
     for r in records:
         if enrichments:
             r = apply_enrichment_gaps(r, enrichments)
+        if overrides:
+            # X3: owner corrections are re-asserted over the freshly imported
+            # source values, so a manual fix is permanent policy rather than a
+            # value the next crawl silently erases. Applied LAST — it wins.
+            from .crosswalk import apply_overrides
+            r = apply_overrides(r, overrides)
         values, update_cols = upsert_values(r, source=source)
         stmt = insert(DrugCatalogItem).values(**values)
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)
