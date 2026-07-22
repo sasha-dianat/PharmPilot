@@ -47,3 +47,6 @@ nfi_catalog.json
 
 # harvest diagnostics logs (runtime)
 logs/
+
+# canonical bundle — regenerable export; commit a cut deliberately when releasing
+data/canonical/

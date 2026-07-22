@@ -152,6 +152,8 @@ export const pricingApi = {
     apiClient.get('/pricing/crosswalk', { params }),
   overridesList: () => apiClient.get('/pricing/overrides'),
   overrideDelete: (id: string) => apiClient.delete(`/pricing/overrides/${id}`),
+  canonicalExport: () => apiClient.post('/pricing/canonical/export', {}),
+  canonicalImport: () => apiClient.post('/pricing/canonical/import-decided', {}),
   importCoverage: (file: File, insurer: string) => {
     const fd = new FormData(); fd.append('file', file)
     return apiClient.post('/pricing/coverage/import', fd,

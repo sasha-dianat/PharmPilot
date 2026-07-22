@@ -1569,6 +1569,33 @@ function DecisionsPanel({ onMsg, onError }: {
           <span className="text-[12px] text-slate-400">
             هر رأی شما یک‌بار ثبت می‌شود و در همهٔ برداشت‌های بعدی بدون بازبینی دوباره اعمال می‌گردد.
           </span>
+          <span className="mr-auto flex gap-2">
+            <button onClick={async () => {
+              setBusy(true)
+              try {
+                const { data } = await pricingApi.canonicalExport()
+                const c = data.counts || {}
+                onMsg({ kind: 'ok', text:
+                  `بستهٔ متعارف نوشته شد — کاتالوگ ${fa(c.catalog)}، نگاشت ${fa(c.crosswalk)}، اصلاح ${fa(c.overrides)}، قیمت جاری ${fa(c.prices_current)} (data/canonical/)` })
+              } catch (e) { onError(e, 'برون‌سپاری بسته ناموفق بود.') } finally { setBusy(false) }
+            }} disabled={busy}
+              title="کاتالوگ + دارونامه‌های حل‌شده + نگاشت‌ها + اصلاح‌ها + قیمت‌های جاری، با مانیفست checksum"
+              className="px-2.5 py-1 text-[12px] rounded bg-teal-800 hover:bg-teal-700 disabled:opacity-40">
+              📦 برون‌سپاری بستهٔ متعارف
+            </button>
+            <button onClick={async () => {
+              setBusy(true)
+              try {
+                const { data } = await pricingApi.canonicalImport()
+                onMsg({ kind: 'ok', text: `لایهٔ تصمیم بازخوانی شد — ${fa(data.crosswalk)} نگاشت، ${fa(data.overrides)} اصلاح.` })
+                qc.invalidateQueries({ queryKey: ['crosswalk'] })
+                qc.invalidateQueries({ queryKey: ['overrides'] })
+              } catch (e) { onError(e, 'بازخوانی بسته ناموفق بود.') } finally { setBusy(false) }
+            }} disabled={busy}
+              className="px-2.5 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">
+              بازخوانی لایهٔ تصمیم
+            </button>
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[12px]">
           <select value={insurer} onChange={e => setInsurer(e.target.value)}

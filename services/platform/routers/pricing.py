@@ -612,6 +612,24 @@ async def overrides_list(staff: Staff = Depends(require_permission("inventory:re
          "decided_at": o.decided_at.isoformat() if o.decided_at else None} for o in rows]}
 
 
+@router.post("/canonical/export")
+async def canonical_export(staff: Staff = Depends(require_permission("inventory:write")),
+                           db: AsyncSession = Depends(get_db)):
+    """Write the canonical bundle (catalog + resolved formularies + crosswalk +
+    overrides + current prices) to data/canonical/ with a checksummed manifest."""
+    from services.core.drug_catalog.canonical_export import export_bundle
+    return await export_bundle(db)
+
+
+@router.post("/canonical/import-decided")
+async def canonical_import(staff: Staff = Depends(require_permission("inventory:write")),
+                           db: AsyncSession = Depends(get_db)):
+    """Re-seed the DECIDED layer (crosswalk + overrides) from data/canonical/.
+    Observed data always re-enters through the normal import flows."""
+    from services.core.drug_catalog.canonical_export import import_decided
+    return await import_decided(db)
+
+
 @router.delete("/overrides/{override_id}")
 async def override_delete(override_id: UUID,
                           staff: Staff = Depends(require_permission("inventory:write")),

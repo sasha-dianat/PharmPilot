@@ -354,7 +354,41 @@ def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
         "diff": compute_diff(cov.applied, current, insurer=insurer),
         "groups": {"bulk_candidates": bulk_candidates[:200],
                    "multiform": dict(list(multiform.items())[:200])},
+        # X4: the FULL normalized row set for the observed-layer snapshot —
+        # popped by the caller before the payload is stored on the run.
+        "_normalized_rows": normalized,
     }
+
+
+async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> int:
+    """Observed layer (X4): keep every row of this import, uncapped, with the
+    insurer's own code and the raw mapped row — so any publication can later be
+    replayed/diffed against the decided layer. Append-only."""
+    from shared.models.formulary_snapshot import FormularySnapshot
+    from .coverage_import import _to_bool
+    from .crosswalk import row_source_code
+
+    def _num(v):
+        try:
+            return None if v in (None, "") else float(str(v).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
+    n = 0
+    for r in normalized or []:
+        if not isinstance(r, dict) or not r.get("drug_name"):
+            continue
+        rp = _num(r.get("reference_price"))
+        db.add(FormularySnapshot(
+            run_id=run_id, insurer=insurer,
+            source_code=row_source_code(r),
+            raw_name=str(r.get("drug_name"))[:300],
+            reference_price=int(rp) if rp is not None else None,
+            share_pct=_num(r.get("share_pct")),
+            covered=_to_bool(r.get("covered")) if r.get("covered") not in (None, "") else None,
+            row=r))
+        n += 1
+    return n
 
 
 # ── background run state (mirrors nfi_harvest_service) ───────────────────────
@@ -455,6 +489,10 @@ async def _run(source_id) -> None:
                 raise
 
             _STATE.phase = "saving"
+            # X4: persist the observed layer before the payload is stored
+            snap_rows = payload.pop("_normalized_rows", None)
+            snapped = await save_snapshots(db, run.id, src.insurer, snap_rows)
+            payload["stats"]["snapshot_rows"] = snapped
             run.status = "parsed"
             run.finished_at = datetime.now(timezone.utc)
             run.stats, run.staged = payload["stats"], payload["staged"]
