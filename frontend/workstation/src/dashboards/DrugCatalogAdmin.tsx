@@ -10,6 +10,7 @@ import { pricingApi, apiErrorText } from '../lib/api'
 interface Stats { total: number; priced: number; ingredient_groups: number; last_updated: string | null }
 interface HarvestStatus {
   running: boolean; scanned: number; products: number; ingested: number
+  quarantined?: number
   last_id: number; start_id: number; end_id: number; progress_pct: number
   elapsed_sec: number; eta_sec: number | null; message: string; error: string | null
   diagnostics?: { failed: number; worst_category: string | null; top_hint: string | null }
@@ -115,6 +116,10 @@ export default function DrugCatalogAdmin() {
               <span>پیموده‌شده: {fa(hs.scanned)}</span>
               <span className="text-emerald-300">محصولات: {fa(hs.products)}</span>
               <span className="text-indigo-300">ثبت‌شده: {fa(hs.ingested)}</span>
+              {(hs.quarantined ?? 0) > 0 && (
+                <span className="text-rose-300"
+                  title="صفحات دوپاره (مونوگراف دارویی دیگر) — بلوک محصول حفظ شد، مونوگراف بیگانه وارد نشد">
+                  🧬 قرنطینه: {fa(hs.quarantined!)}</span>)}
               <span>شناسه فعلی: {fa(hs.last_id)}</span>
               <span>سپری‌شده: {hms(hs.elapsed_sec)}</span>
               <span>باقی‌مانده: {hms(hs.eta_sec)}</span>
