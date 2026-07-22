@@ -148,6 +148,10 @@ export const pricingApi = {
     apiClient.get('/pricing/catalog/items', { params }),
   catalogEdit: (irc: string, fields: Record<string, unknown>, reason?: string) =>
     apiClient.patch(`/pricing/catalog/items/${irc}`, { fields, reason }),
+  crosswalkList: (params: { insurer?: string; status?: string; limit?: number }) =>
+    apiClient.get('/pricing/crosswalk', { params }),
+  overridesList: () => apiClient.get('/pricing/overrides'),
+  overrideDelete: (id: string) => apiClient.delete(`/pricing/overrides/${id}`),
   importCoverage: (file: File, insurer: string) => {
     const fd = new FormData(); fd.append('file', file)
     return apiClient.post('/pricing/coverage/import', fd,

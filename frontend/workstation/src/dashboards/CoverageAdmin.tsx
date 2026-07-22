@@ -42,6 +42,7 @@ const TABS = [
   { id: 'enrich',  label: '✨ غنی‌سازی' },
   { id: 'catalog', label: '🗂 کاتالوگ NFI' },
   { id: 'prices',  label: '📉 قیمت‌ها' },
+  { id: 'decisions', label: '⚖ تصمیم‌ها' },
 ] as const
 type TabId = typeof TABS[number]['id']
 
@@ -210,6 +211,7 @@ export default function CoverageAdmin() {
       {tab === 'issues' && <InconsistenciesPanel onError={err} />}
       {tab === 'enrich' && <EnrichmentPanel onMsg={setMsg} onError={err} />}
       {tab === 'catalog' && <CatalogEditorPanel onMsg={setMsg} onError={err} />}
+      {tab === 'decisions' && <DecisionsPanel onMsg={setMsg} onError={err} />}
       {tab === 'prices' && <PriceHistoryPanel onMsg={setMsg} onError={err} />}
     </div>
   )
@@ -1508,6 +1510,146 @@ function CatalogEditorPanel({ onMsg, onError }: {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── ⚖ تصمیم‌ها — the durable decision layer: crosswalk + field overrides ──────
+interface CrosswalkRow {
+  id: string; insurer: string; source_code: string | null; raw_key: string
+  raw_name: string | null; irc: string | null; status: string
+  reason: string | null; decided_at: string | null
+}
+interface OverrideRow {
+  id: string; irc: string; field: string; value: string | null
+  reason: string | null; decided_at: string | null
+}
+const DECISION_REASON_FA: Record<string, string> = {
+  wrong_product: 'داروی دیگر', wrong_strength: 'قدرت اشتباه', wrong_form: 'شکل اشتباه',
+  wrong_brand: 'برند اشتباه', wrong_pack: 'بستهٔ اشتباه',
+  price_implausible: 'قیمت نامعقول', other: 'سایر',
+}
+
+function DecisionsPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [insurer, setInsurer] = useState('')
+  const [status, setStatus] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const { data: cw } = useQuery<{ total: number; entries: CrosswalkRow[] }>({
+    queryKey: ['crosswalk', insurer, status],
+    queryFn: () => pricingApi.crosswalkList({ insurer: insurer || undefined,
+      status: status || undefined, limit: 300 }).then(r => r.data),
+  })
+  const { data: ov } = useQuery<{ total: number; overrides: OverrideRow[] }>({
+    queryKey: ['overrides'],
+    queryFn: () => pricingApi.overridesList().then(r => r.data),
+  })
+
+  const revoke = async (o: OverrideRow) => {
+    if (!window.confirm(
+      `لغو اصلاح «${o.field}» برای ${o.irc}؟ مقدار به آنچه منبع منتشر می‌کند برمی‌گردد.`)) return
+    setBusy(true)
+    try {
+      await pricingApi.overrideDelete(o.id)
+      onMsg({ kind: 'ok', text: `اصلاح ${o.field} لغو شد — از خزش بعدی، مقدار منبع برمی‌گردد.` })
+      qc.invalidateQueries({ queryKey: ['overrides'] })
+    } catch (e) { onError(e, 'لغو اصلاح ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="space-y-4" dir="rtl">
+      {/* crosswalk: insurer row ↔ our product, decided once */}
+      <div className="bg-slate-800/50 border border-teal-500/30 rounded-lg p-4 space-y-3">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <h3 className="font-bold text-teal-200">⚖ نگاشت‌های قطعی (Crosswalk)</h3>
+          <span className="text-[12px] text-slate-400">
+            هر رأی شما یک‌بار ثبت می‌شود و در همهٔ برداشت‌های بعدی بدون بازبینی دوباره اعمال می‌گردد.
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          <select value={insurer} onChange={e => setInsurer(e.target.value)}
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
+            <option value="">همهٔ بیمه‌گرها</option>
+            <option value="tamin">تأمین اجتماعی</option>
+            <option value="salamat">بیمه سلامت</option>
+            <option value="armed">نیروهای مسلح</option>
+          </select>
+          <select value={status} onChange={e => setStatus(e.target.value)}
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
+            <option value="">همهٔ وضعیت‌ها</option>
+            <option value="confirmed">تأییدشده</option>
+            <option value="rejected">ردشده</option>
+          </select>
+          <span className="text-slate-400">{fa(cw?.total)} تصمیم</span>
+        </div>
+        {(cw?.entries || []).length === 0
+          ? <Empty text="هنوز تصمیمی ثبت نشده — با «اعمال اجرا»ی بعدی، رأی‌های شما اینجا انباشته می‌شوند." />
+          : <ScrollTable head={
+              <tr><th className="px-3 py-2 text-right font-medium">قلم دارونامه</th>
+                  <th className="px-3 py-2 text-right font-medium">حکم</th>
+                  <th className="px-3 py-2 text-right font-medium">محصول (IRC)</th>
+                  <th className="px-3 py-2 text-right font-medium">تاریخ</th></tr>}>
+              {(cw?.entries || []).map(e => (
+                <tr key={e.id} className="hover:bg-slate-700/25">
+                  <td className="px-3 py-2 text-right">
+                    <div className="text-slate-200">{e.raw_name || e.raw_key}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {e.insurer}{e.source_code && <span className="font-mono"> · کد {e.source_code}</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <span className={`text-[11px] px-1.5 py-0.5 rounded border ${
+                      e.status === 'confirmed'
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-red-500/15 border-red-500/40 text-red-300'}`}>
+                      {e.status === 'confirmed' ? 'تأیید' : 'رد'}
+                      {e.reason && ` — ${DECISION_REASON_FA[e.reason] || e.reason}`}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">
+                    {e.irc || '—'}</td>
+                  <td className="px-3 py-2 text-right text-[11px] text-slate-500">
+                    {e.decided_at ? new Date(e.decided_at).toLocaleDateString('fa-IR') : '—'}</td>
+                </tr>))}
+            </ScrollTable>}
+      </div>
+
+      {/* field overrides: corrections that outlive crawls */}
+      <div className="bg-slate-800/50 border border-violet-500/30 rounded-lg p-4 space-y-3">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <h3 className="font-bold text-violet-200">🛡 اصلاح‌های ماندگار کاتالوگ</h3>
+          <span className="text-[12px] text-slate-400">
+            این مقادیر پس از هر خزش NFI دوباره اعمال می‌شوند؛ لغو ⇒ بازگشت به مقدار منبع.
+          </span>
+          <span className="mr-auto text-[12px] text-slate-400">{fa(ov?.total)} اصلاح</span>
+        </div>
+        {(ov?.overrides || []).length === 0
+          ? <Empty text="اصلاح ماندگاری ثبت نشده — ویرایش‌های کاتالوگ به‌صورت پیش‌فرض اینجا می‌آیند." />
+          : <ScrollTable head={
+              <tr><th className="px-3 py-2 text-right font-medium">محصول</th>
+                  <th className="px-3 py-2 text-right font-medium">فیلد</th>
+                  <th className="px-3 py-2 text-right font-medium">مقدار مالک</th>
+                  <th className="px-3 py-2 text-right font-medium">دلیل</th>
+                  <th className="px-3 py-2 text-left font-medium"></th></tr>}>
+              {(ov?.overrides || []).map(o => (
+                <tr key={o.id} className="hover:bg-slate-700/25">
+                  <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-400">{o.irc}</td>
+                  <td className="px-3 py-2 text-right text-slate-300">{o.field}</td>
+                  <td className="px-3 py-2 text-right text-slate-200">
+                    {o.value ?? <span className="text-slate-500">(خالی اجباری)</span>}</td>
+                  <td className="px-3 py-2 text-right text-[11px] text-slate-500">{o.reason || '—'}</td>
+                  <td className="px-3 py-2 text-left">
+                    <button onClick={() => revoke(o)} disabled={busy}
+                      className="px-2 py-0.5 text-[11px] rounded bg-red-800 hover:bg-red-700 disabled:opacity-40">
+                      لغو</button>
+                  </td>
+                </tr>))}
+            </ScrollTable>}
+      </div>
     </div>
   )
 }
