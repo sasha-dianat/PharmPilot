@@ -102,7 +102,8 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
         category = _CATEGORY_MAP.get(cat_raw, ItemCategory.DRUG)
         gen_flag = _pick(row, "is_generic")
         mono_keys = ("indications", "mechanism", "pharmacokinetics", "warnings",
-                     "side_effects", "interactions_text", "advice", "composition", "brands")
+                     "side_effects", "interactions_text", "advice", "composition", "brands",
+                     "atc_path", "integrity")
         mono = {k: row[k] for k in mono_keys if row.get(k)}
         out.append(CatalogRecord(
             irc=str(irc).strip(),

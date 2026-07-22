@@ -465,6 +465,31 @@ async def start_coverage_harvest(source_id: UUID,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@router.get("/catalog/integrity")
+async def catalog_integrity(staff: Staff = Depends(require_permission("inventory:read")),
+                            db: AsyncSession = Depends(get_db)):
+    """Spliced-monograph audit: NFI rows whose product block contradicts their
+    monograph (reused generic-entity ids on legacy pages), with a deterministic
+    repair proposal per row (donor sibling or the brand string itself)."""
+    from services.core.drug_catalog.nfi_integrity import audit
+    return await audit(db)
+
+
+class IntegrityApplyRequest(BaseModel):
+    ircs: list[str]
+
+
+@router.post("/catalog/integrity/apply")
+async def catalog_integrity_apply(body: IntegrityApplyRequest,
+                                  staff: Staff = Depends(require_permission("inventory:write")),
+                                  db: AsyncSession = Depends(get_db)):
+    """Apply proposals for the accepted IRCs: each repaired field becomes a
+    field_override (a re-crawl of the still-broken page cannot re-poison it),
+    ingredient_key is recomputed, the foreign monograph text is dropped."""
+    from services.core.drug_catalog.nfi_integrity import apply_repairs
+    return await apply_repairs(db, body.ircs, staff_id=getattr(staff, "id", None))
+
+
 @router.post("/coverage/upload-run")
 async def coverage_upload_run(files: list[UploadFile] = File(...),
                               insurer: str = "tamin",

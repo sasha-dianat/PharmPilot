@@ -681,6 +681,113 @@ function issueTone(issue: IssueType, gap: number | null): string {
   return 'bg-slate-700/50 text-slate-300 border-slate-600/50'
 }
 
+// ── مغایرت داخلی NFI: spliced legacy pages (product block ≠ monograph) ───────
+interface IntegritySuspect {
+  irc: string; name_fa: string | null; brand_name: string | null
+  manufacturer: string | null; gtin: string | null; announced_price: number | null
+  current: { generic_name: string | null; dosage_form: string | null;
+             strength: string | null; atc: string | null }
+  reasons: string[]
+  proposal: { generic_name: string | null; dosage_form: string | null;
+              strength: string | null; atc: string | null }
+  donor_irc: string | null
+  price_flag: string | null
+}
+
+function NfiIntegrityCard({ onError }: { onError: (e: unknown, f: string) => void }) {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const { data } = useQuery<{ suspects: IntegritySuspect[];
+                              counts: { checked: number; suspect: number; with_donor: number } }>({
+    queryKey: ['nfi-integrity'],
+    queryFn: () => pricingApi.catalogIntegrity().then(r => r.data),
+    staleTime: 5 * 60_000,
+  })
+  const suspects = data?.suspects ?? []
+  const toggle = (irc: string) => setSel(s => {
+    const n = new Set(s); n.has(irc) ? n.delete(irc) : n.add(irc); return n
+  })
+  const apply = async (ircs: string[]) => {
+    if (!ircs.length) return
+    setBusy(true)
+    try {
+      const { data: res } = await pricingApi.catalogIntegrityApply(ircs)
+      qc.invalidateQueries({ queryKey: ['nfi-integrity'] })
+      qc.invalidateQueries({ queryKey: ['inconsistencies'] })
+      setSel(new Set())
+      alert(`اصلاح شد: ${fa(res.repaired)} قلم — اصلاح‌ها به‌صورت override دائمی ثبت شدند.`)
+    } catch (e) { onError(e, 'اعمال اصلاح ناموفق بود.') } finally { setBusy(false) }
+  }
+  if (!suspects.length) return null
+  return (
+    <div className="bg-rose-950/30 border border-rose-500/40 rounded-lg p-3 space-y-2">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between">
+        <span className="font-semibold text-sm text-rose-200">
+          🧬 مغایرت داخلی NFI — صفحات دوپاره ({fa(suspects.length)} قلم مشکوک از {fa(data!.counts.checked)})
+        </span>
+        <span className="text-rose-300 text-xs">{open ? '▲ بستن' : '▼ نمایش'}</span>
+      </button>
+      {open && (<>
+        <p className="text-[11px] text-rose-200/70 leading-5">
+          صفحات قدیمی سایت NFI گاهی مونوگرافِ دارویی دیگر را نشان می‌دهند (شناسهٔ ژنریکِ بازاستفاده‌شده) —
+          نام/قیمت/تولیدکننده متعلق به خود قلم است ولی ژنریک/شکل/ATC متعلق به داروی دیگری.
+          پیشنهادِ اصلاح از روی همتای سالمِ همان محصول (🎯) یا خودِ نام برند ساخته شده است.
+          اصلاح تأییدشده به‌صورت override دائمی ثبت می‌شود و خزش بعدی نمی‌تواند آن را دوباره خراب کند.
+        </p>
+        <div className="flex items-center gap-2">
+          <button disabled={busy} onClick={() => setSel(new Set(suspects.map(s => s.irc)))}
+            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded">انتخاب همه</button>
+          <button disabled={busy} onClick={() => setSel(new Set(suspects.filter(s => s.donor_irc).map(s => s.irc)))}
+            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded"
+            title="فقط مواردی که همتای سالم همان محصول پیدا شده">🎯 انتخاب موارد با همتا ({fa(data!.counts.with_donor)})</button>
+          <button disabled={busy || !sel.size} onClick={() => apply([...sel])}
+            className="px-3 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">
+            ✔ اصلاح {fa(sel.size)} مورد انتخاب‌شده</button>
+        </div>
+        <div className="overflow-x-auto max-h-96 overflow-y-auto">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 bg-slate-900">
+              <tr className="text-slate-400 text-right">
+                <th className="p-1.5"></th><th className="p-1.5">برند (بلوک محصول)</th>
+                <th className="p-1.5">مونوگراف فعلی (خراب)</th>
+                <th className="p-1.5">پیشنهاد اصلاح</th><th className="p-1.5">منبع</th>
+              </tr>
+            </thead>
+            <tbody>
+              {suspects.map(s => (
+                <tr key={s.irc} className="border-t border-slate-700/60 align-top">
+                  <td className="p-1.5">
+                    <input type="checkbox" checked={sel.has(s.irc)} onChange={() => toggle(s.irc)} />
+                  </td>
+                  <td className="p-1.5">
+                    <div className="text-slate-100">{s.brand_name || s.name_fa}</div>
+                    <div className="text-slate-500">{s.manufacturer} · {s.irc}
+                      {s.announced_price != null && <> · {fa(s.announced_price)} ریال</>}</div>
+                    {s.price_flag && <div className="text-amber-400">⚠ {s.price_flag}</div>}
+                  </td>
+                  <td className="p-1.5 text-rose-300">
+                    {s.current.generic_name} · {s.current.dosage_form}
+                    {s.current.atc && <> · {s.current.atc}</>}
+                  </td>
+                  <td className="p-1.5 text-emerald-300">
+                    {s.proposal.generic_name} · {s.proposal.dosage_form || '—'}
+                    {s.proposal.strength && <> · {s.proposal.strength}</>}
+                    {s.proposal.atc && <> · {s.proposal.atc}</>}
+                  </td>
+                  <td className="p-1.5 text-slate-400">
+                    {s.donor_irc ? <span title={`IRC همتا: ${s.donor_irc}`}>🎯 همتای سالم</span> : '📛 از نام برند'}
+                  </td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>
+      </>)}
+    </div>
+  )
+}
+
 function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) => void }) {
   const [insurer, setInsurer] = useState('salamat')
   const [threshold, setThreshold] = useState(25)
@@ -761,6 +868,7 @@ function InconsistenciesPanel({ onError }: { onError: (e: unknown, f: string) =>
 
   return (
     <div className="bg-slate-800/50 border border-indigo-500/30 rounded-lg p-4 space-y-4" dir="rtl">
+      <NfiIntegrityCard onError={onError} />
       {/* controls */}
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-1.5 text-sm text-slate-400">بیمه‌گر

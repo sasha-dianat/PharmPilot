@@ -164,6 +164,9 @@ export const pricingApi = {
     return apiClient.post('/pricing/coverage/upload-run', fd,
       { params: { insurer }, headers: { 'Content-Type': undefined } })
   },
+  catalogIntegrity: () => apiClient.get('/pricing/catalog/integrity'),
+  catalogIntegrityApply: (ircs: string[]) =>
+    apiClient.post('/pricing/catalog/integrity/apply', { ircs }),
   nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),

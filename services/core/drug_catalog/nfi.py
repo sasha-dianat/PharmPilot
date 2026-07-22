@@ -20,6 +20,11 @@ _DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567
 
 _PAIR_RE = re.compile(
     r"<label[^>]*>\s*(.*?)\s*</label>\s*<(span|bdo)[^>]*>(.*?)</\2>", re.S | re.I)
+# the ATC hierarchy renders as label/code anchor pairs per level:
+#   <a href="/NFI/SearchByATC?Term=A02BA">H2-RECEPTOR ANTAGONISTS</a> …
+#   <a href="/NFI/SearchByATC?Term=A02BA">A02BA</a>
+_ATC_TREE_RE = re.compile(
+    r'href="/NFI/SearchByATC\?Term=([A-Za-z0-9]+)"\s*>\s*([^<]+?)\s*</a>', re.I)
 _TITLE_RE = re.compile(r"<title>\s*(.*?)\s*</title>", re.S | re.I)
 _ATC_RE = re.compile(r'class="graphLabelSearch"[^>]*>\s*([A-Za-z0-9]+)\s*<', re.I)
 _SIMILAR_RE = re.compile(r"محصولات مشابه\s*\(\s*([\d۰-۹]+)")
@@ -100,6 +105,21 @@ def _parse_brands(html: str) -> list[dict]:
     return []
 
 
+def parse_atc_path(html: str) -> list[dict]:
+    """The labeled ATC hierarchy, root→leaf:
+    [{"code": "A", "label": "ALIMENTARY TRACT AND METABOLISM"}, …,
+     {"code": "A02BA02", "label": "RANITIDINE"}].
+    The LEAF label is the site's own canonical generic for this monograph —
+    the anchor that lets a page's coherence be checked against itself."""
+    labels: dict[str, str] = {}
+    for code, text in _ATC_TREE_RE.findall(html):
+        code, text = code.upper(), _clean(text)
+        if not text or text.upper() == code:      # the bare code anchor
+            continue
+        labels.setdefault(code, text)
+    return [{"code": c, "label": labels[c]} for c in sorted(labels, key=len)]
+
+
 def parse_detail(html: str, page_id: int | None = None) -> dict | None:
     """Extract product fields from a /NFI/Detail/{id} page. Returns None for
     pages without an IRC (error/search shells)."""
@@ -161,6 +181,10 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
     atc = _ATC_RE.search(html)
     if atc:
         out["atc"] = atc.group(1).upper()
+    path = parse_atc_path(html)
+    if path:
+        out["atc_path"] = path                     # pharmacological category chain
+        out.setdefault("atc", path[-1]["code"])
     sim = _SIMILAR_RE.search(html)
     if sim:
         out["similar_count"] = int(_digits(sim.group(1)) or 0)
@@ -183,6 +207,124 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
     if page_id is not None:
         out["nfi_id"] = page_id
     return out if out.get("irc") else None
+
+
+# ── page coherence: spliced-monograph quarantine ─────────────────────────────
+# Legacy NFI product pages can reference a generic-entity id the site has since
+# REUSED: the page then renders drug A's product block (نام/IRC/قیمت/تولیدکننده)
+# with drug B's monograph (نام عمومی/شکل دارویی/ATC). Verified 2026-07-22:
+# RANITIDINE product pages carrying the follitropin monograph, G03GA05.
+# The ATC leaf label + the brand string let the page indict itself.
+
+_FORM_MARKERS = (               # marker stated in the brand string → form family
+    ("MOUTH WASH", "MOUTHWASH"), ("SYRINGE", "INJECTION"), ("SACHET", "POWDER"),
+    ("POWDER", "POWDER"), ("SYRUP", "SYRUP"), ("CREAM", "CREAM"),
+    ("SPRAY", "SPRAY"), ("DROP", "DROP"), ("SUPP", "SUPPOSITORY"),
+    ("ENEMA", "ENEMA"), ("OINT", "OINTMENT"), ("VIAL", "INJECTION"),
+    ("AMP", "INJECTION"), ("INJ", "INJECTION"), ("SUSP", "SUSPENSION"),
+    ("CAP", "CAPSULE"), ("TAB", "TABLET"), ("GEL", "GEL"), ("SOL", "SOLUTION"),
+)
+_FORM_COMPAT = {                # stored forms that satisfy a stated marker
+    "TABLET": ("TABLET",), "CAPSULE": ("CAPSULE",),
+    "INJECTION": ("INJECTION", "SOLUTION"), "SUSPENSION": ("SUSPENSION",),
+    "SYRUP": ("SYRUP", "SOLUTION"), "OINTMENT": ("OINTMENT",),
+    "CREAM": ("CREAM",), "GEL": ("GEL", "JELLY"),
+    "DROP": ("DROP", "SOLUTION", "SUSPENSION"),
+    "SPRAY": ("SPRAY", "AEROSOL"), "SUPPOSITORY": ("SUPPOSITORY",),
+    "POWDER": ("POWDER", "GRANULE"), "MOUTHWASH": ("MOUTHWASH", "SOLUTION"),
+    "SOLUTION": ("SOLUTION", "INJECTION"), "ENEMA": ("ENEMA",),
+}
+_STRENGTH_IN_BRAND_RE = re.compile(
+    r"(\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?)\s*(MG|MCG|G|IU|U|%)?(?![\d.])", re.I)
+
+
+def brand_stated_form(brand: str | None) -> str | None:
+    b = str(brand or "").upper()
+    for marker, target in _FORM_MARKERS:
+        if re.search(rf"(?<![A-Z]){marker}(?![A-Z])", b):
+            return target
+    return None
+
+
+def brand_generic_tokens(brand: str | None) -> list[str]:
+    """Leading latin words of a brand string, before any digits/parenthesis —
+    'MEDROXYPROGESTERONE ACETATE 250MG TAB' → ['medroxyprogesterone','acetate'];
+    a pure trade name ('VICTOZA') yields itself and simply won't be in vocab."""
+    head = re.split(r"[\d(®]", str(brand or ""))[0]
+    return [t.lower() for t in re.findall(r"[A-Za-z]{2,}", head)]
+
+
+def brand_stated_generic(brand: str | None, known: set[str]) -> str | None:
+    """The generic name a brand string itself states, if its leading tokens
+    form a KNOWN generic — 'RANITIDINE 150' → 'ranitidine'; 'VICTOZA' → None."""
+    toks = brand_generic_tokens(brand)
+    return next((" ".join(toks[:n]) for n in (3, 2, 1)
+                 if len(" ".join(toks[:n])) >= 5
+                 and " ".join(toks[:n]) in known), None)
+
+
+def page_coherence(rec: dict, known_generics: set[str] | None = None,
+                   atc_families: dict[str, set[str]] | None = None) -> list[str]:
+    """Deterministic self-contradiction check for one parsed detail page (or a
+    catalog row — same shape). Returns human-readable reasons; empty =
+    coherent (or unverifiable). `atc_families` maps a known generic to the ATC
+    4-prefixes it is seen with, so synonym pairs (vitamin B12/cyanocobalamin,
+    glyceryl trinitrate/nitroglycerin) that share a family never fire."""
+    from difflib import SequenceMatcher
+    reasons: list[str] = []
+    brand = rec.get("brand_name") or rec.get("name_fa") or ""
+
+    stated = brand_stated_form(brand)
+    form = str(rec.get("dosage_form") or "").upper()
+    if stated and form and not any(c in form for c in _FORM_COMPAT[stated]):
+        reasons.append(f"form: brand says {stated}, monograph says {form}")
+
+    if known_generics:
+        cand = brand_stated_generic(brand, known_generics)
+        mono = " ".join(str(rec.get(k) or "") for k in
+                        ("generic_name", "generic_full")).lower()
+        leaf = ""
+        if rec.get("atc_path"):
+            leaf = str(rec["atc_path"][-1].get("label") or "").lower()
+        target = f"{mono} {leaf}".strip()
+        if cand and target:
+            overlap = any(t in target for t in cand.split())
+            close = SequenceMatcher(None, cand, target[:len(cand) + 8]).ratio() >= 0.75
+            fam = (atc_families or {}).get(cand) or set()
+            row_fam = str(rec.get("atc") or "")[:4].upper()
+            same_family = bool(row_fam) and any(f[:3] == row_fam[:3] for f in fam)
+            if not overlap and not close and not same_family:
+                reasons.append(f"generic: brand says {cand}, monograph says "
+                               f"{leaf or (mono.split()[0] if mono else '?')}")
+    return reasons
+
+
+_MONOGRAPH_KEYS = ("generic_full", "composition", "atc", "atc_path",
+                   "dosage_form", "route", "generic_name", "strength",
+                   "indications", "interactions_text", "warnings",
+                   "side_effects", "advice", "mechanism", "pharmacokinetics",
+                   "similar_count", "brands", "country")
+
+
+def quarantine_monograph(rec: dict, reasons: list[str]) -> dict:
+    """Strip every monograph-scoped field from a self-contradicting page and
+    re-derive identity from the product block's own brand string (row truth).
+    The product fields (IRC/GTIN/قیمت/تولیدکننده) are kept — they belong to
+    this product; the monograph belongs to some other drug entirely."""
+    out = {k: v for k, v in rec.items() if k not in _MONOGRAPH_KEYS}
+    brand = out.get("brand_name") or out.get("name_fa") or ""
+    toks = brand_generic_tokens(brand)
+    if toks:
+        out["generic_name"] = " ".join(toks)
+    m = _STRENGTH_IN_BRAND_RE.search(str(brand))
+    if m:
+        unit = (m.group(2) or "").lower()          # no unit stated → no guessing
+        out["strength"] = f"{m.group(1)} {unit}".strip()
+    stated = brand_stated_form(brand)
+    if stated:
+        out["dosage_form"] = stated
+    out["integrity"] = {"spliced_page": True, "reasons": reasons}
+    return out
 
 
 def make_opener(proxy: str | None = None) -> urllib.request.OpenerDirector:

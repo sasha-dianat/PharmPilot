@@ -27,6 +27,7 @@ class HarvestState:
     scanned: int = 0
     products: int = 0
     ingested: int = 0
+    quarantined: int = 0         # spliced-page monographs stripped this run
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
@@ -94,10 +95,15 @@ async def _flush(batch: list[dict], source: str) -> int:
 
 
 async def _run(start: int, end: int, delay: float, proxy: str | None, source: str) -> None:
+    from .nfi import page_coherence, quarantine_monograph
+    from .nfi_integrity import load_vocab
     opener = make_opener(proxy or os.getenv("HTTPS_PROXY"))
     recorder = DiagnosticRecorder("nfi", "nfi", mode="errors_only")
     batch: list[dict] = []
     try:
+        from services.platform.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as _vdb:
+            vocab, families = await load_vocab(_vdb)
         for pid in range(start, end + 1):
             if _STATE.cancel:
                 _STATE.message = "cancelled"
@@ -109,6 +115,14 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
             if status_code == 200 and html:
                 rec = parse_detail(html, pid)
                 if rec:
+                    reasons = page_coherence(rec, vocab, families)
+                    if reasons:
+                        # the page contradicts itself (reused generic-entity id
+                        # on legacy registrations) — keep the product block,
+                        # drop the foreign monograph, let review sort it out
+                        rec = quarantine_monograph(rec, reasons)
+                        recorder.note("spliced_page", f"id {pid}: {'; '.join(reasons)}")
+                        _STATE.quarantined += 1
                     batch.append(rec)
                     _STATE.products += 1
             if len(batch) >= 100:
