@@ -226,7 +226,8 @@ class LinkResult:
 
 def link_rows(rows: list[dict], catalog: list[CatalogRecord],
               enrichments: dict | None = None,
-              crosswalk: dict | None = None, insurer: str = "") -> list[LinkResult]:
+              crosswalk: dict | None = None, insurer: str = "",
+              code_registry: dict | None = None) -> list[LinkResult]:
     by_irc = {r.irc: r for r in catalog}
     by_gtin = {r.gtin: r for r in catalog if r.gtin}
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
@@ -287,8 +288,30 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                       or (d.get("status") == "confirmed" and d.get("irc") in by_irc)):
                 continue
 
-        canon, strengths, form, fa = _row_signals(name)
-        row_mg = _strength_mg(name)
+        # ── national-code resolver: the cross-insurer Rosetta stone ──────────
+        # Tier 1: a code the owner confirmed (for ANY insurer) resolves exactly.
+        # Tier 2: a richer name observed for the same code elsewhere (tamin's
+        # full «…100 mg CAPSULE…» vs salamat's bare «CICLOSPORIN») substitutes
+        # into the matching signals — the result still flows through normal
+        # scoring + review gates, so a bad join cannot silently apply.
+        match_name = name
+        code_assisted = False
+        if code_registry:
+            from .crosswalk import row_source_code
+            _code = row_source_code(row)
+            reg = code_registry.get(_code) if _code else None
+            if reg:
+                if reg.get("irc") and reg["irc"] in by_irc:
+                    out.append(LinkResult(row, by_irc[reg["irc"]], 1.0, "code"))
+                    continue
+                rich = str(reg.get("name") or "")
+                if len(rich) > len(name) + 4:      # meaningfully more specified
+                    match_name = rich
+                    code_assisted = True
+
+        canon, strengths, form, fa = _row_signals(match_name)
+        row_mg = _strength_mg(match_name)
+        name = match_name  # downstream narrowing (pack/pen) reads the rich name
 
         # ── approved-enrichment augmentation ──────────────────────────────────
         # A vague brand row («ویتامین آ-تداژل») carries no generic/form/strength,
@@ -392,6 +415,13 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                 if fa_sim > best[0]:
                     best = (fa_sim, rec, "persian_name")
         score, rec, method = best
+        if code_assisted and rec is not None:
+            # Signals came from the code-joined rich name. Review-first: a
+            # cross-insurer join is powerful but NEW evidence — cap under the
+            # auto-apply threshold so the owner confirms each pairing once;
+            # the crosswalk then makes it permanent (and tier-1 thereafter).
+            method = f"{method}+code"
+            score = min(score, 0.74)
         out.append(LinkResult(row, rec if score >= 0.45 else None,
                               round(score, 3), method))
     return out

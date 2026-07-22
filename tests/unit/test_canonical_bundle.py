@@ -100,3 +100,61 @@ def test_snapshot_capture_and_bundle_roundtrip(tmp_path):
         await eng.dispose()
 
     asyncio.get_event_loop().run_until_complete(run())
+
+
+def test_code_registry_richest_name_and_confirmed_irc_only():
+    """The national-code registry keeps the LONGEST observed name per code
+    (across insurers) and attaches IRCs only from confirmed decisions."""
+    url = _db_or_skip()
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from shared.models.crosswalk import CrosswalkEntry
+    from shared.models.formulary_snapshot import FormularySnapshot
+    from services.core.drug_catalog.coverage_harvest import save_snapshots
+    from services.core.drug_catalog.crosswalk import build_code_registry, record_decision
+
+    run_id = uuid.uuid4()
+
+    async def run():
+        eng = create_async_engine(url)
+        S = async_sessionmaker(eng, expire_on_commit=False)
+        async with S() as db:
+            for ins in ("regtest_a", "regtest_b"):
+                await db.execute(delete(FormularySnapshot).where(
+                    FormularySnapshot.insurer == ins))
+                await db.execute(delete(CrosswalkEntry).where(
+                    CrosswalkEntry.insurer == ins))
+            await db.commit()
+
+            # regtest_a truncates (salamat-style); regtest_b publishes rich names
+            await save_snapshots(db, run_id, "regtest_a", [
+                {"drug_name": "CICLOSPORIN", "generic_code": "90287"},
+            ])
+            await save_snapshots(db, run_id, "regtest_b", [
+                {"drug_name": "CICLOSPORIN 100 mg CAPSULE, LIQUID FILLED ORAL",
+                 "drug_code": "90287"},
+                {"drug_name": "PLAIN ITEM", "drug_code": "90001"},
+            ])
+            # confirmed → irc lands in the registry; rejected must NOT
+            await record_decision(db, insurer="regtest_b", raw_name="PLAIN ITEM",
+                                  irc="__REGT__", status="confirmed",
+                                  source_code="90001")
+            await record_decision(db, insurer="regtest_a", raw_name="CICLOSPORIN",
+                                  irc=None, status="rejected", source_code="90287",
+                                  reason="wrong_product")
+            await db.commit()
+
+            reg = await build_code_registry(db)
+            assert reg["90287"]["name"].startswith("CICLOSPORIN 100 mg")  # richest wins
+            assert "irc" not in reg["90287"]                    # rejected ≠ confirmed
+            assert reg["90001"] == {"name": "PLAIN ITEM", "irc": "__REGT__"}
+
+            for ins in ("regtest_a", "regtest_b"):
+                await db.execute(delete(FormularySnapshot).where(
+                    FormularySnapshot.insurer == ins))
+                await db.execute(delete(CrosswalkEntry).where(
+                    CrosswalkEntry.insurer == ins))
+            await db.commit()
+        await eng.dispose()
+
+    asyncio.get_event_loop().run_until_complete(run())

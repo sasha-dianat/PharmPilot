@@ -317,14 +317,16 @@ def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
                       overrides: dict | None, current: dict[str, dict],
                       min_confidence: float = 0.75,
                       enrichments: dict | None = None,
-                      crosswalk: dict | None = None) -> dict:
+                      crosswalk: dict | None = None,
+                      code_registry: dict | None = None) -> dict:
     roles = resolve_roles(rows, overrides)
     if "drug_name" not in roles.values() and "irc" not in roles.values():
         raise RuntimeError(
             f"ستون نام دارو یا IRC شناسایی نشد — ستون‌ها: {list(rows[0].keys())[:12] if rows else []}")
     normalized = normalize_rows(rows, roles)
     links = link_rows(normalized, catalog, enrichments=enrichments,
-                      crosswalk=crosswalk, insurer=insurer)
+                      crosswalk=crosswalk, insurer=insurer,
+                      code_registry=code_registry)
     # هوش تطبیق: the fitted model (owner-decision-calibrated) demotes matches
     # it distrusts — FS score or learned price band — into the review queue.
     from .match_intel import annotate_review_fs, load_model, verify_links
@@ -474,16 +476,18 @@ async def _run(source_id) -> None:
             _STATE.phase = "linking"
             catalog = await repo.fetch_all(db)
             current = await _current_coverage(db, src.insurer)
-            from .crosswalk import load_crosswalk
+            from .crosswalk import build_code_registry, load_crosswalk
             from .enrichment import load_approved
             enrichments = await load_approved(db)
             crosswalk = await load_crosswalk(db, src.insurer)
+            code_registry = await build_code_registry(db)
             _STATE.phase = "diffing"
             try:
                 payload = await asyncio.to_thread(
                     stage_run_payload, rows, catalog,
                     insurer=src.insurer, overrides=settings.get("column_overrides"),
-                    current=current, enrichments=enrichments, crosswalk=crosswalk)
+                    current=current, enrichments=enrichments, crosswalk=crosswalk,
+                    code_registry=code_registry)
             except Exception as pe:
                 recorder.note("parse_fail", f"{type(pe).__name__}: {pe}")
                 raise

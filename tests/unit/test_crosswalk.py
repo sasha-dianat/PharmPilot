@@ -75,6 +75,45 @@ def test_stale_confirmed_irc_falls_back_to_matching():
     assert link.matched and link.record.irc == "A1" and link.method != "crosswalk"
 
 
+def test_code_registry_tier1_confirmed_irc_resolves_exactly():
+    # Owner confirmed code 00287 (for ANY insurer) → exact match, conf 1.0.
+    cat = [_rec("A1"), _rec("B2", name_fa="ب")]
+    row = {"drug_name": "CICLOSPORIN", "generic_code": "00287"}
+    reg = {"00287": {"irc": "B2", "name": "CICLOSPORIN 100 mg CAPSULE"}}
+    link = link_rows([row], cat, code_registry=reg, insurer="salamat")[0]
+    assert link.matched and link.record.irc == "B2"
+    assert link.confidence == 1.0 and link.method == "code"
+
+
+def test_code_registry_tier2_rich_name_substitution_reviews_first():
+    # salamat's bare «CICLOSPORIN» + tamin's rich name for the same code:
+    # the row now matches the 100mg capsule — but as NEW evidence it is capped
+    # under auto-apply (0.74) so the owner confirms it once.
+    cat = [
+        _rec("C100", name_fa="سیکلوسپورین ۱۰۰", generic_name="ciclosporin",
+             dosage_form="CAPSULE", strength="100 mg"),
+        _rec("C25", name_fa="سیکلوسپورین ۲۵", generic_name="ciclosporin",
+             dosage_form="CAPSULE", strength="25 mg"),
+    ]
+    row = {"drug_name": "CICLOSPORIN", "generic_code": "00287"}
+    reg = {"00287": {"name": "CICLOSPORIN 100 mg CAPSULE, LIQUID FILLED ORAL"}}
+    link = link_rows([row], cat, code_registry=reg, insurer="salamat")[0]
+    assert link.matched and link.record.irc == "C100"      # right strength picked
+    assert link.method.endswith("+code")
+    assert link.confidence <= 0.74                          # review-first, never auto-apply
+
+
+def test_code_registry_absent_or_unknown_code_changes_nothing():
+    cat = [_rec("A1")]
+    row = {"drug_name": "METFORMIN 500 TABLET", "generic_code": "99999"}
+    plain = link_rows([row], cat)[0]
+    with_reg = link_rows([row], cat, code_registry={"11111": {"name": "x"}},
+                         insurer="salamat")[0]
+    assert with_reg.matched == plain.matched
+    assert with_reg.confidence == plain.confidence
+    assert "+code" not in with_reg.method
+
+
 def test_overrides_reassert_over_source_values():
     rec = _rec("A1", country="China", announced_price=Decimal("1000"))
     out = apply_overrides(rec, {"A1": {"country": "ایران",

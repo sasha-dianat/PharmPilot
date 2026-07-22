@@ -17,8 +17,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-# Source-row columns that may carry an insurer's own identifier.
-SOURCE_CODE_FIELDS = ("source_code", "drug_code", "insurer_code", "code")
+# Source-row columns that may carry an insurer's own identifier. generic_code
+# is the NORMALIZED role both tamin (drug_code) and salamat (generic_code) map
+# into — the shared national code space.
+SOURCE_CODE_FIELDS = ("generic_code", "source_code", "drug_code", "insurer_code", "code")
 
 
 def row_source_code(row: dict | None) -> str | None:
@@ -112,6 +114,42 @@ async def record_run_decisions(db, run, accepted: set, *, staff_id=None) -> dict
         elif res == "updated":
             updated += 1
     return {"crosswalk_created": created, "crosswalk_updated": updated}
+
+
+# ── national-code registry: the cross-insurer Rosetta stone ─────────────────
+# Discovery (2026-07-22): salamat's generic_code and tamin's drug_code are the
+# SAME national code space. salamat truncates names to the bare generic
+# («CICLOSPORIN» ×16 rows) while tamin publishes the full identity
+# («CICLOSPORIN 100 mg CAPSULE…») — so the richest observed name per code lets
+# a truncated row match with full form/strength signals, and one owner
+# confirmation on a code resolves it for EVERY insurer that uses that code.
+
+async def build_code_registry(db) -> dict[str, dict]:
+    """→ {code: {"name": richest observed name, "irc": owner-confirmed irc?}}.
+    Names come from formulary snapshots across ALL insurers (longest = most
+    specified); IRCs only from confirmed crosswalk entries — never guessed."""
+    from sqlalchemy import select
+    from shared.models.crosswalk import CrosswalkEntry
+    from shared.models.formulary_snapshot import FormularySnapshot
+
+    reg: dict[str, dict] = {}
+    snaps = (await db.execute(
+        select(FormularySnapshot.source_code, FormularySnapshot.raw_name)
+        .where(FormularySnapshot.source_code.isnot(None)))).all()
+    for code, name in snaps:
+        if not code or not name:
+            continue
+        cur = reg.setdefault(str(code), {})
+        if len(str(name)) > len(cur.get("name") or ""):
+            cur["name"] = str(name)
+    confirmed = (await db.execute(
+        select(CrosswalkEntry.source_code, CrosswalkEntry.irc)
+        .where(CrosswalkEntry.status == "confirmed",
+               CrosswalkEntry.source_code.isnot(None),
+               CrosswalkEntry.irc.isnot(None)))).all()
+    for code, irc in confirmed:
+        reg.setdefault(str(code), {})["irc"] = irc
+    return reg
 
 
 # ── field overrides: corrections that re-apply after every crawl ─────────────
