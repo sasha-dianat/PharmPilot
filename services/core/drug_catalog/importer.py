@@ -57,7 +57,9 @@ _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890
 def normalize_header(h) -> str:
     """FDA/NFI headers use spaces + ZWNJ (نیم‌فاصله). Fold both to '_' and lower
     so 'قیمت مصرف‌کننده' → 'قیمت_مصرف_کننده' to match the alias table."""
-    s = str(h).strip().lower().replace("‌", "_")   # ZWNJ → _
+    # BOM survives pandas' default utf-8 read of a utf-8-sig CSV and would make
+    # the first column ('﻿drug_code') invisible to every alias/role lookup
+    s = str(h).replace("﻿", "").strip().lower().replace("‌", "_")   # ZWNJ → _
     return re.sub(r"\s+", "_", s)
 
 

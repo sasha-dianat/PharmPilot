@@ -316,3 +316,49 @@ def test_diagnose_catalog_gaps_appended():
     assert any("کشور نامشخص" in h for h in hints)
     assert any("ژنریک نامشخص" in h for h in hints)
     assert any("کد ATC" in h for h in hints)
+
+
+# ── staged manual upload: extraction + multi-file merge ──────────────────────
+from services.core.drug_catalog.coverage_harvest import merge_row_sets, rows_from_upload
+
+
+def test_rows_from_upload_json_list_and_wrapped():
+    rows = [{"drug_name": "A", "drug_code": "1"}, {"drug_name": "B"}]
+    assert rows_from_upload("x.json", json.dumps(rows).encode()) == rows
+    # container key is unknown → the LARGEST list-of-dicts wins
+    doc = {"meta": {"n": 2}, "small": [{"k": 1}], "records": rows}
+    assert rows_from_upload("x.json", json.dumps(doc, ensure_ascii=False).encode()) == rows
+    assert rows_from_upload("x.json", b"not json {") == []
+
+
+def test_rows_from_upload_csv_still_works():
+    body = "drug_code,drug_name\n01211,METFORMIN 500\n".encode()
+    rows = rows_from_upload("tamin.csv", body)
+    assert rows and rows[0]["drug_name"] == "METFORMIN 500"
+
+
+def test_merge_row_sets_joins_by_code_and_fills_gaps():
+    # tamin .json has prices; .csv has share% — one merged row per code,
+    # earlier file wins conflicts
+    json_rows = [{"drug_code": "1", "drug_name": "METFORMIN 500",
+                  "price": "21000", "share": ""}]
+    csv_rows = [{"drug_code": "1", "drug_name": "metformin-500-alt",
+                 "share": "70"},
+                {"drug_code": "2", "drug_name": "OTHER"}]
+    merged = merge_row_sets([json_rows, csv_rows])
+    by_code = {r["drug_code"]: r for r in merged}
+    assert len(merged) == 2
+    assert by_code["1"]["drug_name"] == "METFORMIN 500"   # first file wins
+    assert by_code["1"]["price"] == "21000"
+    assert by_code["1"]["share"] == "70"                  # empty filled from csv
+    assert by_code["2"]["drug_name"] == "OTHER"
+
+
+def test_merge_row_sets_codeless_deduped_by_name():
+    a = [{"drug_name": "HERBAL X"}]
+    b = [{"drug_name": "HERBAL X"}, {"drug_name": "HERBAL Y"}]
+    names = sorted(r["drug_name"] for r in merge_row_sets([a, b]))
+    assert names == ["HERBAL X", "HERBAL Y"]
+    # single set passes through untouched
+    assert merge_row_sets([a]) == a
+    assert merge_row_sets([]) == []

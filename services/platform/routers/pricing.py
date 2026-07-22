@@ -465,6 +465,42 @@ async def start_coverage_harvest(source_id: UUID,
         raise HTTPException(status_code=409, detail=str(e))
 
 
+@router.post("/coverage/upload-run")
+async def coverage_upload_run(files: list[UploadFile] = File(...),
+                              insurer: str = "tamin",
+                              staff: Staff = Depends(require_permission("inventory:write")),
+                              db: AsyncSession = Depends(get_db)):
+    """Staged manual upload: extract rows from one or MORE files of the same
+    دارونامه (e.g. tamin's .json + .csv — merged by the insurer's drug code,
+    empty fields filled across files), then run the full staging pipeline
+    (crosswalk → national-code registry → linking → snapshots) as a background
+    CoverageRun for review — identical to a crawl, minus the network."""
+    from services.core.drug_catalog import coverage_harvest as ch
+
+    ok_suffixes = (".xlsx", ".xlsm", ".xls", ".csv", ".tsv", ".html", ".htm", ".json")
+    row_sets, names, per_file = [], [], []
+    for f in files:
+        suffix = os.path.splitext(f.filename or "")[1].lower()
+        if suffix and suffix not in ok_suffixes:
+            raise HTTPException(status_code=400,
+                                detail=f"قالب پشتیبانی‌نشده: {f.filename}")
+        body = await f.read()
+        rows = ch.rows_from_upload(f.filename or "", body)
+        row_sets.append(rows)
+        names.append(f.filename or "file")
+        per_file.append({"file": f.filename, "rows": len(rows)})
+    merged = ch.merge_row_sets(row_sets)
+    if not merged:
+        raise HTTPException(status_code=422,
+                            detail={"message": "هیچ ردیفی از فایل(ها) استخراج نشد.",
+                                    "files": per_file})
+    try:
+        state = await ch.start_upload(db, insurer, merged, names)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"state": state, "files": per_file, "merged_rows": len(merged)}
+
+
 @router.get("/coverage/harvest/status")
 async def coverage_harvest_status(staff: Staff = Depends(require_permission("inventory:read"))):
     from services.core.drug_catalog import coverage_harvest as ch

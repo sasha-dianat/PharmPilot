@@ -4,7 +4,7 @@
  * global proxy lock, staged runs with a diff vs live coverage, and preview→اعمال.
  * The one-shot upload card (instant apply) also lives here, moved from DrugCatalogAdmin.
  */
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { pricingApi, apiErrorText } from '../lib/api'
 
@@ -489,35 +489,93 @@ function RunPreview({ runId, onDone, onError }: {
   )
 }
 
+const UPLOAD_PHASE_FA: Record<string, string> = {
+  starting: 'در حال آماده‌سازی…', fetching: 'در حال دریافت…',
+  linking: 'در حال تطبیق با کاتالوگ…', diffing: 'در حال مقایسه با پوشش فعلی…',
+  saving: 'در حال ذخیرهٔ اجرا…', done: 'انجام شد', failed: 'ناموفق',
+}
+
 function UploadCard({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void }) {
   const qc = useQueryClient()
   const covRef = useRef<HTMLInputElement>(null)
   const [covInsurer, setCovInsurer] = useState('tamin')
+  const [files, setFiles] = useState<File[]>([])
   const [busy, setBusy] = useState(false)
-  const importCoverage = async (file: File) => {
-    setBusy(true)
+  const [tracking, setTracking] = useState(false)   // our upload is the running job
+  const [fileStats, setFileStats] = useState<{ file: string; rows: number }[] | null>(null)
+
+  // shared harvest state — the staged upload runs through the same machinery
+  const { data: hs } = useQuery<{ running: boolean; phase: string; rows: number;
+                                  insurer: string; error: string | null; run_id: string | null }>({
+    queryKey: ['coverage-harvest-status'],
+    queryFn: () => pricingApi.coverageHarvestStatus().then(r => r.data),
+    refetchInterval: q => (q.state.data?.running ? 2_000 : 15_000),
+    enabled: tracking,
+  })
+  useEffect(() => {
+    if (!tracking || !hs || hs.running) return
+    setTracking(false)
+    qc.invalidateQueries({ queryKey: ['coverage-runs'] })
+    if (hs.phase === 'done') {
+      onMsg({ kind: 'ok', text: 'پردازش کامل شد — اجرای جدید در تب «اجراها» آمادهٔ بازبینی است.' })
+    } else if (hs.error) {
+      onMsg({ kind: 'err', text: `پردازش ناموفق: ${hs.error}` })
+    }
+  }, [tracking, hs, qc, onMsg])
+
+  const start = async () => {
+    if (!files.length) return
+    setBusy(true); setFileStats(null)
     try {
-      const { data } = await pricingApi.importCoverage(file, covInsurer)
-      onMsg({ kind: 'ok', text: `پوشش بیمه برای ${fa(data.stats.products_updated)} قلم اعمال شد (${fa(data.stats.review)} بازبینی، ${fa(data.stats.unmatched)} نامنطبق).` })
-      qc.invalidateQueries({ queryKey: ['coverage-runs'] })
+      const { data } = await pricingApi.uploadCoverageRun(files, covInsurer)
+      setFileStats(data.files)
+      setTracking(true)
+      qc.invalidateQueries({ queryKey: ['coverage-harvest-status'] })
+      onMsg({ kind: 'ok', text: `${fa(data.merged_rows)} ردیف استخراج و ادغام شد — پردازش در پس‌زمینه آغاز شد.` })
+      setFiles([]); if (covRef.current) covRef.current.value = ''
     } catch (e: unknown) {
       onMsg({ kind: 'err', text: apiErrorText(e, 'بارگذاری دارونامه ناموفق بود.') })
-    } finally { setBusy(false); if (covRef.current) covRef.current.value = '' }
+    } finally { setBusy(false) }
   }
+
+  const working = busy || (tracking && !!hs?.running)
   return (
     <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
-      <p className="font-semibold text-sm">بارگذاری دستی دارونامه (اعمال فوری)</p>
-      <p className="text-[11px] text-slate-500">فایل Excel/CSV یا صفحه HTML ذخیره‌شده — موارد کم‌اطمینان اعمال نمی‌شوند.</p>
-      <div className="flex items-center gap-3 text-sm">
-        <select value={covInsurer} onChange={e => setCovInsurer(e.target.value)} disabled={busy}
+      <p className="font-semibold text-sm">بارگذاری دستی دارونامه (اجرای مرحله‌ای)</p>
+      <p className="text-[11px] text-slate-500">
+        Excel/CSV/JSON یا صفحه HTML ذخیره‌شده — چند فایل از یک دارونامه (مثلاً ‎.json و ‎.csv تأمین)
+        با کد دارو ادغام می‌شوند. نتیجه به‌صورت اجرای قابل بازبینی در تب «اجراها» ظاهر می‌شود.
+      </p>
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <select value={covInsurer} onChange={e => setCovInsurer(e.target.value)} disabled={working}
           className="bg-slate-900 border border-slate-600 rounded px-2 py-1">
           <option value="tamin">تأمین اجتماعی</option>
           <option value="salamat">بیمه سلامت</option>
           <option value="armed_forces">نیروهای مسلح</option>
         </select>
-        <input ref={covRef} type="file" accept=".xlsx,.xls,.csv,.tsv,.html,.htm" className="text-sm text-slate-300"
-          onChange={e => { const f = e.target.files?.[0]; if (f) importCoverage(f) }} disabled={busy} />
+        <input ref={covRef} type="file" multiple accept=".xlsx,.xls,.csv,.tsv,.html,.htm,.json"
+          className="text-sm text-slate-300" disabled={working}
+          onChange={e => setFiles(Array.from(e.target.files || []))} />
+        <button onClick={start} disabled={working || !files.length}
+          className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">
+          🚀 بارگذاری و پردازش
+        </button>
       </div>
+      {files.length > 0 && !working && (
+        <ul className="text-[11px] text-slate-400 space-y-0.5">
+          {files.map(f => <li key={f.name}>📄 {f.name} — {fa(Math.max(1, Math.round(f.size / 1024)))} KB</li>)}
+        </ul>)}
+      {working && (
+        <div className="flex items-center gap-2 text-xs text-cyan-300">
+          <span className="inline-block w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+          <span>{busy ? 'در حال بارگذاری فایل(ها)…'
+                      : (UPLOAD_PHASE_FA[hs?.phase || ''] || hs?.phase)}{' '}
+            {!busy && hs?.rows ? `· ${fa(hs.rows)} ردیف` : ''}</span>
+        </div>)}
+      {fileStats && (
+        <div className="text-[11px] text-slate-400">
+          {fileStats.map(s => <span key={s.file} className="ml-3">📄 {s.file}: {fa(s.rows)} ردیف</span>)}
+        </div>)}
     </div>
   )
 }

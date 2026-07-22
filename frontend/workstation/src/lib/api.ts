@@ -159,6 +159,11 @@ export const pricingApi = {
     return apiClient.post('/pricing/coverage/import', fd,
       { params: { insurer }, headers: { 'Content-Type': undefined } })
   },
+  uploadCoverageRun: (files: File[], insurer: string) => {
+    const fd = new FormData(); files.forEach(f => fd.append('files', f))
+    return apiClient.post('/pricing/coverage/upload-run', fd,
+      { params: { insurer }, headers: { 'Content-Type': undefined } })
+  },
   nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),

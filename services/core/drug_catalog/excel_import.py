@@ -53,7 +53,8 @@ def _read_excel(path: Path) -> list[dict]:
 def _read_csv(path: Path, sep=None) -> list[dict]:
     try:
         import pandas as pd
-        df = pd.read_csv(path, dtype=str, sep=sep, engine="python")
+        df = pd.read_csv(path, dtype=str, sep=sep, engine="python",
+                         encoding="utf-8-sig")
         return df.to_dict(orient="records")
     except Exception:
         # stdlib fallback (no pandas)

@@ -27,7 +27,7 @@ from .harvest_diagnostics import DiagnosticRecorder, wrap_fetch
 _DIFF_FIELDS = ("covered", "share_pct", "reference_price", "ceiling")
 _SAMPLE_CAP = 50
 
-STRATEGIES = ("auto", "file_url", "html_table", "paginated_html", "json_api")
+STRATEGIES = ("auto", "file_url", "html_table", "paginated_html", "json_api", "manual")
 
 
 # ── fetching ─────────────────────────────────────────────────────────────────
@@ -87,6 +87,70 @@ def _rows_from_bytes(body: bytes, content_type: str, url: str) -> list[dict]:
         return read_table(tmp.name)
     finally:
         os.unlink(tmp.name)
+
+
+def _json_rows(doc) -> list[dict]:
+    """Record list from an uploaded JSON document: a bare list of dicts, or the
+    LARGEST list-of-dicts found one level deep (harvest exports wrap rows in a
+    container key we shouldn't have to know the name of)."""
+    if isinstance(doc, list):
+        return [r for r in doc if isinstance(r, dict)]
+    best: list[dict] = []
+    if isinstance(doc, dict):
+        for v in doc.values():
+            if isinstance(v, list):
+                rows = [r for r in v if isinstance(r, dict)]
+                if len(rows) > len(best):
+                    best = rows
+    return best
+
+
+def rows_from_upload(filename: str, body: bytes) -> list[dict]:
+    """Rows from a manually uploaded file. Adds .json to the formats the URL
+    strategies already handle (Excel/CSV/HTML via read_table)."""
+    name = (filename or "").lower()
+    head = body.lstrip()[:1]
+    if name.endswith(".json") or head in (b"{", b"["):
+        try:
+            return _json_rows(json.loads(body))
+        except json.JSONDecodeError:
+            if name.endswith(".json"):
+                return []
+    return _rows_from_bytes(body, "", filename or "upload.csv")
+
+
+def merge_row_sets(row_sets: list[list[dict]]) -> list[dict]:
+    """Merge rows from several files of the SAME formulary (e.g. tamin's .json
+    + .csv exports): rows sharing an insurer code become ONE row whose empty
+    fields are filled from the later file — earlier files win conflicts, so
+    select the richest file first. Codeless rows are kept, deduped by name."""
+    from .crosswalk import row_source_code
+    if len(row_sets) <= 1:
+        return row_sets[0] if row_sets else []
+    by_code: dict[str, dict] = {}
+    codeless: list[dict] = []
+    seen_names: set[str] = set()
+    for rows in row_sets:
+        for r in rows:
+            code = row_source_code(r)
+            if code:
+                base = by_code.get(code)
+                if base is None:
+                    by_code[code] = dict(r)
+                else:
+                    for k, v in r.items():
+                        if v not in (None, "") and base.get(k) in (None, ""):
+                            base[k] = v
+            else:
+                name = next((str(r[f]).strip() for f in
+                             ("drug_name", "name", "generic_name", "title")
+                             if r.get(f)), "")
+                if name and name in seen_names:
+                    continue
+                if name:
+                    seen_names.add(name)
+                codeless.append(r)
+    return list(by_code.values()) + codeless
 
 
 def _descend(obj, path: str):
@@ -415,6 +479,7 @@ class CoverageHarvestState:
 
 
 _STATE = CoverageHarvestState()
+_UPLOAD_ROWS: list[dict] | None = None      # handoff: start_upload → _run("manual")
 
 
 def status() -> dict:
@@ -458,17 +523,26 @@ async def _run(source_id) -> None:
 
             settings = src.settings or {}
             recorder = DiagnosticRecorder("coverage", src.insurer, mode="all")
-            fetch = make_fetcher(settings.get("proxy"), recorder=recorder)
-            strategy = src.strategy
-            if strategy == "auto":
-                s, body, ct = fetch(src.url)
-                if s != 200 or not body:
-                    raise RuntimeError(f"HTTP {s} از مقصد — پروکسی ایران در دسترس نیست یا آدرس اشتباه است")
-                strategy = sniff_strategy(body, ct, src.url)
-
-            _STATE.phase = "fetching"
             import asyncio
-            rows, pages = await asyncio.to_thread(fetch_rows, src.url, strategy, settings, fetch)
+            if src.strategy == "manual":
+                # uploaded rows were handed off by start_upload — no network
+                global _UPLOAD_ROWS
+                rows, pages = (_UPLOAD_ROWS or []), 0
+                _UPLOAD_ROWS = None
+                recorder.note("manual_upload",
+                              f"{len(rows)} ردیف از فایل(های) بارگذاری‌شده: "
+                              f"{settings.get('last_upload', '')}")
+            else:
+                fetch = make_fetcher(settings.get("proxy"), recorder=recorder)
+                strategy = src.strategy
+                if strategy == "auto":
+                    s, body, ct = fetch(src.url)
+                    if s != 200 or not body:
+                        raise RuntimeError(f"HTTP {s} از مقصد — پروکسی ایران در دسترس نیست یا آدرس اشتباه است")
+                    strategy = sniff_strategy(body, ct, src.url)
+
+                _STATE.phase = "fetching"
+                rows, pages = await asyncio.to_thread(fetch_rows, src.url, strategy, settings, fetch)
             _STATE.pages, _STATE.rows = pages, len(rows)
             if not rows:
                 recorder.note("empty_result", "دریافت شد ولی هیچ ردیفی استخراج نشد.")
@@ -550,6 +624,43 @@ def start_harvest(source_id, insurer: str) -> dict:
                                   insurer=insurer, phase="starting",
                                   started_at=time.time())
     asyncio.create_task(_run(source_id))
+    return _STATE.snapshot()
+
+
+async def start_upload(db, insurer: str, rows: list[dict], filenames: list[str]) -> dict:
+    """Stage a manually uploaded دارونامه through the SAME pipeline as a crawl
+    (crosswalk → code registry → linking → snapshots → review run) instead of
+    the legacy instant-apply path. Uses a per-insurer synthetic source
+    (strategy='manual', disabled) so the run has a home in اجراها."""
+    global _STATE, _UPLOAD_ROWS
+    import asyncio
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageSource
+
+    if _STATE.running:
+        raise RuntimeError("یک برداشت پوشش در حال اجراست.")
+    if not rows:
+        raise RuntimeError("هیچ ردیفی از فایل(ها) استخراج نشد.")
+    src = (await db.execute(select(CoverageSource).where(
+        CoverageSource.insurer == insurer,
+        CoverageSource.strategy == "manual"))).scalar_one_or_none()
+    if src is None:
+        src = CoverageSource(insurer=insurer, name=f"بارگذاری دستی ({insurer})",
+                             url=None, strategy="manual", enabled=False,
+                             settings={})
+        db.add(src)
+    src.settings = {**(src.settings or {}), "last_upload": "، ".join(filenames)[:300]}
+    await db.commit()
+    await db.refresh(src)
+
+    owner = f"coverage:{insurer}"
+    if not harvest_lock.acquire(owner):
+        raise RuntimeError(f"قفل برداشت در اختیار دیگری است: {harvest_lock.holder()}")
+    _UPLOAD_ROWS = rows
+    _STATE = CoverageHarvestState(running=True, source_id=str(src.id),
+                                  insurer=insurer, phase="starting",
+                                  rows=len(rows), started_at=time.time())
+    asyncio.create_task(_run(src.id))
     return _STATE.snapshot()
 
 
