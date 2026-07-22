@@ -168,3 +168,27 @@ def test_body_snippet_strips_nul_bytes(tmp_path):
     assert "\x00" not in att.body_snippet
     import json
     assert "\\u0000" not in json.dumps(rec.to_db(), ensure_ascii=False)
+
+
+def test_nfi_detail_page_with_late_content_is_ok_not_js_shell():
+    """Regression: NFI detail pages open with ~3KB of stylesheets/analytics/nav
+    scripts; the real content (<label> pairs, نام عمومی, the similar-products
+    <table>) sits far past the stored snippet. Judging only the head classified
+    valid 52KB drug pages as SPA shells."""
+    head = ("<!DOCTYPE html><html><head><title>متیل پردنیزولون استات</title>"
+            + '<link href="/Content/bootstrap.min.css" rel="stylesheet" />' * 40
+            + "</head><body><script>ga('send','pageview')</script>"
+            + '<div class="searchBack1"><ul><li>راهنما</li></ul></div>' * 30)
+    content = ('<label>نام عمومی</label><span>METHYLPREDNISOLONE ACETATE'
+               ' INJECTION 40 mg</span><table><tr><td>کشور</td></tr></table>')
+    body = (head + content + "</body></html>").encode()
+    assert len(body) > 3000                      # content beyond snippet reach
+    cat, sev, _ = classify(200, {}, body, None)
+    assert cat == "ok" and sev == "ok"
+
+
+def test_true_spa_shell_still_flagged():
+    body = ('<!DOCTYPE html><html><body><div id="root"></div>'
+            '<script src="/app.js"></script></body></html>').encode()
+    cat, _, _ = classify(200, {}, body, None)
+    assert cat == "js_shell_no_table"

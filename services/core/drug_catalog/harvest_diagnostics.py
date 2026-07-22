@@ -56,6 +56,11 @@ def classify(status: int, headers: dict, body: bytes, exception: str | None) -> 
         if "timed out" in exc or "timeout" in exc:
             return ("timeout", "error", HINTS["timeout"])
     text = (body[:SNIPPET_BYTES].decode("utf-8", "replace").lower()) if body else ""
+    # Structure verdicts must look at the WHOLE page (bounded), not the stored
+    # snippet: NFI detail pages open with kilobytes of stylesheets/nav scripts,
+    # and judging the head alone cried «SPA shell» on perfectly server-rendered
+    # drug pages (52KB, real content far past the snippet).
+    full = (body[:400_000].decode("utf-8", "replace").lower()) if body else ""
     loc = str(headers.get("Location") or headers.get("location") or "").lower()
     if status == 0:
         return ("transport_error", "error", HINTS["transport_error"])
@@ -74,9 +79,11 @@ def classify(status: int, headers: dict, body: bytes, exception: str | None) -> 
     if status >= 500:
         return ("server_error", "error", HINTS["server_error"])
     if status == 200:
-        if "<table" not in text and re.search(r'id="root"|id="app"|window\.__|<script', text):
+        # server-rendered content anywhere in the page ⇒ not a JS shell
+        rendered = ("<table" in full or "<label" in full or "نام عمومی" in full)
+        if not rendered and re.search(r'id="root"|id="app"|window\.__|<script', full):
             return ("js_shell_no_table", "warn", HINTS["js_shell_no_table"])
-        if "<table" not in text and re.search(r'type="password"', text):
+        if not rendered and re.search(r'type="password"', full):
             return ("login_wall", "warn", HINTS["login_wall"])
         return ("ok", "ok", HINTS["ok"])
     return ("unknown", "error", HINTS["unknown"])
