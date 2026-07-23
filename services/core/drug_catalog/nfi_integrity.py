@@ -297,9 +297,17 @@ async def apply_repairs(db, ircs: list[str], *, staff_id=None) -> dict:
         row.ingredient_key = ingredient_key(row.generic_name or "",
                                             row.strength or "",
                                             row.dosage_form or "")
+        # Coverage was matched against the OLD (foreign) identity — its
+        # reference_price/share belong to the other drug (ranitidine 150 tab
+        # wearing follitropin's 16,425,650﷼). Identity changed ⇒ that link is
+        # void; clear it so the next coverage run re-matches the true molecule.
+        # (ingredient_key changed too, so the stale entry could never self-heal.)
+        cleared_cov = bool(row.coverage)
+        row.coverage = None
         # the clinical texts belong to the OTHER drug — drop them, keep the audit trail
         row.monograph = {"integrity": {"spliced_page": True,
                                        "repaired": True,
+                                       "coverage_cleared": cleared_cov,
                                        "reasons": s["reasons"],
                                        "donor_irc": s["donor_irc"]}}
         repaired += 1

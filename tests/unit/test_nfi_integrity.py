@@ -126,12 +126,12 @@ def test_vocab_hygiene_and_gate_flag_healing_via_donor():
     from services.core.drug_catalog.nfi_integrity import (
         apply_repairs, audit, load_vocab)
 
-    def mk(irc, generic, atc, integ=None, gtin=None):
+    def mk(irc, generic, atc, integ=None, gtin=None, coverage=None):
         return DrugCatalogItem(
             irc=irc, name_fa="آواستین", brand_name="AVASTIN",
             generic_name=generic, ingredient_key=f"{generic}||injection",
             dosage_form="INJECTION", strength="", atc=atc, gtin=gtin,
-            manufacturer="Roche", source="nfi-itest",
+            manufacturer="Roche", source="nfi-itest", coverage=coverage,
             monograph={"integrity": integ} if integ else None)
 
     async def run():
@@ -144,7 +144,9 @@ def test_vocab_hygiene_and_gate_flag_healing_via_donor():
                 db.add(mk(f"__IT_CLEAN{i}__", "bevacizumab", "L01XC07"))
             db.add(mk("__IT_FLAGGED__", "avastin", None,
                       integ={"spliced_page": True,
-                             "reasons": ["generic: brand says avastin, monograph says bevacizumab"]}))
+                             "reasons": ["generic: brand says avastin, monograph says bevacizumab"]},
+                      # coverage matched against the OLD identity — must be voided on repair
+                      coverage={"tamin": {"covered": True, "reference_price": 16425650}}))
             await db.commit()
 
             vocab, _ = await load_vocab(db)
@@ -165,6 +167,9 @@ def test_vocab_hygiene_and_gate_flag_healing_via_donor():
                 DrugCatalogItem.irc == "__IT_FLAGGED__"))).scalar_one()
             assert row.generic_name == "bevacizumab" and row.atc == "L01XC07"
             assert row.monograph["integrity"]["repaired"] is True
+            # stale coverage (matched to the foreign identity) is voided
+            assert row.coverage is None
+            assert row.monograph["integrity"]["coverage_cleared"] is True
 
             # cleanup (incl. overrides written by the repair)
             from shared.models.crosswalk import FieldOverride
