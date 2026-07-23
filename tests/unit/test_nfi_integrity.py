@@ -102,3 +102,77 @@ def test_brand_helpers():
     assert brand_stated_form("ACETAMINOPHEN 125MG PED SUPP") == "SUPPOSITORY"
     assert brand_stated_form("GLUCAGEN 1 MG/1ML VIAL") == "INJECTION"
     assert brand_stated_form("PLAIN NAME") is None
+
+
+def test_vocab_hygiene_and_gate_flag_healing_via_donor():
+    """Regression (2026-07-23, the AVASTIN incident): trade names must never
+    enter the generic vocabulary, gate-rewritten rows must not vote, and a
+    gate-flagged row heals from its clean sibling."""
+    import asyncio, os
+    url = os.environ.get("DATABASE_URL",
+        "postgresql+asyncpg://pharmpilot:pharmpilot_dev@127.0.0.1:5433/pharmpilot_test")
+    try:
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        eng = create_async_engine(url)
+        async def ping():
+            async with eng.connect(): pass
+        asyncio.get_event_loop().run_until_complete(ping())
+    except Exception:
+        import pytest
+        pytest.skip("dev DB unreachable")
+
+    from sqlalchemy import delete, select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.nfi_integrity import (
+        apply_repairs, audit, load_vocab)
+
+    def mk(irc, generic, atc, integ=None, gtin=None):
+        return DrugCatalogItem(
+            irc=irc, name_fa="آواستین", brand_name="AVASTIN",
+            generic_name=generic, ingredient_key=f"{generic}||injection",
+            dosage_form="INJECTION", strength="", atc=atc, gtin=gtin,
+            manufacturer="Roche", source="nfi-itest",
+            monograph={"integrity": integ} if integ else None)
+
+    async def run():
+        S = async_sessionmaker(eng, expire_on_commit=False)
+        async with S() as db:
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.source == "nfi-itest"))
+            # clean siblings + one gate-rewritten victim
+            for i in range(3):
+                db.add(mk(f"__IT_CLEAN{i}__", "bevacizumab", "L01XC07"))
+            db.add(mk("__IT_FLAGGED__", "avastin", None,
+                      integ={"spliced_page": True,
+                             "reasons": ["generic: brand says avastin, monograph says bevacizumab"]}))
+            await db.commit()
+
+            vocab, _ = await load_vocab(db)
+            assert "avastin" not in vocab          # flagged row cannot vote
+            assert "bevacizumab" in vocab
+
+            rep = await audit(db, limit=100_000)
+            mine = {s["irc"]: s for s in rep["suspects"] if s["irc"].startswith("__IT_")}
+            assert set(mine) == {"__IT_FLAGGED__"}         # clean rows NOT flagged
+            s = mine["__IT_FLAGGED__"]
+            assert s["reasons"][0].startswith("gate:")
+            assert s["donor_irc"] and s["proposal"]["generic_name"] == "bevacizumab"
+            assert s["proposal"]["atc"] == "L01XC07"
+
+            res = await apply_repairs(db, ["__IT_FLAGGED__"])
+            assert res["repaired"] == 1
+            row = (await db.execute(select(DrugCatalogItem).where(
+                DrugCatalogItem.irc == "__IT_FLAGGED__"))).scalar_one()
+            assert row.generic_name == "bevacizumab" and row.atc == "L01XC07"
+            assert row.monograph["integrity"]["repaired"] is True
+
+            # cleanup (incl. overrides written by the repair)
+            from shared.models.crosswalk import FieldOverride
+            await db.execute(delete(FieldOverride).where(
+                FieldOverride.irc == "__IT_FLAGGED__"))
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.source == "nfi-itest"))
+            await db.commit()
+        await eng.dispose()
+
+    asyncio.get_event_loop().run_until_complete(run())

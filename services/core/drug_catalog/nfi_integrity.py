@@ -23,16 +23,28 @@ from .nfi import (brand_generic_tokens, brand_stated_form, brand_stated_generic,
 
 
 async def load_vocab(db) -> tuple[set[str], dict[str, set[str]]]:
-    """(known generic names, generic → ATC 4-prefix families) from the catalog
-    and formulary snapshots. The families keep synonym pairs quiet."""
-    from sqlalchemy import select
+    """(known generic names, generic → ATC 4-prefix families) from the catalog.
+
+    Vocabulary hygiene (hard-won, 2026-07-23):
+    - ONLY the catalog's own generic_name column qualifies — formulary raw
+      names are PRODUCT names, and ingesting them taught the checker that
+      trade names (AVASTIN) were generics, which made the gate falsely
+      quarantine clean rows (bevacizumab → 'avastin') during harvest.
+    - Rows the gate flagged and nobody repaired are EXCLUDED as sources:
+      their generic may itself be a gate-written brand token, and letting
+      them vote poisons the vocabulary with the gate's own mistakes."""
+    from sqlalchemy import select, or_, func
     from shared.models.drug_catalog import DrugCatalogItem
-    from shared.models.formulary_snapshot import FormularySnapshot
 
     vocab: set[str] = set()
     families: dict[str, set[str]] = {}
-    rows = (await db.execute(select(DrugCatalogItem.generic_name,
-                                    DrugCatalogItem.atc))).all()
+    flagged = func.coalesce(
+        DrugCatalogItem.monograph["integrity"]["spliced_page"].astext, "") == "true"
+    repaired = func.coalesce(
+        DrugCatalogItem.monograph["integrity"]["repaired"].astext, "") == "true"
+    rows = (await db.execute(
+        select(DrugCatalogItem.generic_name, DrugCatalogItem.atc)
+        .where(or_(~flagged, repaired)))).all()
     for g, atc in rows:
         g = str(g or "").lower().strip()
         if len(g) < 5:
@@ -46,13 +58,22 @@ async def load_vocab(db) -> tuple[set[str], dict[str, set[str]]]:
             vocab.add(first)
             if fam:
                 families.setdefault(first, set()).add(fam)
-    for (n,) in (await db.execute(select(FormularySnapshot.raw_name).distinct())).all():
-        toks = brand_generic_tokens(n)
-        if toks and len(toks[0]) >= 6:
-            vocab.add(toks[0])
-        if len(toks) >= 2:
-            vocab.add(" ".join(toks[:2]))
     return vocab, families
+
+
+# chemistry vocabulary too common to identify a drug — never grounds agreement
+_COMMON_CHEM_TOKENS = frozenset((
+    "acid", "sodium", "potassium", "calcium", "magnesium", "aluminum",
+    "aluminium", "hydrochloride", "sulfate", "sulphate", "acetate", "mesylate",
+    "maleate", "tartrate", "phosphate", "citrate", "chloride", "bromide",
+    "nitrate", "oxide", "hydroxide", "carbonate", "gluconate", "lactate",
+    "benzoate", "salicylate", "stearate", "succinate", "fumarate", "valerate",
+    "propionate", "palmitate", "dihydrate", "monohydrate", "trihydrate",
+    "anhydrous", "compound", "complex", "extract", "injection", "solution"))
+
+
+def _distinctive(tok: str) -> bool:
+    return len(tok) >= 6 and tok not in _COMMON_CHEM_TOKENS
 
 
 def _brand_key(brand, manufacturer) -> str | None:
@@ -90,7 +111,8 @@ async def audit(db, limit: int = 1000) -> dict:
         DrugCatalogItem.irc, DrugCatalogItem.name_fa, DrugCatalogItem.brand_name,
         DrugCatalogItem.generic_name, DrugCatalogItem.dosage_form,
         DrugCatalogItem.strength, DrugCatalogItem.atc, DrugCatalogItem.manufacturer,
-        DrugCatalogItem.gtin, DrugCatalogItem.announced_price)
+        DrugCatalogItem.gtin, DrugCatalogItem.announced_price,
+        DrugCatalogItem.monograph)
         .where(DrugCatalogItem.source.like("nfi%")))).all()
 
     from collections import Counter
@@ -101,8 +123,24 @@ async def audit(db, limit: int = 1000) -> dict:
                "strength": r.strength, "atc": r.atc, "manufacturer": r.manufacturer,
                "gtin": r.gtin,
                "announced_price": float(r.announced_price) if r.announced_price is not None else None}
+        integ = ((r.monograph or {}).get("integrity") or {}) if isinstance(r.monograph, dict) else {}
+        rec["_gate_flag"] = bool(integ.get("spliced_page")) and not integ.get("repaired")
+        rec["_gate_reasons"] = [str(x) for x in (integ.get("reasons") or [])]
         rec["_reasons"] = page_coherence(rec, vocab, families)
+        # gate-flagged rows join the suspect flow even when they now LOOK
+        # coherent — the gate may have rewritten generic from the brand token
+        # (correct for true splices, wrong for trade names like AVASTIN), and
+        # either way the row lost its monograph/ATC; a donor completes it.
+        if rec["_gate_flag"] and not rec["_reasons"]:
+            rec["_reasons"] = [f"gate: {x}" for x in rec["_gate_reasons"]] or ["gate: flagged"]
         rec["_cand"] = brand_stated_generic(rec.get("brand_name") or rec.get("name_fa"), vocab)
+        # the generic the ORIGINAL page's monograph stated, preserved in the
+        # gate's reason text — the strongest donor-agreement anchor for rows
+        # whose brand token turned out to be a trade name (AVASTIN, CELLCEPT)
+        import re as _re
+        rec["_orig_generic"] = next(
+            (m.group(1).strip().lower() for x in rec["_gate_reasons"]
+             if (m := _re.search(r"monograph says (.+)$", x))), None)
         checked.append(rec)
 
     # majority vote per stated-generic family: when MOST products whose brand
@@ -132,11 +170,17 @@ async def audit(db, limit: int = 1000) -> dict:
     # donor indexes over CLEAN rows only
     by_gtin = {r["gtin"]: r for r in clean if r.get("gtin")}
     by_brand_key: dict[str, dict] = {}
+    by_brand_token: dict[str, list[dict]] = {}
     prices_by_generic: dict[str, list[float]] = {}
     for r in clean:
         k = _brand_key(r.get("brand_name"), r.get("manufacturer"))
         if k and k not in by_brand_key:
             by_brand_key[k] = r
+        toks = brand_generic_tokens(r.get("brand_name"))
+        if toks:
+            bucket = by_brand_token.setdefault(toks[0], [])
+            if len(bucket) < 8:
+                bucket.append(r)
         g = str(r.get("generic_name") or "").lower()
         if g and r.get("announced_price"):
             prices_by_generic.setdefault(g, []).append(r["announced_price"])
@@ -144,16 +188,47 @@ async def audit(db, limit: int = 1000) -> dict:
     out = []
     for s in suspects[:limit]:
         bk = _brand_key(s.get("brand_name"), s.get("manufacturer"))
-        donor = by_gtin.get(s.get("gtin") or "") or (by_brand_key.get(bk) if bk else None)
-        if donor and s.get("_cand"):
-            # NFI reuses GTINs across unrelated products — a donor is only
-            # trusted when its generic agrees with what the brand string states
+
+        def _agrees(donor_rec) -> bool:
+            """NFI reuses GTINs across unrelated products — a donor is only
+            trusted when its generic agrees with what we independently know:
+            the brand-stated generic, or the original monograph generic the
+            gate recorded (CELLCEPT's GTIN donor was lamivudine without this).
+
+            Agreement demands a DISTINCTIVE shared stem. Matching on common
+            chemistry words was catastrophic: 'acid' ∈ 'sodium acid
+            pyrophosphate' once validated that donor for mycophenolic acid."""
             from difflib import SequenceMatcher
-            dg = str(donor.get("generic_name") or "").lower()
-            ok = any(t in dg for t in s["_cand"].split()) or \
-                SequenceMatcher(None, s["_cand"], dg[:len(s["_cand"]) + 8]).ratio() >= 0.7
-            if not ok:
+            dg = str(donor_rec.get("generic_name") or "").lower()
+            anchor = s.get("_cand") or s.get("_orig_generic")
+            if not anchor:
+                return True                      # nothing to check against
+            a_toks = [t for t in anchor.split() if _distinctive(t)]
+            d_toks = [t for t in dg.split() if _distinctive(t)]
+            if any(at == dt or at[:8] == dt[:8]      # exact or salt/ester stem
+                   for at in a_toks for dt in d_toks):
+                return True
+            return SequenceMatcher(None, anchor, dg).ratio() >= 0.75
+
+        donor = by_gtin.get(s.get("gtin") or "")
+        if donor and not _agrees(donor):
+            donor = None                         # GTIN reuse — try the brand key
+        if donor is None and bk:
+            donor = by_brand_key.get(bk)
+            if donor and not _agrees(donor):
                 donor = None
+        if donor is None:
+            # last resort: a clean row wearing the SAME brand token whose
+            # generic agrees with the anchor. This is what distinguishes a
+            # trade-name FP (clean AVASTIN rows are bevacizumab → restore)
+            # from a true splice (no clean LACTOSE row is haloperidol → the
+            # foreign monograph stays refused and the row goes to review).
+            toks = brand_generic_tokens(s.get("brand_name") or s.get("name_fa"))
+            cands = by_brand_token.get(toks[0], []) if toks else []
+            for c in sorted(cands, key=lambda x: x.get("atc") is None):
+                if _agrees(c):
+                    donor = c
+                    break
         derived = _derive_from_brand(s.get("brand_name") or s.get("name_fa") or "")
         if s.get("_cand"):
             derived["generic_name"] = s["_cand"]   # vocab-matched beats raw tokens
