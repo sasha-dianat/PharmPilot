@@ -239,3 +239,31 @@ def test_english_normalized_not_covered_is_false():
     links = link_rows(rows, CATALOG)
     cov = build_coverage(links, insurer="tamin", min_confidence=0.6)
     assert cov.applied["111"]["tamin"]["covered"] is False
+
+
+def test_num_takes_first_value_from_multi_value_cell():
+    """Regression: tamin packs tiered organization shares in one column as
+    "70%\\r90%" (سرپایی/بستری). Stripping the separators concatenated them into
+    7090 — an impossible share and, via the same parser, a 25000× price fault.
+    _num must take the FIRST value and keep thousand-separated numbers intact."""
+    from services.core.drug_catalog.coverage_import import _num
+    assert _num("70%\r90%") == 70.0
+    assert _num("46.42%\r80.34%\r90%") == 46.42
+    assert _num("100%\r70%") == 100.0
+    assert _num("90%\r100%") == 90.0
+    # single numbers with thousand separators survive whole (Latin + Persian)
+    assert _num("16,425,650") == 16425650.0
+    assert _num("۱۶٬۴۲۵٬۶۵۰") == 16425650.0
+    assert _num("") is None and _num("covered") is None
+
+
+def test_multi_share_row_yields_valid_coverage_share():
+    """End-to-end: a row whose share cell holds two tiers links and applies a
+    share ≤100, never the concatenation."""
+    row = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70%\r90%",
+           "reference_price": "8,000", "covered": "covered"}
+    links = link_rows([row], CATALOG)
+    cov = build_coverage(links, insurer="tamin", catalog=CATALOG)
+    entry = next(iter(cov.applied.values()))["tamin"]
+    assert entry["share_pct"] == 70 and entry["share_pct"] <= 100
+    assert entry["reference_price"] == 8000

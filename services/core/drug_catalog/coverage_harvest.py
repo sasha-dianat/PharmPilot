@@ -434,11 +434,9 @@ async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> in
     from .coverage_import import _to_bool
     from .crosswalk import row_source_code
 
-    def _num(v):
-        try:
-            return None if v in (None, "") else float(str(v).replace(",", ""))
-        except (TypeError, ValueError):
-            return None
+    # first numeric token — matches coverage_import._num so a multi-value cell
+    # (tamin "70%\r90%") is captured as 70, not dropped to None
+    from .coverage_import import _num
 
     n = 0
     for r in normalized or []:

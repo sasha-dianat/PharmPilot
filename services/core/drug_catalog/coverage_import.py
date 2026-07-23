@@ -68,12 +68,29 @@ _ALIASES_NORM: dict[str, tuple[str, ...]] = {
 }
 
 
-def _num(v) -> float | None:
+def _pure_num(v) -> float | None:
+    """A number ONLY if the whole cell is numeric (after stripping separators
+    and %). Used for column-role inference, where "ATORVASTATIN 20MG" must NOT
+    read as 20 — a drug-name column would otherwise look all-numeric."""
     s = re.sub(r"[,٬،%\s]", "", str(v).translate(_DIGIT_FIX))
+    if not s:
+        return None
     try:
-        return float(s) if s else None
+        return float(s)
     except ValueError:
         return None
+
+
+def _num(v) -> float | None:
+    """First numeric VALUE in a cell, for value extraction. A source cell may
+    pack SEVERAL values: tamin publishes tiered organization shares in one
+    column as "70%\\r90%" (سرپایی/بستری) — stripping the separators concatenated
+    them into 7090, an impossible share and a 25000× price fault downstream. We
+    strip only thousand separators (,٬،) so 16,425,650 stays one number, then
+    take the first number token; the full raw cell is kept in the snapshot row."""
+    s = re.sub(r"[,٬،]", "", str(v).translate(_DIGIT_FIX))
+    m = re.search(r"\d+(?:\.\d+)?", s)
+    return float(m.group()) if m else None
 
 
 # ── 1) column-role inference ──────────────────────────────────────────────────
@@ -86,7 +103,7 @@ def _value_role(values: list[str]) -> str | None:
     # binary-ish → covered flag
     if all(v in _TRUE_WORDS or v in _FALSE_WORDS for v in lowered):
         return "covered"
-    nums = [_num(v) for v in vals]
+    nums = [_pure_num(v) for v in vals]      # strict: whole cell must be numeric
     if all(n is not None for n in nums):
         ints = [n for n in nums if n is not None]
         if all(float(n).is_integer() and 0 < n <= 100 for n in ints):
