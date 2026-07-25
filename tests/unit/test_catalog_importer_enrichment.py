@@ -54,3 +54,74 @@ def test_upsert_values_includes_sticky_fields_when_present():
     values, update_cols = upsert_values(rec, source="nfi-harvest")
     assert update_cols["country"] == "دانمارک"
     assert update_cols["monograph"]["composition"]
+
+
+def test_recrawl_never_erases_a_price_or_its_provenance():
+    """The 2026-07-25 re-crawl wiped 728 prices and 1,843 provenance stamps: an
+    NFI page that omits a price wrote NULL over a good value, and monograph is
+    rebuilt per crawl so price_provenance was discarded. A re-import may FILL,
+    never ERASE — but a crawl that DOES supply a price legitimately replaces the
+    insurer-derived value and drops the now-obsolete stamp."""
+    import asyncio, os
+    from decimal import Decimal
+    import pytest
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    url = os.environ.get("DATABASE_URL",
+        "postgresql+asyncpg://pharmpilot:pharmpilot_dev@127.0.0.1:5433/pharmpilot_test")
+    eng = create_async_engine(url)
+    try:
+        async def ping():
+            async with eng.connect():
+                pass
+        asyncio.get_event_loop().run_until_complete(ping())
+    except Exception:
+        pytest.skip("dev DB unreachable")
+
+    from sqlalchemy import delete, select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.importer import upsert_catalog
+    from services.core.drug_catalog.schema import CatalogRecord
+
+    KEEP, REPL = "__RC_KEEP__", "__RC_REPL__"
+    PROV = {"announced": "insurer-derived", "source": "insurer-refresh:tamin",
+            "kind": "gap_fill", "previous": None, "at": "x", "note": "n"}
+
+    def crawled(irc, price):
+        return CatalogRecord(irc=irc, name_fa="د", generic_name="g",
+                             dosage_form="TABLET", strength="1 mg",
+                             announced_price=price,
+                             monograph={"indications": "fresh from the crawl"})
+
+    async def run():
+        S = async_sessionmaker(eng, expire_on_commit=False)
+        async with S() as db:
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([KEEP, REPL])))
+            for irc in (KEEP, REPL):
+                db.add(DrugCatalogItem(irc=irc, name_fa="د", generic_name="g",
+                    ingredient_key="g|1 mg|tablet", dosage_form="TABLET",
+                    strength="1 mg", announced_price=Decimal("50000"),
+                    source="insurer", monograph={"price_provenance": PROV}))
+            await db.commit()
+
+            # KEEP: the crawl has NO price → must not erase, stamp survives
+            # REPL: the crawl HAS a price → replaces it, stamp is dropped
+            await upsert_catalog(db, [crawled(KEEP, None), crawled(REPL, Decimal("77000"))],
+                                 source="nfi-harvest")
+            rows = {r.irc: r for r in (await db.execute(select(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([KEEP, REPL])))).scalars().all()}
+
+            assert int(rows[KEEP].announced_price) == 50000, "price was erased"
+            assert rows[KEEP].monograph["price_provenance"]["kind"] == "gap_fill"
+            assert rows[KEEP].monograph["indications"] == "fresh from the crawl"
+
+            assert int(rows[REPL].announced_price) == 77000, "real NFI price must win"
+            assert "price_provenance" not in (rows[REPL].monograph or {}), \
+                "an NFI-verified price is no longer insurer-derived"
+
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([KEEP, REPL])))
+            await db.commit()
+        await eng.dispose()
+
+    asyncio.get_event_loop().run_until_complete(run())

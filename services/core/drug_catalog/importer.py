@@ -162,8 +162,13 @@ def _clamp(field: str, v):
 
 # Nullable enrichment a source may not carry — omit from the UPDATE when None so
 # e.g. an Excel price import can't wipe NFI monographs or insurer coverage.
+# Fields a re-import may FILL but never ERASE. Prices are sticky because an NFI
+# page that simply omits a price would otherwise null a good value: the 2026-07-25
+# re-crawl wiped 728 prices this way, including gap-fills the owner had just
+# approved. A stale price with a visible announced_price_at beats no price.
 _STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
-                  "brand_owner", "license_valid_until")
+                  "brand_owner", "license_valid_until",
+                  "announced_price", "last_invoice_price")
 
 
 def apply_enrichment_gaps(rec: CatalogRecord, enrichments: dict) -> CatalogRecord:
@@ -213,6 +218,7 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
     When `enrichments` (owner-approved reference) is supplied, blank catalog
     fields are gap-filled from it before write — NFI values are never overwritten.
     Returns the number of rows written."""
+    from sqlalchemy import and_, case as sa_case, func, text
     from sqlalchemy.dialects.postgresql import insert
     from shared.models.drug_catalog import DrugCatalogItem
 
@@ -228,6 +234,20 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
             r = apply_overrides(r, overrides)
         values, update_cols = upsert_values(r, source=source)
         stmt = insert(DrugCatalogItem).values(**values)
+        # monograph is rebuilt from the crawled page, which would discard
+        # price_provenance — the record of a price being insurer-derived rather
+        # than NFI-verified (1,843 stamps were lost this way). Carry it across
+        # UNLESS this crawl actually supplies a price, in which case the value
+        # is NFI-verified now and the stamp should rightly disappear.
+        if "monograph" in update_cols:
+            existing = DrugCatalogItem.__table__.c.monograph
+            update_cols = {**update_cols, "monograph": sa_case(
+                (and_(existing.op("?")("price_provenance"),
+                      stmt.excluded.announced_price.is_(None)),
+                 func.coalesce(stmt.excluded.monograph, text("'{}'::jsonb")).op("||")(
+                     func.jsonb_build_object("price_provenance",
+                                             existing.op("->")("price_provenance")))),
+                else_=stmt.excluded.monograph)}
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)
         await session.execute(stmt)
         n += 1
