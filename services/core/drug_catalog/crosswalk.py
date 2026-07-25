@@ -73,9 +73,14 @@ async def record_decision(db, *, insurer: str, raw_name: str, irc: str | None,
     raw_key = enrich_key(raw_name)
     if not raw_key or status not in ("confirmed", "rejected"):
         return "skipped"
-    row = (await db.execute(select(CrosswalkEntry).where(
-        CrosswalkEntry.insurer == insurer,
-        CrosswalkEntry.raw_key == raw_key))).scalar_one_or_none()
+    # Keyed per CODED PRODUCT: salamat prints one truncated name («CICLOSPORIN»)
+    # for many distinct products, so a name-only key let each new decision
+    # overwrite the previous product's and sent the rest back to review forever.
+    q = select(CrosswalkEntry).where(CrosswalkEntry.insurer == insurer,
+                                     CrosswalkEntry.raw_key == raw_key)
+    q = q.where(CrosswalkEntry.source_code == source_code if source_code
+                else CrosswalkEntry.source_code.is_(None))
+    row = (await db.execute(q)).scalar_one_or_none()
     now = datetime.now(timezone.utc)
     if row is None:
         db.add(CrosswalkEntry(insurer=insurer, source_code=source_code, raw_key=raw_key,

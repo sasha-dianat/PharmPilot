@@ -212,7 +212,8 @@ async def _coverage_counts(db) -> dict[str, int]:
     from sqlalchemy import text
     from . import repo, structural_match as sm
     from .coverage_import import link_rows
-    from .crosswalk import build_code_registry
+    from .crosswalk import build_code_registry, load_crosswalk
+    from .enrichment import load_approved
 
     BULK = re.compile(r"\bBULK\b|فله|ترکيبي|ترکیبی", re.I)
     DEV = re.compile(r"\bROLL|GAUZE|SYRINGE|CATHETER|BANDAGE|SET\b|CONTAINER|"
@@ -235,7 +236,12 @@ async def _coverage_counts(db) -> dict[str, int]:
         rows = [r for r in (await db.execute(text(
             "SELECT row FROM formulary_snapshots WHERE run_id=:r"),
             {"r": rid})).scalars().all() if isinstance(r, dict)]
-        for l in link_rows(rows, catalog, insurer=ins, code_registry=reg):
+        # The board must see the DECIDED layer, exactly as a real staging run
+        # does — otherwise it keeps reporting rows the owner already confirmed
+        # (786 "awaiting confirmation" against a real review queue of 52).
+        for l in link_rows(rows, catalog, insurer=ins, code_registry=reg,
+                           crosswalk=await load_crosswalk(db, ins),
+                           enrichments=await load_approved(db)):
             nm = str(l.row.get("drug_name") or "")
             if l.matched:
                 if l.confidence >= 0.75:
