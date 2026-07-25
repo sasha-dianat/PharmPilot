@@ -321,3 +321,39 @@ def test_conditions_override_coverage_entry():
     e2 = next(iter(cov2.applied.values()))["salamat"]
     assert e2["share_pct"] == 90 and e2["inpatient"] is True
     assert set(e2["restrictions"]) >= {"inpatient_only", "specialist"}
+
+
+# ── ingredient-agreement floor: refuse a same-prefix DIFFERENT molecule ──────
+def test_ingredient_floor_refuses_same_prefix_different_drug():
+    """The 3-char prefix block is a speed optimization, never evidence of
+    identity. With agreeing strength+form, a same-prefix different MOLECULE used
+    to cross the review line — verified real cases: Rivanol (ethacridine
+    antiseptic) → rivaroxaban (anticoagulant), Perforan (St John's wort) →
+    perampanel, methylphenidate → metaproterenol, calcium folinate → calcitonin.
+    True equivalences are handled by canonical_ingredient, so a low score here
+    means a different drug and the honest answer is unmatched."""
+    from services.core.drug_catalog.coverage_import import INGREDIENT_FLOOR
+    cat = [
+        _cat("R1", "rivaroxaban", "10 mg", "TABLET", 500000, "ریواروکسابان"),
+        _cat("P1", "perampanel", "4 mg", "TABLET", 900000, "پرامپانل"),
+        _cat("M1", "metaproterenol sulfate", "20 mg", "TABLET", 9000, "متاپروترنول"),
+        _cat("C1", "calcitonin", "50 mg/1mL", "INJECTION", 300000, "کلسیتونین"),
+    ]
+    for name in ("RIVANOL 0.1% SOLUTION", "PERFORAN 4 mg TABLET ORAL",
+                 "METHYLPHENIDATE HYDROCHLORIDE 20 mg TABLET ORAL",
+                 "CALCIUM FOLINATE 50 mg/1mL INJECTION PARENTERAL"):
+        link = link_rows([{"drug_name": name}], cat)[0]
+        assert not link.matched, f"{name} wrongly matched {link.record and link.record.generic_name}"
+    # a genuine salt/acid pair (0.692) and a spelling variant still match
+    cat2 = [_cat("A1", "alendronic acid", "70 mg", "TABLET", 50000, "آلندرونیک")]
+    assert link_rows([{"drug_name": "ALENDRONATE (AS SODIUM) 70 mg TABLET ORAL"}], cat2)[0].matched
+    assert INGREDIENT_FLOOR == 0.66
+
+
+def test_header_row_restated_as_data_is_not_a_product():
+    """Iranian sheets restate «نام ژنريک» mid-table; it was matching nandrolone."""
+    cat = [_cat("N1", "nandrolone decanoate", "25 mg", "INJECTION", 90000, "ناندرودک")]
+    link = link_rows([{"drug_name": "نام ژنريک"}], cat)[0]
+    assert not link.matched and link.method == "header_row"
+    # a real product name is unaffected
+    assert link_rows([{"drug_name": "METFORMIN 500 TABLET"}], CATALOG)[0].matched

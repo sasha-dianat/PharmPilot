@@ -75,6 +75,19 @@ _FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "�
 
 _MONEY_WORDS = ("قیمت", "مبلغ", "بها", "price", "amount", "هزینه")
 
+# Minimum canonical-ingredient similarity for a fuzzy candidate to be considered
+# a match at all. Calibrated on real mismatches (all ≤0.615) vs real
+# equivalences (all ≥0.692); see the note at the scoring loop.
+INGREDIENT_FLOOR = 0.66
+
+# every header alias, folded — used to recognize a header row restated as data
+_ALL_HEADER_PHRASES = frozenset(
+    a for aliases in _HEADER_ALIASES.values() for a in aliases)
+
+
+def _is_header_row(name: str) -> bool:
+    return _norm_header(name) in {_norm_header(a) for a in _ALL_HEADER_PHRASES}
+
 
 def _norm_header(h: str) -> str:
     # fold ZWNJ and underscores (excel_import.read_table already turns spaces/ZWNJ
@@ -229,9 +242,23 @@ def _mg_agree(a: set[float], b: set[float], tol: float = 0.01) -> bool:
     return any(abs(x - y) <= tol * max(x, y, 1e-9) for x in a for y in b)
 
 
+_SALT_NOTE_RE = re.compile(r"\(\s*AS\s+[^)]*\)|\bAS\s+(?:SODIUM|POTASSIUM|CALCIUM|"
+                           r"HYDROCHLORIDE|SULFATE|SULPHATE|ACETATE|MALEATE|"
+                           r"MESYLATE|TARTRATE|CITRATE|PHOSPHATE|BESILATE|"
+                           r"FUMARATE|SUCCINATE|BITARTRATE|DIHYDRATE)\b", re.I)
+# route words carry no identity and must not enter the fuzzy ingredient string —
+# "ALENDRONATE (AS SODIUM) … ORAL" scored 0.611 against "alendronic acid" purely
+# from the trailing noise, versus 0.692 once cleaned
+_ROUTE_WORDS = frozenset(w.lower() for w in (
+    "oral", "parenteral", "intravenous", "intramuscular", "subcutaneous",
+    "ophthalmic", "topical", "rectal", "vaginal", "nasal", "otic", "buccal",
+    "sublingual", "inhalation", "respiratory", "transdermal", "irrigation",
+    "intrathecal", "dental", "as"))
+
+
 def _row_signals(text: str) -> tuple[str, set[str], str | None, str]:
     """(canonical ingredient, strength digit-tokens, form, persian part)."""
-    t = str(text)
+    t = _SALT_NOTE_RE.sub(" ", str(text))
     fa = " ".join(re.findall(r"[آ-ی‌]+", t)).strip()
     latin = re.sub(r"[آ-ی‌]+", " ", t)
     tokens = re.findall(r"[A-Za-z]+|\d+(?:\.\d+)?", latin.translate(_DIGIT_FIX).lower())
@@ -243,7 +270,8 @@ def _row_signals(text: str) -> tuple[str, set[str], str | None, str]:
             form = _FORM_WORDS[tok]
         elif tok[0].isdigit():
             strengths.add(tok)
-        elif tok not in ("mg", "ml", "mcg", "g", "iu", "u", "%"):
+        elif tok not in ("mg", "ml", "mcg", "g", "iu", "u", "%") and \
+                tok not in _ROUTE_WORDS:
             words.append(tok)
     for w in re.findall(r"[آ-ی‌]+", t):                 # persian form words too
         if w in _FORM_WORDS:
@@ -319,6 +347,12 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
         name = str(row.get("drug_name", "")).strip()
         if not name:
             out.append(LinkResult(row, None, 0.0, "none"))
+            continue
+        # A repeated header row inside the sheet (Iranian exports often restate
+        # «نام ژنريک» mid-table) is not a product — it was fuzzy-matching to
+        # nandrolone. Detected by folding it against the header vocabulary.
+        if _is_header_row(name):
+            out.append(LinkResult(row, None, 0.0, "header_row"))
             continue
         # ── decision crosswalk (X2): the owner already ruled on this row ──────
         # Consulted BEFORE any fuzzy work: a confirmed mapping is ground truth
@@ -464,6 +498,21 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
         best: tuple[float, CatalogRecord | None, str] = (0.0, None, "none")
         for rec, c_canon, c_str, c_form, c_mg in (latin_block.get(canon[:3], []) if canon else []):
             name_sim = SequenceMatcher(None, canon, c_canon).ratio()
+            # ── ingredient-agreement floor ────────────────────────────────────
+            # The 3-char prefix block is a SPEED optimization, never evidence of
+            # identity. When the true ingredient is absent from NFI, agreeing
+            # strength+form used to carry a same-prefix DIFFERENT MOLECULE over
+            # the review line: Rivanol (ethacridine, antiseptic) → rivaroxaban
+            # (anticoagulant), Perforan (St John's wort) → perampanel,
+            # methylphenidate → metaproterenol, CEPHALEXIN → cefixime,
+            # calcium folinate → calcitonin. Measured on those real pairs: every
+            # wrong one scores ≤0.615 while true equivalences (alendronate↔
+            # alendronic acid 0.692, cefalexin↔cephalexin 0.842) sit above —
+            # genuine synonyms are handled upstream by canonical_ingredient, so
+            # a low score here means a DIFFERENT drug. Refusing leaves the row
+            # unmatched for enrichment, which is the honest answer.
+            if name_sim < INGREDIENT_FLOOR:
+                continue
             has_extra = bool(strengths) or bool(form)
             if has_extra:
                 # strength agreement: mg-normalized (0.05 mg == 50 microgram),
