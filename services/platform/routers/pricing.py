@@ -854,6 +854,9 @@ async def tamin_harvest_stop(staff: Staff = Depends(require_permission("inventor
 class PriceRefreshRequest(BaseModel):
     min_confidence: float = 0.85
     min_pct: float = 25.0
+    # the insurer figure is a capped acceptance amount, so by default only
+    # UPWARD refreshes are proposed (a stale NFI price) — see sync_service
+    only_increases: bool = True
 
 
 @router.post("/coverage/runs/{run_id}/propose-prices")
@@ -865,7 +868,8 @@ async def propose_prices_from_run(run_id: UUID, body: PriceRefreshRequest,
     price_history). Nothing changes catalog prices without approval."""
     from services.core.drug_catalog import sync_service
     return await sync_service.propose_prices_from_run(
-        db, run_id, min_confidence=body.min_confidence, min_pct=body.min_pct)
+        db, run_id, min_confidence=body.min_confidence, min_pct=body.min_pct,
+        only_increases=body.only_increases)
 
 
 @router.post("/coverage/runs/{run_id}/reject")

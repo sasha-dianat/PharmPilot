@@ -51,13 +51,23 @@ async def run_sync(db: AsyncSession, incoming: list[dict], *, source: str = "syn
 
 async def propose_prices_from_run(db: AsyncSession, run_id, *,
                                   min_confidence: float = 0.85,
-                                  min_pct: float = 25.0) -> dict:
+                                  min_pct: float = 25.0,
+                                  only_increases: bool = True) -> dict:
     """Turn an insurer coverage run's HIGH-CONFIDENCE matched prices into price
     proposals — the price-refresh: an insurer's current price (e.g. tamin's
     accepted_total_price) refreshes a stale catalog announced_price, but ONLY
     for confident matches and only when the divergence clears min_pct. Flows
     into the existing proposal review → apply → price_history pipeline; nothing
     is applied without owner approval.
+
+    `only_increases` (default ON) is a semantic guard, not a preference. The
+    insurer figure is «قیمت مورد تعهد» — the amount the organization ACCEPTS,
+    which is deliberately capped BELOW retail for most products. Measured on the
+    real data: the insurer reference is lower than the catalog price in 8,382
+    rows and higher in 12,121. Only the second group means "the NFI price is
+    stale"; proposing the first group would pull قیمت مصرف‌کننده down to a
+    reimbursement cap and understate retail. Pass False only when the feed is
+    known to be a true consumer-price source.
 
     Reads the run's staged entries (irc → {reference_price, match_confidence,
     match_method}). Returns run_sync's summary + how many entries qualified."""
@@ -79,8 +89,22 @@ async def propose_prices_from_run(db: AsyncSession, run_id, *,
         if price and ok_conf:
             incoming.append({"irc": str(irc), "announced_price": price})
 
+    skipped_decreases = 0
+    if only_increases and incoming:
+        current = await repo.fetch_by_irc(db, [r["irc"] for r in incoming])
+        kept = []
+        for r in incoming:
+            rec = current.get(r["irc"])
+            now_price = getattr(rec, "announced_price", None) if rec else None
+            if now_price and float(r["announced_price"]) <= float(now_price):
+                skipped_decreases += 1
+                continue
+            kept.append(r)
+        incoming = kept
+
     res = await run_sync(db, incoming, source=f"insurer-refresh:{insurer}", min_pct=min_pct)
     res["qualified"] = len(incoming)
+    res["skipped_decreases"] = skipped_decreases
     res["insurer"] = insurer
     return res
 
