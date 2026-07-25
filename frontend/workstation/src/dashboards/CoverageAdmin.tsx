@@ -1662,6 +1662,22 @@ interface CatalogItem {
   is_generic: boolean | null; is_otc: boolean | null
   announced_price: number | null; last_invoice_price: number | null
   ingredient_key: string | null; coverage: Record<string, any> | null; source: string | null
+  // set when the price came from an insurer feed rather than an NFI-verified
+  // consumer price — kind 'gap_fill' (had no price) or 'refresh' (was stale)
+  price_provenance?: { announced: string; source: string; kind: string
+                       previous: number | null; at: string; note: string } | null
+}
+
+function PriceProvenanceBadge({ p }: { p: CatalogItem['price_provenance'] }) {
+  if (!p || p.announced !== 'insurer-derived') return null
+  const fill = p.kind === 'gap_fill'
+  return (
+    <span title={`${p.note} — منبع: ${p.source}${p.previous ? ` · پیشین: ${fa(p.previous)}` : ''}`}
+      className={`ml-2 px-1.5 py-0.5 rounded text-[10px] border align-middle ${
+        fill ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+             : 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'}`}>
+      {fill ? '⚠ قیمت از بیمه (تأییدنشده)' : '↻ به‌روزشده از بیمه'}
+    </span>)
 }
 // label, key, input kind — the owner-correctable surface of an NFI row
 const EDIT_FIELDS: [string, keyof CatalogItem, 'text' | 'num' | 'bool'][] = [
@@ -1760,7 +1776,9 @@ function CatalogEditorPanel({ onMsg, onError }: {
             <td className="px-3 py-2 text-right text-slate-400">
               {[it.dosage_form, it.strength].filter(Boolean).join(' · ') || '—'}
             </td>
-            <td className="px-3 py-2 text-left tabular-nums text-slate-300">{fa(it.announced_price)}</td>
+            <td className="px-3 py-2 text-left tabular-nums text-slate-300 whitespace-nowrap">
+              {fa(it.announced_price)}<PriceProvenanceBadge p={it.price_provenance} />
+            </td>
             <td className="px-3 py-2 text-left">
               <button onClick={() => startEdit(it)}
                 className="px-2 py-0.5 text-[11px] rounded bg-violet-700 hover:bg-violet-600">ویرایش</button>

@@ -149,10 +149,29 @@ async def _apply_to_catalog(db: AsyncSession, pr: DrugPriceProposal) -> None:
     from .price_history import record_price
     if item:
         if pr.proposed_announced is not None:
+            was = item.announced_price
             item.announced_price = int(pr.proposed_announced)
             item.announced_price_at = now
             await record_price(db, pr.irc, "announced", pr.proposed_announced,
                                source=pr.source or "sync", at=now)
+            # Provenance: an insurer figure is «قیمت مورد تعهد», an acceptance
+            # amount — NOT an NFI-verified consumer price. Stamp where the number
+            # came from, and whether it FILLED an empty price or refreshed a
+            # stale one, so the GUI can show it as unverified and the owner can
+            # tell the two apart later. Deliberately in monograph JSONB rather
+            # than field_overrides: an override would make it permanent policy
+            # and stop the next NFI crawl from replacing it with a real price.
+            if str(pr.source or "").startswith("insurer-refresh:"):
+                mono = dict(item.monograph or {})
+                mono["price_provenance"] = {
+                    "announced": "insurer-derived",
+                    "source": pr.source,
+                    "kind": "gap_fill" if not was else "refresh",
+                    "previous": int(was) if was else None,
+                    "at": now.isoformat(),
+                    "note": "مبلغ مورد قبول بیمه — قیمت مصرف‌کنندهٔ تأییدشدهٔ NFI نیست",
+                }
+                item.monograph = mono
         if pr.proposed_invoice is not None:
             item.last_invoice_price = int(pr.proposed_invoice)
             item.last_invoice_at = now

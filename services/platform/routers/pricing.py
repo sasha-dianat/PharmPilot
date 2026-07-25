@@ -651,9 +651,15 @@ CATALOG_EDITABLE = (
 
 
 def _catalog_json(it) -> dict:
-    return {f: getattr(it, f, None) for f in
-            ("irc", *CATALOG_EDITABLE, "ingredient_key", "coverage", "source",
-             "announced_price_at", "last_invoice_at")}
+    out = {f: getattr(it, f, None) for f in
+           ("irc", *CATALOG_EDITABLE, "ingredient_key", "coverage", "source",
+            "announced_price_at", "last_invoice_at")}
+    # surface price provenance so an insurer-derived figure is visibly NOT an
+    # NFI-verified consumer price (see sync_service._apply_to_catalog)
+    mono = getattr(it, "monograph", None)
+    if isinstance(mono, dict) and isinstance(mono.get("price_provenance"), dict):
+        out["price_provenance"] = mono["price_provenance"]
+    return out
 
 
 @router.get("/catalog/items")

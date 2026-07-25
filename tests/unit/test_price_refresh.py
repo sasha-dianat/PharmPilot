@@ -114,3 +114,75 @@ def test_insurer_refresh_only_proposes_upward_by_default():
         await eng.dispose()
 
     asyncio.get_event_loop().run_until_complete(run())
+
+
+def test_insurer_derived_price_is_stamped_with_provenance():
+    """An insurer figure is an ACCEPTANCE amount, not an NFI-verified consumer
+    price. Applying one must record where it came from and whether it FILLED an
+    empty price or refreshed a stale one — in monograph JSONB, deliberately NOT
+    as a field_override, which would make it permanent policy and stop the next
+    NFI crawl from replacing it with a real price."""
+    import asyncio, os, uuid
+    from decimal import Decimal
+    import pytest
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    url = os.environ.get("DATABASE_URL",
+        "postgresql+asyncpg://pharmpilot:pharmpilot_dev@127.0.0.1:5433/pharmpilot_test")
+    eng = create_async_engine(url)
+    try:
+        async def ping():
+            async with eng.connect():
+                pass
+        asyncio.get_event_loop().run_until_complete(ping())
+    except Exception:
+        pytest.skip("dev DB unreachable")
+
+    from sqlalchemy import delete, select
+    from shared.models.drug_catalog import DrugCatalogItem
+    from shared.models.drug_price_proposal import DrugPriceProposal
+    from services.core.drug_catalog import sync_service
+
+    FILL, REFR = "__PV_FILL__", "__PV_REFRESH__"
+
+    async def run():
+        S = async_sessionmaker(eng, expire_on_commit=False)
+        async with S() as db:
+            await db.execute(delete(DrugPriceProposal).where(
+                DrugPriceProposal.irc.in_([FILL, REFR])))
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([FILL, REFR])))
+            db.add(DrugCatalogItem(irc=FILL, name_fa="بی‌قیمت", generic_name="x",
+                ingredient_key="x||", dosage_form="VIAL", strength="1 mg",
+                announced_price=None, source="t"))
+            db.add(DrugCatalogItem(irc=REFR, name_fa="کهنه", generic_name="y",
+                ingredient_key="y||", dosage_form="TABLET", strength="1 mg",
+                announced_price=Decimal("1000"), source="t"))
+            for irc, cur, prop in ((FILL, None, 5_000_000), (REFR, 1000, 40000)):
+                db.add(DrugPriceProposal(irc=irc, name_fa="n", kind="increase",
+                    status="pending", source="insurer-refresh:tamin",
+                    current_announced=cur, proposed_announced=prop,
+                    current_effective=cur or 0, proposed_effective=prop,
+                    delta=prop - (cur or 0), pct_change=100.0))
+            await db.commit()
+            ids = (await db.execute(select(DrugPriceProposal.id).where(
+                DrugPriceProposal.irc.in_([FILL, REFR])))).scalars().all()
+            await sync_service.decide_proposals(db, list(ids), approve=True,
+                                                staff_id=uuid.uuid4())
+            rows = {r.irc: r for r in (await db.execute(select(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([FILL, REFR])))).scalars().all()}
+            fill = rows[FILL].monograph["price_provenance"]
+            refr = rows[REFR].monograph["price_provenance"]
+            assert fill["announced"] == "insurer-derived" and fill["kind"] == "gap_fill"
+            assert fill["previous"] is None and fill["source"] == "insurer-refresh:tamin"
+            assert refr["kind"] == "refresh" and refr["previous"] == 1000
+            assert int(rows[FILL].announced_price) == 5_000_000
+            assert int(rows[REFR].announced_price) == 40000
+
+            await db.execute(delete(DrugPriceProposal).where(
+                DrugPriceProposal.irc.in_([FILL, REFR])))
+            await db.execute(delete(DrugCatalogItem).where(
+                DrugCatalogItem.irc.in_([FILL, REFR])))
+            await db.commit()
+        await eng.dispose()
+
+    asyncio.get_event_loop().run_until_complete(run())
