@@ -101,9 +101,14 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
         cat_raw = (str(_pick(row, "category") or "drug")).strip().lower()
         category = _CATEGORY_MAP.get(cat_raw, ItemCategory.DRUG)
         gen_flag = _pick(row, "is_generic")
+        # generic_full (نام عمومی) is NFI's own structured name — the SAME
+        # controlled vocabulary the insurer دارونامه uses ("RANITIDINE TABLET
+        # ORAL 150 mg"), so keeping it gives the structural matcher a
+        # near-exact join key. route (نحوه مصرف) appears in ~2,250 tamin names.
+        # Both were parsed and then dropped; they populate on the next crawl.
         mono_keys = ("indications", "mechanism", "pharmacokinetics", "warnings",
                      "side_effects", "interactions_text", "advice", "composition", "brands",
-                     "atc_path", "integrity")
+                     "atc_path", "integrity", "generic_full", "route")
         mono = {k: row[k] for k in mono_keys if row.get(k)}
         out.append(CatalogRecord(
             irc=str(irc).strip(),

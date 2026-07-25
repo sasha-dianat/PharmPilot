@@ -260,10 +260,14 @@ class LinkResult:
 def link_rows(rows: list[dict], catalog: list[CatalogRecord],
               enrichments: dict | None = None,
               crosswalk: dict | None = None, insurer: str = "",
-              code_registry: dict | None = None) -> list[LinkResult]:
+              code_registry: dict | None = None,
+              structural: bool = True) -> list[LinkResult]:
+    from . import structural_match as sm
     by_irc = {r.irc: r for r in catalog}
     by_gtin = {r.gtin: r for r in catalog if r.gtin}
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
+    struct_index = sm.build_index(catalog) if structural else None
+    form_vocab = sm.build_form_vocab(catalog) if structural else []
 
     # ── blocking indexes ──────────────────────────────────────────────────────
     # Fuzzy comparison is expensive (SequenceMatcher); comparing every row to
@@ -345,6 +349,23 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
         canon, strengths, form, fa = _row_signals(match_name)
         row_mg = _strength_mg(match_name)
         name = match_name  # downstream narrowing (pack/pen) reads the rich name
+
+        # ── structural match on the shared controlled vocabulary ─────────────
+        # Formulary names and NFI columns are the SAME IRC/FDA vocabulary, so an
+        # exact (generic, dosage_form, dose) hit is real evidence — far stronger
+        # than string similarity against a Persian brand name. Tried before the
+        # fuzzy scorer; a miss simply falls through.
+        if struct_index is not None:
+            parsed = sm.parse_name(match_name, form_vocab or [])
+            s_rec, s_conf, s_why = sm.match(parsed, struct_index)
+            if s_rec is not None:
+                if code_assisted:
+                    # cross-insurer evidence stays review-first: the owner
+                    # confirms the pairing once, then the crosswalk makes it exact
+                    s_conf = min(s_conf, 0.74)
+                out.append(LinkResult(row, s_rec, round(s_conf, 3),
+                                      "structural+code" if code_assisted else "structural"))
+                continue
 
         # ── approved-enrichment augmentation ──────────────────────────────────
         # A vague brand row («ویتامین آ-تداژل») carries no generic/form/strength,
