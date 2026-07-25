@@ -208,7 +208,15 @@ export default function CoverageAdmin() {
         </div>
       )}
 
-      {tab === 'issues' && <InconsistenciesPanel onError={err} />}
+      {tab === 'issues' && (<div className="space-y-5">
+        <TriageBoard onError={err} />
+        <details className="bg-slate-800/30 border border-slate-700 rounded-lg">
+          <summary className="px-4 py-2 text-sm cursor-pointer text-slate-300">
+            🔎 فهرست تفصیلی اقلام (برای بررسی موردی)
+          </summary>
+          <div className="p-2"><InconsistenciesPanel onError={err} /></div>
+        </details>
+      </div>)}
       {tab === 'enrich' && <EnrichmentPanel onMsg={setMsg} onError={err} />}
       {tab === 'catalog' && <CatalogEditorPanel onMsg={setMsg} onError={err} />}
       {tab === 'decisions' && <DecisionsPanel onMsg={setMsg} onError={err} />}
@@ -784,6 +792,136 @@ function NfiIntegrityCard({ onError }: { onError: (e: unknown, f: string) => voi
           </table>
         </div>
       </>)}
+    </div>
+  )
+}
+
+// ── triage board: root causes, not rows ──────────────────────────────────────
+interface Cause {
+  cause: string; count: number; lane: string; lane_fa: string; title: string
+  why: string; action: string; route: string; closed: boolean
+  disposition: string | null; reason: string | null; decided_at: string | null
+}
+interface Board {
+  causes: Cause[]
+  totals: { open: number; acknowledged: number; all: number; by_lane: Record<string, number> }
+  lanes: Record<string, string>
+}
+
+const LANE_STYLE: Record<string, string> = {
+  auto:      'border-emerald-500/40 bg-emerald-500/5',
+  bulk:      'border-cyan-500/40 bg-cyan-500/5',
+  research:  'border-violet-500/40 bg-violet-500/5',
+  judgement: 'border-amber-500/40 bg-amber-500/5',
+  expected:  'border-slate-500/40 bg-slate-500/5',
+  blocked:   'border-rose-500/40 bg-rose-500/5',
+}
+const ROUTE_HINT: Record<string, string> = {
+  nfi_integrity: 'کاتالوگ NFI → مغایرت داخلی',
+  run_review: 'اجراها → بازبینی اجرا',
+  enrichment: '✨ غنی‌سازی',
+  nfi_harvest: 'کاتالوگ NFI → شروع برداشت (نیازمند پروکسی)',
+  price_review: '📉 قیمت‌ها',
+  acknowledge: 'همین‌جا — پذیرش گروهی',
+}
+
+function TriageBoard({ onError }: { onError: (e: unknown, f: string) => void }) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState<string | null>(null)
+  const { data, isFetching } = useQuery<Board>({
+    queryKey: ['issues-board'],
+    queryFn: () => pricingApi.issuesBoard().then(r => r.data),
+    refetchInterval: 60_000,
+  })
+  const rule = async (cause: string, disposition: string, reason?: string) => {
+    setBusy(cause)
+    try {
+      await pricingApi.issuesRuling({ cause, disposition, reason })
+      qc.invalidateQueries({ queryKey: ['issues-board'] })
+    } catch (e) { onError(e, 'ثبت تصمیم ناموفق بود.') } finally { setBusy(null) }
+  }
+  const reopen = async (cause: string) => {
+    setBusy(cause)
+    try {
+      await pricingApi.issuesRulingClear(cause)
+      qc.invalidateQueries({ queryKey: ['issues-board'] })
+    } catch (e) { onError(e, 'بازگشایی ناموفق بود.') } finally { setBusy(null) }
+  }
+  const t = data?.totals
+  const pct = t && t.all ? Math.round(100 * t.acknowledged / t.all) : 0
+
+  return (
+    <div className="space-y-4">
+      {/* burn-down header: the number must be able to go DOWN */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <span className="text-sm font-semibold">تابلوی مدیریت ناسازگاری‌ها</span>
+          <span className="text-2xl font-mono text-amber-300">{fa(t?.open ?? 0)}</span>
+          <span className="text-[11px] text-slate-400">باز</span>
+          <span className="text-lg font-mono text-emerald-300">{fa(t?.acknowledged ?? 0)}</span>
+          <span className="text-[11px] text-slate-400">تصمیم‌گرفته ({fa(pct)}٪)</span>
+          {isFetching && <span className="text-[11px] text-cyan-300">در حال محاسبه…</span>}
+        </div>
+        <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+          <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+        </div>
+        <p className="text-[11px] text-slate-500">
+          ناسازگاری‌ها بر پایهٔ «علت ریشه‌ای» گروه‌بندی شده‌اند، نه ردیف‌به‌ردیف: یک تصمیم،
+          کل گروه را می‌بندد و در اجراهای بعدی دیگر تکرار نمی‌شود.
+        </p>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          {Object.entries(t?.by_lane || {}).sort((a, b) => b[1] - a[1]).map(([lane, n]) => (
+            <span key={lane} className={`px-2 py-0.5 rounded border ${LANE_STYLE[lane] || ''}`}>
+              {data?.lanes[lane]}: {fa(n)}
+            </span>))}
+        </div>
+      </div>
+
+      {/* one card per root cause */}
+      <div className="grid gap-3 lg:grid-cols-2">
+        {(data?.causes || []).filter(c => c.count > 0 || c.closed).map(c => (
+          <div key={c.cause}
+            className={`rounded-lg border p-3 space-y-2 ${LANE_STYLE[c.lane] || 'border-slate-700'} ${c.closed ? 'opacity-60' : ''}`}>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">{c.title}</div>
+                <div className="text-[11px] text-slate-400">{c.lane_fa}</div>
+              </div>
+              <div className="text-xl font-mono shrink-0">{fa(c.count)}</div>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">{c.why}</p>
+            <p className="text-[11px] text-cyan-300 leading-relaxed">◆ {c.action}</p>
+            <p className="text-[10px] text-slate-500">مقصد: {ROUTE_HINT[c.route] || c.route}</p>
+            {c.closed ? (
+              <div className="flex items-center gap-2 text-[11px]">
+                <span className="text-emerald-300">
+                  ✓ {c.disposition === 'accepted' ? 'پذیرفته‌شده'
+                    : c.disposition === 'wont_fix' ? 'رفع نمی‌شود'
+                    : c.disposition === 'resolved' ? 'رفع‌شده' : 'به تعویق'}
+                  {c.reason ? ` — ${c.reason}` : ''}
+                </span>
+                <button onClick={() => reopen(c.cause)} disabled={busy === c.cause}
+                  className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
+                  بازگشایی</button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <button onClick={() => rule(c.cause, 'accepted', 'طبیعی و مورد انتظار')}
+                  disabled={busy === c.cause}
+                  className="px-2 py-1 bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50">
+                  پذیرش گروهی</button>
+                <button onClick={() => rule(c.cause, 'deferred', 'در انتظار پیش‌نیاز')}
+                  disabled={busy === c.cause}
+                  className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
+                  تعویق</button>
+                <button onClick={() => rule(c.cause, 'wont_fix', 'رفع نمی‌شود')}
+                  disabled={busy === c.cause}
+                  className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
+                  رفع نمی‌شود</button>
+              </div>
+            )}
+          </div>))}
+      </div>
     </div>
   )
 }

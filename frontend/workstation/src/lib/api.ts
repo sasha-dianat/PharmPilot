@@ -194,6 +194,11 @@ export const pricingApi = {
     apiClient.post('/pricing/coverage/tamin-harvest/start', body),
   taminHarvestStatus: () => apiClient.get('/pricing/coverage/tamin-harvest/status'),
   taminHarvestStop: () => apiClient.post('/pricing/coverage/tamin-harvest/stop', {}),
+  issuesBoard: () => apiClient.get('/pricing/issues/board'),
+  issuesRuling: (body: { cause: string; disposition: string; reason?: string }) =>
+    apiClient.post('/pricing/issues/ruling', body),
+  issuesRulingClear: (cause: string) =>
+    apiClient.delete(`/pricing/issues/ruling/${cause}`),
   inconsistencies: (insurer: string, threshold: number) =>
     apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
   inconsistencyDrug: (irc: string, insurer: string) =>

@@ -527,6 +527,61 @@ async def coverage_upload_run(files: list[UploadFile] = File(...),
     return {"state": state, "files": per_file, "merged_rows": len(merged)}
 
 
+@router.get("/issues/board")
+async def issues_board(include_closed: bool = True,
+                       staff: Staff = Depends(require_permission("inventory:read")),
+                       db: AsyncSession = Depends(get_db)):
+    """ناسازگاری‌ها as a managed backlog: every ROOT CAUSE with its count, the
+    lane that can close it, the recommended action, and the owner's ruling.
+    Replaces an unbounded flat list (~45k item-issues re-derived every run) with
+    ~13 causes the owner can actually act on."""
+    from services.core.drug_catalog.issue_registry import board
+    return await board(db, include_closed=include_closed)
+
+
+class IssueRulingIn(BaseModel):
+    cause: str
+    disposition: str                      # accepted | wont_fix | resolved | deferred
+    reason: str | None = None
+    subject_key: str = "*"                # '*' = the whole cause
+
+
+@router.post("/issues/ruling")
+async def issues_ruling(body: IssueRulingIn,
+                        staff: Staff = Depends(require_permission("inventory:write")),
+                        db: AsyncSession = Depends(get_db)):
+    """Record the owner's ruling so an accepted-as-normal group leaves the OPEN
+    list permanently — this is what lets the backlog converge instead of
+    re-reporting the same structurally-normal rows after every harvest."""
+    from services.core.drug_catalog.issue_registry import CAUSES, set_disposition
+    if body.cause not in CAUSES:
+        raise HTTPException(status_code=400, detail=f"علت ناشناخته: {body.cause}")
+    try:
+        res = await set_disposition(
+            db, issue_type=body.cause, subject_key=body.subject_key,
+            disposition=body.disposition, reason=body.reason,
+            details={"lane": CAUSES[body.cause]["lane"]},
+            staff_id=getattr(staff, "id", None))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.commit()
+    return {"result": res, "cause": body.cause, "disposition": body.disposition}
+
+
+@router.delete("/issues/ruling/{cause}")
+async def issues_ruling_clear(cause: str, subject_key: str = "*",
+                              staff: Staff = Depends(require_permission("inventory:write")),
+                              db: AsyncSession = Depends(get_db)):
+    """Re-open a cause (delete its ruling)."""
+    from sqlalchemy import delete
+    from shared.models.issue_disposition import IssueDisposition
+    n = (await db.execute(delete(IssueDisposition).where(
+        IssueDisposition.issue_type == cause,
+        IssueDisposition.subject_key == subject_key))).rowcount
+    await db.commit()
+    return {"reopened": n}
+
+
 @router.get("/coverage/harvest/status")
 async def coverage_harvest_status(staff: Staff = Depends(require_permission("inventory:read"))):
     from services.core.drug_catalog import coverage_harvest as ch

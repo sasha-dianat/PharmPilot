@@ -80,6 +80,12 @@ _MONEY_WORDS = ("قیمت", "مبلغ", "بها", "price", "amount", "هزینه
 # equivalences (all ≥0.692); see the note at the scoring loop.
 INGREDIENT_FLOOR = 0.66
 
+# delivery-system words a formulary appends to a product name; stripped when
+# retrying an enrichment lookup (the researched entry is keyed on the base name)
+_PEN_TOKEN_RE = re.compile(
+    r"\b(solostar|flexpen|kwikpen|penfill|quickpen|innolet|cartridge|prefilled|"
+    r"pre-?filled|pen)\b|قلم|کارتریج", re.I)
+
 # every header alias, folded — used to recognize a header row restated as data
 _ALL_HEADER_PHRASES = frozenset(
     a for aliases in _HEADER_ALIASES.values() for a in aliases)
@@ -429,12 +435,27 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
         # untouched when enrichments is None).
         if enrichments:
             from .enrichment import enrich_key
+            # A formulary row commonly appends the delivery system to the name
+            # that was researched («INSULINGLAR X» → «INSULINGLAR X SOLOSTAR»),
+            # so a plain key lookup missed the enrichment entirely and the row
+            # fell through to comparing the brand string against the generic.
+            # Try the full name first, then with container tokens removed.
             e = enrichments.get(enrich_key(name))
+            if not e:
+                trimmed = _PEN_TOKEN_RE.sub(" ", name).strip()
+                if trimmed and trimmed != name:
+                    e = enrichments.get(enrich_key(trimmed))
             if e:
                 if e.get("irc") and e["irc"] in by_irc:
                     out.append(LinkResult(row, by_irc[e["irc"]], 1.0, "enrichment"))
                     continue
-                if not canon and e.get("generic_name"):
+                if e.get("generic_name"):
+                    # An APPROVED enrichment is the owner stating what this brand
+                    # actually contains, so it outranks whatever the brand string
+                    # happens to look like. Previously it was consulted only when
+                    # parsing yielded nothing, which left «INSULINGLAR X SOLOSTAR»
+                    # to be compared as a literal string against "insulin
+                    # glargine" — a comparison the ingredient floor rightly fails.
                     canon = canonical_ingredient(normalize(e["generic_name"])) or canon
                 def _form_of(s):
                     for tok in re.findall(r"[A-Za-z]+", str(s or "").lower()):
