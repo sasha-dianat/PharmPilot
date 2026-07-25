@@ -431,7 +431,7 @@ async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> in
     insurer's own code and the raw mapped row — so any publication can later be
     replayed/diffed against the decided layer. Append-only."""
     from shared.models.formulary_snapshot import FormularySnapshot
-    from .coverage_import import _to_bool
+    from .coverage_import import _to_bool, parse_conditions
     from .crosswalk import row_source_code
 
     # first numeric token — matches coverage_import._num so a multi-value cell
@@ -443,13 +443,25 @@ async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> in
         if not isinstance(r, dict) or not r.get("drug_name"):
             continue
         rp = _num(r.get("reference_price"))
+        # the شرایط تعهد text is authoritative for both flags: it is where a row
+        # is declared غیر بیمه‌ای, and where the real organization share appears
+        cond = parse_conditions(r.get("conditions"))
+        if cond.get("covered") is not None:
+            covered = cond["covered"]
+        elif r.get("covered") not in (None, ""):
+            covered = _to_bool(r.get("covered"))
+        else:
+            covered = None
+        share = cond.get("share_pct")
+        if share is None:
+            share = _num(r.get("share_pct"))
         db.add(FormularySnapshot(
             run_id=run_id, insurer=insurer,
             source_code=row_source_code(r),
             raw_name=str(r.get("drug_name"))[:300],
             reference_price=int(rp) if rp is not None else None,
-            share_pct=_num(r.get("share_pct")),
-            covered=_to_bool(r.get("covered")) if r.get("covered") not in (None, "") else None,
+            share_pct=share,
+            covered=covered,
             row=r))
         n += 1
     return n

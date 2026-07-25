@@ -31,8 +31,8 @@ from .schema import CatalogRecord, canonical_ingredient
 _DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 # ── role vocabulary ───────────────────────────────────────────────────────────
-ROLES = ("irc", "gtin", "generic_code", "drug_name", "covered", "share_pct",
-         "reference_price", "ceiling", "inpatient")
+ROLES = ("irc", "gtin", "generic_code", "drug_name", "conditions", "covered",
+         "share_pct", "reference_price", "ceiling", "inpatient")
 
 # Alias order matters: dict order is the priority for the substring pass, and a
 # role is claimed once. The insurer's own CODE column must therefore be listed
@@ -46,6 +46,11 @@ _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
                      "کد عمومی", "drug code", "کد دارو", "drugcode"),
     "drug_name": ("نام ژنریک", "نام دارو", "شرح", "نام", "drug name", "drugname",
                   "drug", "generic name", "name", "شرح دارو", "عنوان"),
+    # «شرایط تعهد» is the CONDITIONS of coverage, not the covered flag — it must
+    # be claimed before `covered`, whose loose "تعهد" alias used to swallow it,
+    # turning "داروهاي غير بيمه اي" (explicitly NOT insured) into covered=true.
+    "conditions": ("شرایط تعهد", "شرایط", "ملاحظات", "توضیحات", "شرح شرایط",
+                   "conditions", "condition", "notes"),
     "covered": ("تعهد بیمه", "بيمه", "بیمه", "مورد تعهد", "تعهد", "covered", "isbimeh",
                 "پوشش", "insurance status", "insurancestatus", "وضعیت بیمه"),
     "share_pct": ("درصد سازمان", "درصد تعهد", "سهم سازمان", "درصد", "percent", "share",
@@ -66,6 +71,9 @@ _TRUE_WORDS = {"1", "true", "yes", "بله", "دارد", "فعال", "دارای
                "*", "✓", "covered", "است"}
 _FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-",
                 "not_covered", "not covered", "نيست", "نیست"}
+
+
+_MONEY_WORDS = ("قیمت", "مبلغ", "بها", "price", "amount", "هزینه")
 
 
 def _norm_header(h: str) -> str:
@@ -156,7 +164,13 @@ def infer_columns(rows: list[dict]) -> dict[str, str]:
         if col in roles:
             continue
         h = headers[col]
+        # A money column may only claim a money role. Without this, salamat's
+        # «قيمت کل مورد درتعهد با احتساب يارانه ارزي» (a price) was elected the
+        # covered flag, because "تعهد" appears inside it.
+        money = any(w in h for w in _MONEY_WORDS)
         for role, aliases in _ALIASES_NORM.items():
+            if money and role not in ("reference_price", "ceiling"):
+                continue
             if role not in taken and any(a in h for a in aliases):
                 roles[col] = role
                 taken.add(role)
@@ -165,6 +179,11 @@ def infer_columns(rows: list[dict]) -> dict[str, str]:
         if col in roles:
             continue
         role = _value_role([r.get(col, "") for r in rows[:200]])
+        # same money rule as the alias pass: an all-zero price column looks
+        # binary by value, and must still never become the covered flag
+        if any(w in headers[col] for w in _MONEY_WORDS) and \
+                role not in ("reference_price", "ceiling"):
+            continue
         if role and role not in taken:
             roles[col] = role
             taken.add(role)
@@ -481,6 +500,62 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
     return out
 
 
+# ── conditions column (شرایط تعهد) ───────────────────────────────────────────
+# salamat encodes real coverage policy as free Persian text in one column:
+# whether the drug is insured at all, the organization share, and the
+# prescribing restrictions. Treating it as a boolean threw all of that away AND
+# marked 610 explicitly NON-INSURED rows as covered. Deterministic phrase
+# matching; the raw text is always preserved alongside the parse.
+_COND_FLAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("specialist",       ("تجویز توسط پزشک متخصص", "پزشک متخصص")),
+    ("subspecialist",    ("فوق تخصص",)),
+    ("gp_allowed",       ("پزشکان عمومی",)),
+    ("inpatient_only",   ("بیمارستانی",)),
+    ("file_required",    ("پرونده ای", "پرونده‌ای")),
+    ("pharmacy_approval", ("تایید در داروخانه", "تأیید در داروخانه")),
+    ("authenticity_code", ("کد اصالت",)),
+    ("domestic_only",    ("تولید داخل",)),
+    ("fx_subsidy",       ("یارانه ارزی",)),
+    ("hard_to_treat",    ("صعب العلاج",)),
+    ("price_stability",  ("ثبات قیمت",)),
+)
+_NOT_INSURED = ("غیر بیمه", "غیربیمه")
+_SHARE_IN_TEXT = re.compile(r"سهم\s*سازمان\s*(\d+)\s*درصد")
+_AGE_RANGE = re.compile(r"بیش\s*از\s*(\d+)\s*سال\D*?کمتر\s*از\s*(\d+)\s*سال")
+
+
+def _fold_fa(s) -> str:
+    """Arabic yeh/kaf → Persian and whitespace collapse, so phrase matching
+    survives the mixed spellings real Iranian files use."""
+    t = str(s or "").replace("ي", "ی").replace("ك", "ک").replace("‌", " ")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def parse_conditions(text) -> dict:
+    """Coverage policy encoded in the شرایط تعهد text.
+    → {covered?, share_pct?, flags[], age_min?, age_max?, text}"""
+    t = _fold_fa(text)
+    if not t:
+        return {}
+    out: dict = {"text": t[:300]}
+    if any(p in t for p in _NOT_INSURED):
+        out["covered"] = False              # the source says so explicitly
+    m = _SHARE_IN_TEXT.search(t)
+    if m:
+        try:
+            out["share_pct"] = int(m.group(1))
+        except ValueError:
+            pass
+    a = _AGE_RANGE.search(t)
+    if a:
+        out["age_min"], out["age_max"] = int(a.group(1)), int(a.group(2))
+    flags = [name for name, phrases in _COND_FLAGS
+             if any(_fold_fa(p) in t for p in phrases)]
+    if flags:
+        out["flags"] = flags
+    return out
+
+
 # ── 3) coverage building + application ────────────────────────────────────────
 def _to_bool(v) -> bool:
     s = str(v).strip().lower()
@@ -526,6 +601,23 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
                     entry[k] = c
         if link.row.get("inpatient") not in (None, ""):
             entry["inpatient"] = _to_bool(link.row["inpatient"])
+        # the شرایط تعهد text is policy, and it OVERRIDES the columns: it is where
+        # salamat states that a drug is not insured at all, what the real
+        # organization share is, and who may prescribe it.
+        cond = parse_conditions(link.row.get("conditions"))
+        if cond:
+            if cond.get("covered") is False:
+                entry["covered"] = False
+            if cond.get("share_pct") is not None:
+                entry["share_pct"] = cond["share_pct"]
+            if cond.get("flags"):
+                entry["restrictions"] = cond["flags"]
+                if "inpatient_only" in cond["flags"]:
+                    entry["inpatient"] = True
+            for k in ("age_min", "age_max"):
+                if cond.get(k) is not None:
+                    entry[k] = cond[k]
+            entry["conditions_text"] = cond["text"]
         entry["match_confidence"] = link.confidence
         entry["match_method"] = link.method
 

@@ -267,3 +267,57 @@ def test_multi_share_row_yields_valid_coverage_share():
     entry = next(iter(cov.applied.values()))["tamin"]
     assert entry["share_pct"] == 70 and entry["share_pct"] <= 100
     assert entry["reference_price"] == 8000
+
+
+# ── شرایط تعهد: policy text, not a boolean ───────────────────────────────────
+def test_conditions_column_is_not_the_covered_flag():
+    """salamat's «شرايط_تعهد» is the CONDITIONS of coverage. The loose "تعهد"
+    alias used to claim it as the covered flag, so 610 rows that say
+    «داروهاي غير بيمه اي» (explicitly NOT insured) were stored as covered."""
+    rows = [{"کد_ژنريک": "00287", "عنوان": "CICLOSPORIN",
+             "شرايط_تعهد": "داروهاي غير بيمه اي مشمول کد اصالت",
+             "قيمت": "692355", "سهم_سازمان": "0%",
+             "قيمت_کل_مورد_درتعهد_با_احتساب_يارانه_ارزي": "0"}] * 3
+    roles = infer_columns(rows)
+    assert roles["شرايط_تعهد"] == "conditions"
+    # a MONEY column may only take a money role — this one used to become covered
+    assert roles.get("قيمت_کل_مورد_درتعهد_با_احتساب_يارانه_ارزي") != "covered"
+    assert roles["قيمت"] == "reference_price"
+
+
+def test_parse_conditions_extracts_policy():
+    from services.core.drug_catalog.coverage_import import parse_conditions
+    c = parse_conditions("داروهاي غير بيمه اي مشمول کد اصالت")
+    assert c["covered"] is False and "authenticity_code" in c["flags"]
+    # share stated in the text is authoritative
+    c2 = parse_conditions("تجويز توسط پزشك متخصص با سهم سازمان 90 درصد")
+    assert c2["share_pct"] == 90 and "specialist" in c2["flags"]
+    assert c2.get("covered") is None                  # not stated ⇒ unchanged
+    # hospital-only and age bands
+    c3 = parse_conditions("بيمارستاني")
+    assert "inpatient_only" in c3["flags"]
+    c4 = parse_conditions("بيش از 0 سال  کمتر از 12 سال")
+    assert c4["age_min"] == 0 and c4["age_max"] == 12
+    # Arabic-yeh/kaf spellings fold to the same result
+    assert parse_conditions("تجويز توسط پزشك متخصص")["flags"] == \
+        parse_conditions("تجویز توسط پزشک متخصص")["flags"]
+    assert parse_conditions("") == {} and parse_conditions(None) == {}
+
+
+def test_conditions_override_coverage_entry():
+    """A non-insured row must not be applied as covered, and the share stated in
+    the conditions text wins over the column."""
+    row = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70",
+           "conditions": "داروهاي غير بيمه اي مشمول کد اصالت"}
+    cov = build_coverage(link_rows([row], CATALOG), insurer="salamat", catalog=CATALOG)
+    entry = next(iter(cov.applied.values()))["salamat"]
+    assert entry["covered"] is False
+    assert entry["restrictions"] == ["authenticity_code"]
+    assert "غير بيمه" in entry["conditions_text"] or "غیر بیمه" in entry["conditions_text"]
+
+    row2 = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70",
+            "conditions": "بيمارستاني   تجويز توسط پزشك متخصص با سهم سازمان 90 درصد"}
+    cov2 = build_coverage(link_rows([row2], CATALOG), insurer="salamat", catalog=CATALOG)
+    e2 = next(iter(cov2.applied.values()))["salamat"]
+    assert e2["share_pct"] == 90 and e2["inpatient"] is True
+    assert set(e2["restrictions"]) >= {"inpatient_only", "specialist"}
