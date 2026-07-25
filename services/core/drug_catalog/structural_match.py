@@ -163,6 +163,78 @@ def form_family(form: str) -> str:
     return re.split(r"[,;(]", str(form or "").upper(), maxsplit=1)[0].strip()
 
 
+def family_index(catalog) -> dict:
+    """ATC-keyed product families, falling back to the canonical generic.
+
+    ATC is the only reliable family key here: NFI spells the same substance
+    differently across forms — promethazine tablets are "promethazine
+    hydrochloride" while the injections are "isopromethazine hydrochloride" (an
+    NFI typo) — so a generic_name family cannot see across the forms, and 128
+    ATC codes carry more than one generic_name spelling. Grouping on ATC keeps
+    the whole R06AD02 family (tablet 180﷼ … injection 550,000﷼) together.
+    """
+    idx: dict[str, list] = {}
+    for rec in catalog or []:
+        atc = str(getattr(rec, "atc", "") or "").strip().upper()
+        key = f"atc:{atc}" if atc else None
+        if key is None:
+            cg = components(getattr(rec, "generic_name", "") or "")
+            key = f"gen:{cg[0]}" if cg else None
+        if key:
+            idx.setdefault(key, []).append(rec)
+    return idx
+
+
+def family_of(rec, fam_idx: dict) -> list:
+    """The ATC (or generic) family a record belongs to."""
+    atc = str(getattr(rec, "atc", "") or "").strip().upper()
+    if atc:
+        return fam_idx.get(f"atc:{atc}", [])
+    cg = components(getattr(rec, "generic_name", "") or "")
+    return fam_idx.get(f"gen:{cg[0]}", []) if cg else []
+
+
+def price_picks_form(candidates, ref_price, *, ratio: float = 3.0):
+    """Use the insurer's reference price to choose WHICH FORM a form-less row means.
+
+    Truncated insurer names often omit the dosage form («PROMETHAZINE HCL»), and
+    the same generic exists in NFI in many forms at wildly different prices —
+    promethazine is 180﷼ as a 25 mg tablet and 550,000﷼ as a 25 mg/1mL injection.
+    Matching on the ingredient alone picks a form arbitrarily, and the insurer
+    price then lands on the wrong product: the real case that produced a
+    +299,546% price proposal on a tablet.
+
+    The price is a strong form signal. Given the same-ingredient candidates and
+    the row's reference price, return the candidate whose own announced price is
+    closest in RATIO to it — but only when that candidate is at least `ratio`×
+    closer than the runner-up, so a genuine stale price is never mistaken for a
+    form mismatch. Returns None when the evidence is not decisive.
+    """
+    try:
+        ref = float(ref_price or 0)
+    except (TypeError, ValueError):
+        return None
+    if ref <= 0:
+        return None
+    scored = []
+    for rec in candidates or []:
+        try:
+            p = float(getattr(rec, "announced_price", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if p <= 0:
+            continue
+        # symmetric log-distance: 2× too high and 2× too low score the same
+        scored.append((max(ref, p) / min(ref, p), rec))
+    if len(scored) < 2:
+        return None
+    scored.sort(key=lambda x: x[0])
+    best, second = scored[0], scored[1]
+    if best[0] * ratio <= second[0]:
+        return best[1]
+    return None
+
+
 def build_form_vocab(catalog) -> list[str]:
     """NFI's own dosage_form strings, longest first so the most specific form
     present in a name wins ('INJECTION, SOLUTION' before 'INJECTION')."""

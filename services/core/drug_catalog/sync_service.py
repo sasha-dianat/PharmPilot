@@ -89,6 +89,37 @@ async def propose_prices_from_run(db: AsyncSession, run_id, *,
         if price and ok_conf:
             incoming.append({"irc": str(irc), "announced_price": price})
 
+    # A proposed price that matches ANOTHER FORM of the same generic far better
+    # than the matched product is explained by a form mismatch, not by staleness
+    # — 521 of the 1,917 extreme proposals were of this kind. Refuse those.
+    skipped_form_mismatch = 0
+    if incoming:
+        from . import structural_match as sm
+        current = await repo.fetch_by_irc(db, [r["irc"] for r in incoming])
+        # ATC-keyed families: NFI spells the same substance differently across
+        # forms (promethazine tablets vs "isopromethazine" injections), so a
+        # generic_name family cannot see across them and the guard misses.
+        fam_idx = sm.family_index(await repo.fetch_all(db))
+        kept = []
+        for r in incoming:
+            rec = current.get(r["irc"])
+            mine = float(getattr(rec, "announced_price", 0) or 0) if rec else 0.0
+            fam = sm.family_of(rec, fam_idx) if rec else []
+            prop = float(r["announced_price"])
+            if mine > 0 and len(fam) > 1:
+                other = [f for f in fam
+                         if str(f.dosage_form or "") != str(rec.dosage_form or "")
+                         and float(f.announced_price or 0) > 0]
+                mine_gap = max(prop, mine) / min(prop, mine)
+                best_other = min((max(prop, float(f.announced_price)) /
+                                  min(prop, float(f.announced_price)) for f in other),
+                                 default=None)
+                if best_other is not None and best_other * 3.0 <= mine_gap:
+                    skipped_form_mismatch += 1
+                    continue
+            kept.append(r)
+        incoming = kept
+
     skipped_decreases = 0
     if only_increases and incoming:
         current = await repo.fetch_by_irc(db, [r["irc"] for r in incoming])
@@ -105,6 +136,7 @@ async def propose_prices_from_run(db: AsyncSession, run_id, *,
     res = await run_sync(db, incoming, source=f"insurer-refresh:{insurer}", min_pct=min_pct)
     res["qualified"] = len(incoming)
     res["skipped_decreases"] = skipped_decreases
+    res["skipped_form_mismatch"] = skipped_form_mismatch
     res["insurer"] = insurer
     return res
 

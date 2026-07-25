@@ -321,6 +321,7 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
     cat_sig = [(r, *_cat_signals(r)) for r in catalog]
     struct_index = sm.build_index(catalog) if structural else None
     form_vocab = sm.build_form_vocab(catalog) if structural else []
+    fam_idx = sm.family_index(catalog)
 
     # ── blocking indexes ──────────────────────────────────────────────────────
     # Fuzzy comparison is expensive (SequenceMatcher); comparing every row to
@@ -564,6 +565,21 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
                 if fa_sim > best[0]:
                     best = (fa_sim, rec, "persian_name")
         score, rec, method = best
+        # ── price picks the form when the name doesn't state one ──────────────
+        # A form-less truncated name («PROMETHAZINE HCL») matches an arbitrary
+        # member of its ingredient family, and the insurer price then lands on
+        # the wrong product — promethazine tablet 180﷼ receiving the injection's
+        # 539,362﷼. When the row carries a reference price and the family spans
+        # several forms, the price identifies which one.
+        if rec is not None and not form and method == "ingredient":
+            fam = sm.family_of(rec, fam_idx)
+            if len({str(r.dosage_form or "") for r in fam}) > 1:
+                picked = sm.price_picks_form(fam, row.get("reference_price"))
+                if picked is not None and picked.irc != rec.irc:
+                    rec = picked
+                    method = "ingredient+price_form"
+                    # a form inferred from price is evidence, not proof
+                    score = min(score, 0.74)
         if code_assisted and rec is not None:
             # Signals came from the code-joined rich name. Review-first: a
             # cross-insurer join is powerful but NEW evidence — cap under the

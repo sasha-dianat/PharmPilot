@@ -179,3 +179,46 @@ def test_link_rows_refuses_the_shared_filler_class():
                  "CEPHALEXIN 1 g INJECTION, POWDER, FOR SOLUTION PARENTERAL"):
         link = link_rows([{"drug_name": name}], cat)[0]
         assert not link.matched, f"{name} → {link.record and link.record.generic_name}"
+
+
+def test_price_picks_the_form_a_truncated_name_omits():
+    """The real Phenergan case: «PROMETHAZINE HCL» states no dosage form, and the
+    generic exists as a 180﷼ tablet and a 550,000﷼ injection. Matching on the
+    ingredient alone chose the tablet, so the insurer's 539,362﷼ landed on it and
+    produced a +299,546% price proposal. The price identifies the form."""
+    cat = [
+        _rec("TAB", "promethazine hydrochloride", "25 mg", "TABLET"),
+        _rec("INJ", "promethazine hydrochloride", "25 mg/1mL", "INJECTION"),
+    ]
+    cat[0] = CatalogRecord(irc="TAB", name_fa="قرص", generic_name="promethazine hydrochloride",
+                           dosage_form="TABLET", strength="25 mg",
+                           announced_price=Decimal("180"))
+    cat[1] = CatalogRecord(irc="INJ", name_fa="آمپول", generic_name="promethazine hydrochloride",
+                           dosage_form="INJECTION", strength="25 mg/1mL",
+                           announced_price=Decimal("550000"))
+    picked = sm.price_picks_form(cat, 539362)
+    assert picked is not None and picked.irc == "INJ"
+    # the tablet's own price also resolves correctly
+    assert sm.price_picks_form(cat, 200).irc == "TAB"
+    # indecisive evidence must NOT pick. "Between" is in RATIO space, so the
+    # ambiguous point is the geometric mean √(180 × 550,000) ≈ 9,950 — both
+    # candidates are then 55× away and neither wins.
+    assert sm.price_picks_form(cat, 9950) is None
+    # a genuinely stale price (same form family, both far) is left alone
+    assert sm.price_picks_form(cat[:1], 539362) is None      # single candidate
+    assert sm.price_picks_form(cat, 0) is None and sm.price_picks_form(cat, None) is None
+
+
+def test_link_rows_uses_price_to_pick_the_form():
+    cat = [
+        CatalogRecord(irc="TAB", name_fa="قرص", generic_name="promethazine hydrochloride",
+                      dosage_form="TABLET", strength="25 mg", announced_price=Decimal("180")),
+        CatalogRecord(irc="INJ", name_fa="آمپول", generic_name="promethazine hydrochloride",
+                      dosage_form="INJECTION", strength="25 mg/1mL",
+                      announced_price=Decimal("550000")),
+    ]
+    row = {"drug_name": "PROMETHAZINE  HCL", "reference_price": 539362}
+    link = link_rows([row], cat)[0]
+    assert link.matched and link.record.irc == "INJ", link.record and link.record.irc
+    assert link.method.endswith("price_form")
+    assert link.confidence <= 0.74          # inferred from price ⇒ review, not auto-apply
