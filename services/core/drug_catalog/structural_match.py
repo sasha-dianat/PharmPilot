@@ -149,6 +149,7 @@ def build_index(catalog) -> dict:
     combination of the same ingredients, in either direction."""
     exact: dict[tuple, list] = {}
     family: dict[tuple, list] = {}
+    salt: dict[tuple, list] = {}
     for rec in catalog:
         comps = components(getattr(rec, "generic_name", "") or "")
         if not comps:
@@ -159,7 +160,14 @@ def build_index(catalog) -> dict:
         for cg in comps:                       # reachable by ANY of its components
             exact.setdefault((cg, form), []).append(entry)
             family.setdefault((cg, form_family(form)), []).append(entry)
-    return {"exact": exact, "family": family}
+            # salt-tolerant lane: NFI keeps the salt in the generic name
+            # ("chlorpheniramine maleate") while a formulary may print the base
+            # ("CHLORPHENIRAMINE 4 mg TABLET"). Keyed by first word so the
+            # lookup stays O(1); resolved only when UNAMBIGUOUS (see match()).
+            head = cg.split()[0]
+            if head != cg:
+                salt.setdefault((head, form), []).append((cg, entry))
+    return {"exact": exact, "family": family, "salt": salt}
 
 
 # confidence tiers — an exact controlled-vocabulary hit is strong evidence, but
@@ -168,6 +176,7 @@ def build_index(catalog) -> dict:
 CONF_EXACT_DOSE = 0.93
 CONF_EXACT_NO_DOSE = 0.80
 CONF_FAMILY_DOSE = 0.78
+CONF_SALT = 0.76
 CONF_COMBO_CAP = 0.70
 
 
@@ -203,4 +212,20 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
                     conf = min(conf, CONF_COMBO_CAP)
                     why += " (combination — confirm components)"
                 return rec, conf, why
+
+    # salt-tolerant last resort, single-ingredient rows only: the formulary
+    # prints the base and NFI keeps the salt. Accepted ONLY when exactly one
+    # NFI ingredient extends the row's name — otherwise "INSULIN" would silently
+    # pick one of insulin glargine / aspart / lispro.
+    if not combo:
+        g = generics[0]
+        cands = index.get("salt", {}).get((g.split()[0], form)) or []
+        widened = {cg for cg, _e in cands if cg.startswith(g + " ")}
+        if len(widened) == 1:
+            for cg, (rec, cat_doses, comps) in cands:
+                if cg not in widened or len(comps) != 1:
+                    continue
+                if doses and cat_doses and not doses_agree(doses, cat_doses):
+                    continue
+                return rec, CONF_SALT, f"salt-tolerant ({g} → {cg})"
     return None, 0.0, ""

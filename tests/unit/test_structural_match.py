@@ -39,7 +39,8 @@ def test_parse_name_splits_the_controlled_vocabulary():
     vocab = sm.build_form_vocab(CAT)
     p = sm.parse_name(
         "CICLOSPORIN 100 mg CAPSULE, LIQUID FILLED ORAL 100MG CAPSULE", vocab)
-    assert p["generics"] == ["ciclosporin"]
+    # the INN spelling is canonicalized to the USAN name NFI actually stores
+    assert p["generics"] == ["cyclosporine"]
     assert p["form"] == "CAPSULE, LIQUID FILLED"        # most specific form wins
     assert p["route"] == "ORAL"
     assert 100.0 in p["doses"] and not p["combo"]
@@ -109,3 +110,34 @@ def test_link_rows_uses_structural_and_code_join_stays_review_first():
 
     # structural=False restores the pure fuzzy path
     assert link_rows([row], CAT, structural=False)[0].method != "structural"
+
+
+def test_salt_tolerant_lane_resolves_base_name_but_refuses_ambiguity():
+    """NFI keeps the salt in the generic ("amlodipine besilate" — normalize()
+    strips maleate/hydrochloride but not besilate) while a formulary prints the
+    base. Widening is allowed only when exactly ONE NFI ingredient extends the
+    row's name."""
+    cat = [
+        _rec("AML", "amlodipine besilate", "5 mg", "TABLET"),
+        _rec("GLA", "insulin glargine", "100 iu/1mL", "INJECTION"),
+        _rec("ASP", "insulin aspart", "100 iu/1mL", "INJECTION"),
+    ]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, why = sm.match(sm.parse_name("AMLODIPINE 5 mg TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "AML"
+    assert conf == sm.CONF_SALT < sm.CONF_EXACT_DOSE and "salt-tolerant" in why
+    # ambiguous: two insulins extend "INSULIN" → refuse rather than pick one
+    rec2, conf2, _ = sm.match(sm.parse_name("INSULIN 100 iu/1mL INJECTION PARENTERAL", vocab), idx)
+    assert rec2 is None and conf2 == 0.0
+
+
+def test_inn_synonyms_bridge_to_the_usan_name_nfi_uses():
+    """Iranian formularies use INN spellings; NFI stores USAN ones."""
+    from services.core.drug_catalog.schema import canonical_ingredient
+    for inn, usan in (("ciclosporin", "cyclosporine"), ("aciclovir", "acyclovir"),
+                      ("salbutamol", "albuterol"), ("adrenaline", "epinephrine")):
+        assert canonical_ingredient(inn) == usan
+    cat = [_rec("CYC", "cyclosporine", "100 mg", "CAPSULE")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, _c, _w = sm.match(sm.parse_name("CICLOSPORIN 100 mg CAPSULE ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "CYC"

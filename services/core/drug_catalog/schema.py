@@ -29,8 +29,30 @@ _SYNONYMS: dict[str, str] = {
 }
 
 
+def _load_synonym_file() -> dict:
+    """INN/BAN → USAN equivalences from data/reference/ingredient_synonyms.json.
+    Iranian formularies use INN spellings (ciclosporin, aciclovir, salbutamol)
+    while NFI stores USAN ones (cyclosporine, acyclovir, albuterol) — without
+    this bridge those rows can never link. File-backed so the list is
+    reviewable and extendable without a code change."""
+    from pathlib import Path
+    import json
+    p = Path(__file__).resolve().parents[3] / "data" / "reference" / "ingredient_synonyms.json"
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    syn = doc.get("synonyms")
+    return {str(k).strip().lower(): str(v).strip().lower()
+            for k, v in syn.items()} if isinstance(syn, dict) else {}
+
+
+# file entries load first so the built-ins above stay authoritative on conflict
+_SYNONYMS = {**_load_synonym_file(), **_SYNONYMS}
+
+
 def canonical_ingredient(name: str) -> str:
-    """Map a lay/brand ingredient name to its canonical active ingredient."""
+    """Map a lay/brand/INN ingredient name to its canonical active ingredient."""
     n = (name or "").strip().lower()
     return _SYNONYMS.get(n, n)
 
