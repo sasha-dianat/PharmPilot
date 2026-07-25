@@ -362,3 +362,40 @@ def test_merge_row_sets_codeless_deduped_by_name():
     # single set passes through untouched
     assert merge_row_sets([a]) == a
     assert merge_row_sets([]) == []
+
+
+# ── column-role inference: the insurer's own code must not steal the name ────
+def test_roles_resolve_for_tamin_style_headers():
+    """Regression: the loose "drug" alias let drug_code claim the drug_name role,
+    dropping the real name column — every tamin upload scored 0 applied /
+    all-unmatched. Also: "covered" wasn't a true-word, so the HOSPITAL column
+    was elected the covered flag instead of insurance_status."""
+    rows = [{"drug_code": "01211", "drug_name": "METFORMIN 500 mg TABLET ORAL",
+             "insurance_status_normalized": "covered",
+             "hospital_status_normalized": "False",
+             "max_prescription": "30",
+             "organization_share_percent_without_subsidy": "70.0",
+             "price_without_subsidy": "21000", "accepted_total_price": "18000"}] * 3
+    roles = resolve_roles(rows, None)
+    assert roles["drug_code"] == "generic_code"          # code → code, not name
+    assert roles["drug_name"] == "drug_name"             # the real name survives
+    assert roles["insurance_status_normalized"] == "covered"
+    assert roles["hospital_status_normalized"] == "inpatient"
+    assert roles["max_prescription"] == "ceiling"
+    assert roles["accepted_total_price"] == "reference_price"
+
+
+def test_insurer_mismatch_guard():
+    from services.core.drug_catalog.coverage_harvest import detect_insurer_mismatch
+    salamat_names = {f"DRUG {i}" for i in range(40)}
+    tamin_names = {f"OTHER {i} 100 mg TABLET ORAL" for i in range(40)}
+    known = {"salamat": salamat_names, "tamin": tamin_names}
+    # a salamat file staged as tamin is caught
+    bad = detect_insurer_mismatch(sorted(salamat_names), known, "tamin")
+    assert bad and bad["looks_like"] == "salamat" and bad["match_pct"] == 100
+    # the same file under its own insurer passes
+    assert detect_insurer_mismatch(sorted(salamat_names), known, "salamat") is None
+    # a brand-new list (no overlap with anyone) is never blocked
+    assert detect_insurer_mismatch([f"NEW ITEM {i}" for i in range(40)], known, "tamin") is None
+    # too few rows to judge
+    assert detect_insurer_mismatch(sorted(salamat_names)[:5], known, "tamin") is None

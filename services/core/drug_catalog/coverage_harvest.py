@@ -625,7 +625,33 @@ def start_harvest(source_id, insurer: str) -> dict:
     return _STATE.snapshot()
 
 
-async def start_upload(db, insurer: str, rows: list[dict], filenames: list[str]) -> dict:
+def detect_insurer_mismatch(names: list[str], known: dict[str, set[str]],
+                            selected: str) -> dict | None:
+    """Does this file's content look like ANOTHER insurer's دارونامه?
+
+    A mislabeled upload is silently corrosive: its rows enter the observed layer
+    under the wrong insurer and pollute the national-code registry the resolver
+    reads (a salamat file was once staged as tamin — 3,679 rows, every code
+    salamat's). Exact NAME overlap discriminates cleanly, because each insurer
+    writes product names its own way (salamat truncates, tamin is structured).
+    Returns None when the selection is consistent."""
+    probe = {str(n).strip().upper() for n in names if str(n).strip()}
+    if len(probe) < 20:
+        return None                       # too small to judge
+    frac = {ins: len(probe & {v.upper() for v in vals}) / len(probe)
+            for ins, vals in (known or {}).items() if vals}
+    if not frac:
+        return None
+    best = max(frac, key=lambda k: frac[k])
+    mine = frac.get(selected, 0.0)
+    if best != selected and frac[best] >= 0.5 and frac[best] >= mine + 0.25:
+        return {"looks_like": best, "match_pct": round(100 * frac[best]),
+                "selected_pct": round(100 * mine)}
+    return None
+
+
+async def start_upload(db, insurer: str, rows: list[dict], filenames: list[str],
+                       *, force: bool = False) -> dict:
     """Stage a manually uploaded دارونامه through the SAME pipeline as a crawl
     (crosswalk → code registry → linking → snapshots → review run) instead of
     the legacy instant-apply path. Uses a per-insurer synthetic source
@@ -634,11 +660,27 @@ async def start_upload(db, insurer: str, rows: list[dict], filenames: list[str])
     import asyncio
     from sqlalchemy import select
     from shared.models.coverage import CoverageSource
+    from shared.models.formulary_snapshot import FormularySnapshot
 
     if _STATE.running:
         raise RuntimeError("یک برداشت پوشش در حال اجراست.")
     if not rows:
         raise RuntimeError("هیچ ردیفی از فایل(ها) استخراج نشد.")
+    if not force:
+        known: dict[str, set[str]] = {}
+        for ins, nm in (await db.execute(select(
+                FormularySnapshot.insurer, FormularySnapshot.raw_name).distinct())).all():
+            if nm:
+                known.setdefault(ins, set()).add(nm)
+        names = [r.get("drug_name") or r.get("name") or "" for r in rows
+                 if isinstance(r, dict)]
+        bad = detect_insurer_mismatch(names, known, insurer)
+        if bad:
+            raise RuntimeError(
+                f"محتوای فایل با بیمه‌گر انتخاب‌شده هم‌خوان نیست: "
+                f"{bad['match_pct']}٪ نام‌ها با «{bad['looks_like']}» مطابقت دارد "
+                f"و تنها {bad['selected_pct']}٪ با «{insurer}». "
+                f"بیمه‌گر را اصلاح کنید یا با تأیید اجباری ادامه دهید.")
     src = (await db.execute(select(CoverageSource).where(
         CoverageSource.insurer == insurer,
         CoverageSource.strategy == "manual"))).scalar_one_or_none()

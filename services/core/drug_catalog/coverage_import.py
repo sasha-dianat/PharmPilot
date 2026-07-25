@@ -34,20 +34,36 @@ _DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567
 ROLES = ("irc", "gtin", "generic_code", "drug_name", "covered", "share_pct",
          "reference_price", "ceiling", "inpatient")
 
+# Alias order matters: dict order is the priority for the substring pass, and a
+# role is claimed once. The insurer's own CODE column must therefore be listed
+# (generic_code) ahead of any loose name alias — tamin publishes both drug_code
+# and drug_name, and the bare "drug" alias used to let drug_code claim the
+# drug_name role, dropping the real name column and failing 100% of rows.
 _HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "irc": ("irc", "کد irc", "کد فرآورده"),
     "gtin": ("gtin", "بارکد"),
-    "generic_code": ("کد ژنریک", "کد ملی", "کد ملي", "generalcode", "generic code", "کد عمومی"),
-    "drug_name": ("نام ژنریک", "نام دارو", "شرح", "نام", "drug", "generic name", "name", "شرح دارو", "عنوان"),
-    "covered": ("تعهد بیمه", "بيمه", "بیمه", "مورد تعهد", "تعهد", "covered", "isbimeh", "پوشش"),
-    "share_pct": ("درصد سازمان", "درصد تعهد", "سهم سازمان", "درصد", "percent", "share", "درصد سهم سازمان", "درصد سهم"),
+    "generic_code": ("کد ژنریک", "کد ملی", "کد ملي", "generalcode", "generic code",
+                     "کد عمومی", "drug code", "کد دارو", "drugcode"),
+    "drug_name": ("نام ژنریک", "نام دارو", "شرح", "نام", "drug name", "drugname",
+                  "drug", "generic name", "name", "شرح دارو", "عنوان"),
+    "covered": ("تعهد بیمه", "بيمه", "بیمه", "مورد تعهد", "تعهد", "covered", "isbimeh",
+                "پوشش", "insurance status", "insurancestatus", "وضعیت بیمه"),
+    "share_pct": ("درصد سازمان", "درصد تعهد", "سهم سازمان", "درصد", "percent", "share",
+                  "درصد سهم سازمان", "درصد سهم", "organization share percent"),
     "reference_price": ("قیمت مورد تعهد", "قیمت تعهد", "مبلغ مورد قبول", "جمع مورد قبول سازمان",
-                        "قیمت بیمه", "orgprice", "reference price", "قيمت"),
-    "ceiling": ("سقف تجویز", "سقف تجويز", "سقف", "ceiling", "prescribedceiling"),
-    "inpatient": ("بيمارستاني", "بیمارستانی", "بستری", "inpatient", "isbimarestani"),
+                        "قیمت بیمه", "orgprice", "reference price", "قيمت",
+                        "accepted total price", "accepted price"),
+    "ceiling": ("سقف تجویز", "سقف تجويز", "سقف", "ceiling", "prescribedceiling",
+                "max prescription", "maxprescription"),
+    "inpatient": ("بيمارستاني", "بیمارستانی", "بستری", "inpatient", "isbimarestani",
+                  "hospital status", "hospitalstatus"),
 }
 
-_TRUE_WORDS = {"1", "true", "yes", "بله", "دارد", "فعال", "دارای تعهد", "مورد تعهد", "*", "✓"}
+# "covered"/"not_covered" are tamin's own normalized words. Without them the
+# insurance-status column failed the binary test and the HOSPITAL column was
+# elected the covered flag instead.
+_TRUE_WORDS = {"1", "true", "yes", "بله", "دارد", "فعال", "دارای تعهد", "مورد تعهد",
+               "*", "✓", "covered", "است"}
 _FALSE_WORDS = {"0", "false", "no", "خیر", "ندارد", "غیرفعال", "فاقد تعهد", "-",
                 "not_covered", "not covered", "نيست", "نیست"}
 

@@ -493,6 +493,7 @@ async def catalog_integrity_apply(body: IntegrityApplyRequest,
 @router.post("/coverage/upload-run")
 async def coverage_upload_run(files: list[UploadFile] = File(...),
                               insurer: str = "tamin",
+                              force: bool = False,
                               staff: Staff = Depends(require_permission("inventory:write")),
                               db: AsyncSession = Depends(get_db)):
     """Staged manual upload: extract rows from one or MORE files of the same
@@ -520,7 +521,7 @@ async def coverage_upload_run(files: list[UploadFile] = File(...),
                             detail={"message": "هیچ ردیفی از فایل(ها) استخراج نشد.",
                                     "files": per_file})
     try:
-        state = await ch.start_upload(db, insurer, merged, names)
+        state = await ch.start_upload(db, insurer, merged, names, force=force)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"state": state, "files": per_file, "merged_rows": len(merged)}
