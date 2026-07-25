@@ -513,6 +513,12 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
             # unmatched for enrichment, which is the honest answer.
             if name_sim < INGREDIENT_FLOOR:
                 continue
+            # …and the discriminating parts must agree. Shared filler words
+            # ("calcium", "dihydrochloride") inflate raw similarity and hide a
+            # different molecule: calcium folinate ↔ calcium gluconate scores
+            # 0.788, trientine ↔ trimetazidine dihydrochloride 0.889.
+            if not sm.ingredient_agrees(canon, c_canon):
+                continue
             has_extra = bool(strengths) or bool(form)
             if has_extra:
                 # strength agreement: mg-normalized (0.05 mg == 50 microgram),

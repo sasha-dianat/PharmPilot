@@ -23,6 +23,7 @@ Deterministic and offline-testable; no LLM, no network.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 from .schema import canonical_ingredient, normalize
 
@@ -77,6 +78,80 @@ def doses_agree(a: set, b: set, tol: float = 0.01) -> bool:
                 if x[0] == y[0] and abs(x[1] - y[1]) <= tol * max(x[1], y[1], 1e-9):
                     return True
             elif abs(x - y) <= tol * max(x, y, 1e-9):
+                return True
+    return False
+
+
+# Salt / hydrate / qualifier words that modify an ingredient without identifying
+# it. Present on one side only, they are noise; present on BOTH, they inflate
+# string similarity and hide that the drugs differ.
+FILLER_TOKENS = frozenset((
+    "acid", "sodium", "potassium", "calcium", "magnesium", "aluminum", "aluminium",
+    "hydrochloride", "dihydrochloride", "hydrobromide", "sulfate", "sulphate",
+    "acetate", "mesylate", "maleate", "tartrate", "bitartrate", "phosphate",
+    "citrate", "chloride", "bromide", "nitrate", "oxide", "hydroxide",
+    "carbonate", "gluconate", "lactate", "benzoate", "salicylate", "stearate",
+    "succinate", "fumarate", "valerate", "propionate", "palmitate", "besilate",
+    "dihydrate", "monohydrate", "trihydrate", "anhydrous", "concentrated",
+    "compound", "complex", "combination", "ion", "base", "salt",
+    # dosage-form and presentation words: the form is compared separately, so
+    # their presence on one side only must not defeat ingredient agreement
+    # («PIRACETAM … LIQUID» vs "piracetam" is the same drug)
+    "solution", "injection", "liquid", "syrup", "suspension", "powder",
+    "tablet", "capsule", "drops", "drop", "spray", "cream", "ointment", "gel",
+    "elixir", "emulsion", "lotion", "granule", "granules", "sachet", "vial",
+    "ampoule", "inhaler", "suppository", "pessary", "patch", "lozenge"))
+
+# Calibrated on real Iranian formulary pairs, ordered by similarity:
+#   cefalexin↔cephalexin 0.842 · alendronate↔alendronic 0.762  ← same drug
+#   trientine↔trimetazidine 0.727 · amino↔amikacin 0.615       ← different drugs
+# 0.75 is the widest gap between those two groups.
+_AGREE_TOKEN = 0.75          # discriminating tokens must reach this pairwise
+_AGREE_WHOLE = 0.66          # and the remaining strings this overall
+
+
+def ingredient_agrees(a: str, b: str) -> bool:
+    """Do two canonical ingredient strings name the SAME active substance?
+
+    Plain string similarity is not enough: shared filler words inflate it and
+    conceal different molecules — "calcium folinate" vs "calcium gluconate"
+    scores 0.788 on the shared "calcium", and "trientine dihydrochloride" vs
+    "trimetazidine dihydrochloride" reaches 0.889 on the shared salt. So the
+    comparison is made on what is LEFT after removing the tokens they share:
+
+      calcium folinate / calcium gluconate  → folinate vs gluconate   → refuse
+      trientine … / trimetazidine …         → trientine vs trimetazidine → refuse
+      amino acid / amikacin                 → no token pair agrees    → refuse
+      alendronate / alendronic acid         → alendronate ≈ alendronic → accept
+      dextrose / anhydrous dextrose         → only a filler differs   → accept
+      potassium chloride / potassiumchlorideconcentrated → substring  → accept
+    """
+    ta = [t for t in str(a or "").split() if len(t) >= 3]
+    tb = [t for t in str(b or "").split() if len(t) >= 3]
+    if not ta or not tb:
+        return False
+    shared = set(ta) & set(tb)
+    ra = [t for t in ta if t not in shared]
+    rb = [t for t in tb if t not in shared]
+    if not ra and not rb:
+        return True                          # identical up to token order
+    if not ra or not rb:
+        # one side carries extra words: fine only if they are all fillers
+        extra = ra or rb
+        return all(t in FILLER_TOKENS for t in extra)
+    # both remainders are non-identifying (sodium fluoride vs fluoride ion):
+    # the discriminating ingredient is what they share, so they agree
+    if all(t in FILLER_TOKENS for t in ra + rb):
+        return True
+    # both sides have discriminating content — it must actually agree
+    sa, sb = " ".join(ra), " ".join(rb)
+    if SequenceMatcher(None, sa, sb).ratio() < _AGREE_WHOLE:
+        return False
+    for x in ra:
+        for y in rb:
+            if x in y or y in x:             # potassium ⊂ potassiumchloride…
+                return True
+            if SequenceMatcher(None, x, y).ratio() >= _AGREE_TOKEN:
                 return True
     return False
 

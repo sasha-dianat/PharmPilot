@@ -141,3 +141,41 @@ def test_inn_synonyms_bridge_to_the_usan_name_nfi_uses():
     idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
     rec, _c, _w = sm.match(sm.parse_name("CICLOSPORIN 100 mg CAPSULE ORAL", vocab), idx)
     assert rec is not None and rec.irc == "CYC"
+
+
+def test_ingredient_agreement_ignores_shared_filler_words():
+    """Shared salt/qualifier words inflate string similarity and conceal a
+    different molecule — the residual mismatch class after the similarity floor.
+    Agreement is decided on what is LEFT after removing shared tokens."""
+    from services.core.drug_catalog.schema import canonical_ingredient as ci
+    from services.ai.clinical_decision_support.normalizer import normalize
+    def c(x): return ci(normalize(x) or x.lower())
+
+    # different drugs sharing a filler word (raw similarity 0.788 / 0.889)
+    assert not sm.ingredient_agrees(c("calcium folinate"), c("calcium gluconate"))
+    assert not sm.ingredient_agrees(c("trientine dihydrochloride"),
+                                    c("trimetazidine dihydrochloride"))
+    # different drugs with no shared token but a common stem
+    for a, b in (("cephalexin", "cefazolin"), ("amino acid", "amikacin"),
+                 ("prostaglandin e2", "protamine sulfate"),
+                 ("plastic container", "placenta")):
+        assert not sm.ingredient_agrees(c(a), c(b)), f"{a} vs {b}"
+    # same drug: salt/acid pair, spelling variant, filler-only difference,
+    # concatenated name, token reorder, synonym
+    for a, b in (("alendronate", "alendronic acid"), ("cefalexin", "cephalexin"),
+                 ("dextrose", "anhydrous dextrose"),
+                 ("metformin hydrochloride", "metformin"),
+                 ("potassiumchlorideconcentrated", "potassium chloride"),
+                 ("valproate sodium", "sodium valproate"),
+                 ("ursodeoxycholic acid", "ursodiol")):
+        assert sm.ingredient_agrees(c(a), c(b)), f"{a} vs {b}"
+    assert not sm.ingredient_agrees("", "metformin")
+
+
+def test_link_rows_refuses_the_shared_filler_class():
+    cat = [_rec("CG", "calcium gluconate", "100 mg/1mL", "INJECTION"),
+           _rec("CZ", "cefazolin", "1 g", "INJECTION, POWDER, FOR SOLUTION")]
+    for name in ("CALCIUM FOLINATE 100 mg/1mL INJECTION PARENTERAL",
+                 "CEPHALEXIN 1 g INJECTION, POWDER, FOR SOLUTION PARENTERAL"):
+        link = link_rows([{"drug_name": name}], cat)[0]
+        assert not link.matched, f"{name} → {link.record and link.record.generic_name}"
