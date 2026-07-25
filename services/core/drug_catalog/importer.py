@@ -239,6 +239,11 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
         # than NFI-verified (1,843 stamps were lost this way). Carry it across
         # UNLESS this crawl actually supplies a price, in which case the value
         # is NFI-verified now and the stamp should rightly disappear.
+        # ON CONFLICT bypasses the ORM's onupdate, so updated_at was never
+        # stamped by a crawl — max(updated_at) sat frozen while thousands of
+        # rows were rewritten, making "when did the crawl last touch this?"
+        # unanswerable. Stamp it explicitly.
+        update_cols = {**update_cols, "updated_at": func.now()}
         if "monograph" in update_cols:
             existing = DrugCatalogItem.__table__.c.monograph
             update_cols = {**update_cols, "monograph": sa_case(
