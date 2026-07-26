@@ -210,6 +210,7 @@ export default function CoverageAdmin() {
 
       {tab === 'issues' && (<div className="space-y-5">
         <TriageBoard onError={err} />
+        <CountryProposalsPanel onError={err} />
         <details className="bg-slate-800/30 border border-slate-700 rounded-lg">
           <summary className="px-4 py-2 text-sm cursor-pointer text-slate-300">
             🔎 فهرست تفصیلی اقلام (برای بررسی موردی)
@@ -921,6 +922,79 @@ function TriageBoard({ onError }: { onError: (e: unknown, f: string) => void }) 
               </div>
             )}
           </div>))}
+      </div>
+    </div>
+  )
+}
+
+interface CountryProposal {
+  irc: string; name_fa: string; generic_name: string | null; manufacturer: string
+  proposed_country: string; confidence: number; evidence: string
+}
+
+function CountryProposalsPanel({ onError }: { onError: (e: unknown, f: string) => void }) {
+  const qc = useQueryClient()
+  const [floor, setFloor] = useState(0.95)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState<number | null>(null)
+  const { data } = useQuery<{ proposals: CountryProposal[]; total: number
+                              firms: Record<string, number> }>({
+    queryKey: ['country-proposals'],
+    queryFn: () => pricingApi.countryProposals(0).then(r => r.data),
+  })
+  const all = data?.proposals || []
+  const eligible = all.filter(p => p.confidence >= floor)
+  const applyBulk = async () => {
+    setBusy(true); setDone(null)
+    try {
+      const { data: r } = await pricingApi.countryProposalsApply({ min_confidence: floor })
+      setDone(r.applied)
+      qc.invalidateQueries({ queryKey: ['country-proposals'] })
+    } catch (e) { onError(e, 'اعمال کشورها ناموفق بود.') } finally { setBusy(false) }
+  }
+  if (!all.length) return null
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className="font-semibold text-sm">🌍 پیشنهاد کشور سازنده</span>
+        <span className="text-[11px] text-slate-400">
+          صفحهٔ NFI کشور را اعلام نکرده؛ استنتاج از ملیت سازنده — واردکنندگان کنار گذاشته شده‌اند
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="text-[11px] text-slate-400">حداقل اطمینان:</label>
+        {[1, 0.95, 0.9, 0.7].map(f => (
+          <button key={f} onClick={() => setFloor(f)}
+            className={`px-2 py-0.5 rounded text-[11px] border ${floor === f
+              ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300'
+              : 'border-slate-600 text-slate-400'}`}>
+            ≥{fa(Math.round(f * 100))}٪
+          </button>))}
+        <span className="text-[11px] text-slate-300">
+          {fa(eligible.length)} از {fa(all.length)} مورد واجد شرایط
+        </span>
+        <button onClick={applyBulk} disabled={busy || !eligible.length}
+          className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded text-[11px] disabled:opacity-50">
+          اعمال {fa(eligible.length)} مورد
+        </button>
+        {done != null && (
+          <span className="text-[11px] text-emerald-300">✓ {fa(done)} کشور اعمال شد</span>)}
+      </div>
+      <div className="max-h-64 overflow-auto">
+        <table className="w-full text-[11px]">
+          <tbody>
+            {eligible.slice(0, 60).map(p => (
+              <tr key={p.irc} className="border-t border-slate-700/50">
+                <td className="py-1 pl-2 text-right">{p.name_fa}</td>
+                <td className="py-1 text-slate-400">{p.manufacturer}</td>
+                <td className="py-1 text-slate-400" dir="rtl">{p.evidence}</td>
+                <td className={`py-1 text-left tabular-nums ${p.confidence >= 0.95
+                  ? 'text-emerald-300' : p.confidence >= 0.9 ? 'text-amber-300' : 'text-rose-300'}`}>
+                  {fa(Math.round(p.confidence * 100))}٪
+                </td>
+              </tr>))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

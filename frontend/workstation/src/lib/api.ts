@@ -171,6 +171,10 @@ export const pricingApi = {
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
   nfiFailures: () => apiClient.get('/pricing/catalog/nfi/failures'),
+  countryProposals: (minConfidence = 0) =>
+    apiClient.get('/pricing/catalog/country-proposals', { params: { min_confidence: minConfidence } }),
+  countryProposalsApply: (body: { ircs?: string[]; min_confidence?: number }) =>
+    apiClient.post('/pricing/catalog/country-proposals/apply', body),
   nfiRetryFailed: (body: { proxy?: string; delay?: number; limit?: number }) =>
     apiClient.post('/pricing/catalog/nfi/retry-failed', body),
   nfiStop: () => apiClient.post('/pricing/catalog/nfi/stop', {}),

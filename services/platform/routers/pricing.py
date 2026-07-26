@@ -255,6 +255,36 @@ async def nfi_harvest_status(staff: Staff = Depends(require_permission("inventor
     return svc.status()
 
 
+@router.get("/catalog/country-proposals")
+async def country_proposals(min_confidence: float = 0.0, limit: int = 5000,
+                            staff: Staff = Depends(require_permission("inventory:read")),
+                            db: AsyncSession = Depends(get_db)):
+    """Proposed countries for products whose NFI page never stated one. Each
+    carries the manufacturer's own observed split as evidence — importers and
+    firms with too little history are excluded rather than guessed at."""
+    from services.core.drug_catalog import country_inference
+    return await country_inference.propose(db, min_confidence=min_confidence, limit=limit)
+
+
+class CountryApplyRequest(BaseModel):
+    ircs: list[str] = []
+    min_confidence: float | None = None      # bulk-approve everything at/above
+
+
+@router.post("/catalog/country-proposals/apply")
+async def country_proposals_apply(body: CountryApplyRequest,
+                                  staff: Staff = Depends(require_permission("inventory:write")),
+                                  db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog import country_inference
+    ircs = list(body.ircs)
+    if body.min_confidence is not None:
+        res = await country_inference.propose(db, min_confidence=body.min_confidence)
+        ircs = [p["irc"] for p in res["proposals"]]
+    if not ircs:
+        raise HTTPException(status_code=400, detail="موردی برای اعمال انتخاب نشده است.")
+    return await country_inference.apply(db, ircs, staff_id=getattr(staff, "id", None))
+
+
 @router.get("/catalog/nfi/failures")
 async def nfi_failures(staff: Staff = Depends(require_permission("inventory:read")),
                        db: AsyncSession = Depends(get_db)):
