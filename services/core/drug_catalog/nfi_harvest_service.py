@@ -82,6 +82,77 @@ def _fetch_and_record(page_id: int, opener, recorder) -> tuple[int, str]:
     return status, body.decode("utf-8", "replace") if body else ""
 
 
+# Transport failures worth re-fetching. A 5xx is excluded on purpose: here it
+# overwhelmingly means the id does not exist (they arrive in long contiguous
+# blocks — 58,979–70,000 in one run), so replaying them would re-burn the hours
+# the retry pass exists to save.
+RETRYABLE = ("dns_fail", "timeout", "tls_fail", "transport_error",
+             "proxy_unreachable", "rate_limited")
+
+
+async def record_failures(rows: list[dict], crawler: str = "nfi") -> int:
+    """Upsert the pages this pass could not fetch, so a later pass can target
+    only them. rows: [{page_id, category, http_status, error}]"""
+    from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert
+    from services.platform.database import AsyncSessionLocal
+    from shared.models.harvest_failure import HarvestFailure
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        for r in rows:
+            stmt = insert(HarvestFailure).values(
+                crawler=crawler, page_id=int(r["page_id"]),
+                category=str(r.get("category") or "unknown")[:40],
+                http_status=r.get("http_status"), attempts=1,
+                last_error=(str(r.get("error"))[:300] if r.get("error") else None),
+                first_seen=now, last_seen=now, resolved_at=None)
+            await db.execute(stmt.on_conflict_do_update(
+                constraint="uq_harvest_failure_page",
+                set_={"category": stmt.excluded.category,
+                      "http_status": stmt.excluded.http_status,
+                      "last_error": stmt.excluded.last_error,
+                      "last_seen": now, "resolved_at": None,
+                      "attempts": HarvestFailure.attempts + 1}))
+        await db.commit()
+    return len(rows)
+
+
+async def resolve_failures(page_ids: list[int], crawler: str = "nfi") -> int:
+    """Mark ids that a later pass fetched successfully (kept, not deleted, so
+    chronically unreachable pages stay visible)."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+    from services.platform.database import AsyncSessionLocal
+    from shared.models.harvest_failure import HarvestFailure
+    if not page_ids:
+        return 0
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(update(HarvestFailure)
+                               .where(HarvestFailure.crawler == crawler,
+                                      HarvestFailure.page_id.in_(page_ids),
+                                      HarvestFailure.resolved_at.is_(None))
+                               .values(resolved_at=datetime.now(timezone.utc)))
+        await db.commit()
+        return res.rowcount or 0
+
+
+async def pending_failures(crawler: str = "nfi",
+                           categories: tuple[str, ...] = RETRYABLE) -> list[int]:
+    """Unresolved page ids worth retrying, oldest first."""
+    from sqlalchemy import select
+    from services.platform.database import AsyncSessionLocal
+    from shared.models.harvest_failure import HarvestFailure
+    async with AsyncSessionLocal() as db:
+        q = select(HarvestFailure.page_id).where(
+            HarvestFailure.crawler == crawler,
+            HarvestFailure.resolved_at.is_(None))
+        if categories:
+            q = q.where(HarvestFailure.category.in_(list(categories)))
+        return list((await db.execute(q.order_by(HarvestFailure.page_id))).scalars().all())
+
+
 async def _flush(batch: list[dict], source: str) -> int:
     from services.platform.database import AsyncSessionLocal
     records = build_records(batch)
@@ -94,17 +165,23 @@ async def _flush(batch: list[dict], source: str) -> int:
         return await upsert_catalog(db, records, source=source, overrides=overrides)
 
 
-async def _run(start: int, end: int, delay: float, proxy: str | None, source: str) -> None:
+async def _run(start: int, end: int, delay: float, proxy: str | None, source: str,
+               page_ids: list[int] | None = None) -> None:
     from .nfi import page_coherence, quarantine_monograph
     from .nfi_integrity import load_vocab
+    from .harvest_diagnostics import classify
     opener = make_opener(proxy or os.getenv("HTTPS_PROXY"))
     recorder = DiagnosticRecorder("nfi", "nfi", mode="errors_only")
     batch: list[dict] = []
+    failures: list[dict] = []       # pages this pass lost, for a targeted retry
+    fetched_ok: list[int] = []      # pages that succeeded, to clear prior failures
     try:
         from services.platform.database import AsyncSessionLocal
         async with AsyncSessionLocal() as _vdb:
             vocab, families = await load_vocab(_vdb)
-        for pid in range(start, end + 1):
+        # `page_ids` drives a retry pass over only the previously-lost pages;
+        # otherwise sweep the range.
+        for pid in (page_ids if page_ids is not None else range(start, end + 1)):
             if _STATE.cancel:
                 _STATE.message = "cancelled"
                 break
@@ -112,6 +189,19 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
             _STATE.diagnostics = recorder.summary()
             _STATE.scanned += 1
             _STATE.last_id = pid
+            if status_code == 200 and html:
+                fetched_ok.append(pid)
+            else:
+                cat, _sev, _hint = classify(status_code, {},
+                                            html.encode("utf-8", "replace") if html else b"",
+                                            None if status_code else "transport")
+                if cat in RETRYABLE:
+                    failures.append({"page_id": pid, "category": cat,
+                                     "http_status": status_code or None})
+            if len(failures) >= 200:
+                await record_failures(failures); failures = []
+            if len(fetched_ok) >= 500:
+                await resolve_failures(fetched_ok); fetched_ok = []
             if status_code == 200 and html:
                 rec = parse_detail(html, pid)
                 if rec:
@@ -132,6 +222,8 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
                 await asyncio.sleep(delay)
         if batch:
             _STATE.ingested += await _flush(batch, source)
+        await record_failures(failures)
+        await resolve_failures(fetched_ok)
         if not _STATE.cancel:
             _STATE.message = "done"
     except Exception as e:  # pragma: no cover
@@ -149,15 +241,23 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
 
 
 def start(start_id: int, end_id: int, *, delay: float = 0.25,
-          proxy: str | None = None, source: str = "nfi-harvest") -> dict:
-    """Kick off a background harvest. Raises if one is already running."""
+          proxy: str | None = None, source: str = "nfi-harvest",
+          page_ids: list[int] | None = None) -> dict:
+    """Kick off a background harvest. Raises if one is already running.
+    `page_ids` runs a targeted RETRY over exactly those pages instead of a
+    range — the whole point of the failure registry: recovering a few thousand
+    proxy-dropped pages must not cost another full 70,000-page sweep."""
     global _TASK, _STATE
     if _STATE.running:
         raise RuntimeError("A harvest is already running.")
     if not harvest_lock.acquire("nfi"):
         raise RuntimeError(f"قفل برداشت در اختیار دیگری است: {harvest_lock.holder()}")
+    if page_ids:
+        start_id, end_id = min(page_ids), max(page_ids)
     _STATE = HarvestState(running=True, start_id=start_id, end_id=end_id,
                           last_id=start_id - 1, started_at=time.time(),
-                          message="running")
-    _TASK = asyncio.create_task(_run(start_id, end_id, delay, proxy, source))
+                          message=f"retry {len(page_ids)} failed pages" if page_ids
+                                  else "running")
+    _TASK = asyncio.create_task(_run(start_id, end_id, delay, proxy, source,
+                                     page_ids=page_ids))
     return _STATE.snapshot()

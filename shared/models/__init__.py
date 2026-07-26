@@ -50,6 +50,7 @@ from . import price_history  # noqa: F401  (PriceHistory — dated price time-se
 from . import crosswalk  # noqa: F401  (CrosswalkEntry, FieldOverride — durable owner decisions)
 from . import formulary_snapshot  # noqa: F401  (FormularySnapshot — observed layer, X4)
 from . import issue_disposition  # noqa: F401  (IssueDisposition — decided layer for ناسازگاری‌ها)
+from . import harvest_failure  # noqa: F401  (HarvestFailure — retryable page ids)
 from . import insurance   # noqa: F401  (InsurancePlan, PatientInsurance, ...)
 from . import inventory   # noqa: F401  (DrugProduct, InventoryLot, StockLevel, PurchaseOrder, ...)
 from . import depot       # noqa: F401  (PharmacyShelf, ShelfPlacement, ReplenishmentSession, ShelfTransferEvent, SurveillanceEvent, ShiftHandoverReport)

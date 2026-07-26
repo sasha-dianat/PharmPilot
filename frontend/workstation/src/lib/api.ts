@@ -170,6 +170,9 @@ export const pricingApi = {
   nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
+  nfiFailures: () => apiClient.get('/pricing/catalog/nfi/failures'),
+  nfiRetryFailed: (body: { proxy?: string; delay?: number; limit?: number }) =>
+    apiClient.post('/pricing/catalog/nfi/retry-failed', body),
   nfiStop: () => apiClient.post('/pricing/catalog/nfi/stop', {}),
   // دارونامه coverage sources & staged runs
   coverageSources: () => apiClient.get('/pricing/coverage/sources'),

@@ -56,6 +56,26 @@ export default function DrugCatalogAdmin() {
   }
   const stop = async () => { await pricingApi.nfiStop(); qc.invalidateQueries({ queryKey: ['nfi-status'] }) }
 
+  // pages previous passes lost to transport failures — retrying only those
+  // avoids re-sweeping ~70,000 ids to recover a few thousand
+  const { data: fails } = useQuery<{ pending: number; retryable: number; resolved: number
+                                     by_category: { category: string; count: number
+                                       min_id: number; max_id: number; retryable: boolean }[] }>({
+    queryKey: ['nfi-failures'],
+    queryFn: () => pricingApi.nfiFailures().then(r => r.data),
+    refetchInterval: q => (hs?.running ? 10_000 : 60_000),
+  })
+  const retryFailed = async () => {
+    setBusy(true); setMsg(null)
+    try {
+      const { data } = await pricingApi.nfiRetryFailed({ proxy: proxy || undefined, delay })
+      setMsg({ kind: 'ok', text: `تلاش دوباره روی ${fa(data.retrying)} صفحهٔ ناموفق آغاز شد.` })
+      qc.invalidateQueries({ queryKey: ['nfi-status'] })
+    } catch (e: unknown) {
+      setMsg({ kind: 'err', text: apiErrorText(e, 'تلاش دوباره ناموفق بود.') })
+    } finally { setBusy(false) }
+  }
+
   const importCatalog = async (file: File) => {
     setBusy(true); setMsg(null)
     try {
@@ -104,6 +124,13 @@ export default function DrugCatalogAdmin() {
           {running
             ? <button onClick={stop} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded-lg">توقف</button>
             : <button onClick={start} disabled={busy} className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg disabled:opacity-50">شروع برداشت</button>}
+          {!running && (fails?.retryable ?? 0) > 0 && (
+            <button onClick={retryFailed} disabled={busy}
+              title={(fails?.by_category || []).filter(c => c.retryable)
+                .map(c => `${c.category}: ${c.count} (${c.min_id}–${c.max_id})`).join(' · ')}
+              className="px-4 py-1.5 bg-amber-700 hover:bg-amber-600 rounded-lg disabled:opacity-50">
+              ↻ تلاش دوباره روی {fa(fails!.retryable)} صفحهٔ ناموفق
+            </button>)}
         </div>
 
         {hs && (hs.running || hs.scanned > 0) && (

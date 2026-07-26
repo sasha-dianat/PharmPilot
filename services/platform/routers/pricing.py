@@ -255,6 +255,54 @@ async def nfi_harvest_status(staff: Staff = Depends(require_permission("inventor
     return svc.status()
 
 
+@router.get("/catalog/nfi/failures")
+async def nfi_failures(staff: Staff = Depends(require_permission("inventory:read")),
+                       db: AsyncSession = Depends(get_db)):
+    """Pages a harvest lost, so the next pass can target ONLY those. A full sweep
+    is ~70,000 pages; recovering a few thousand proxy-dropped ones must not cost
+    another full run."""
+    from sqlalchemy import func, select
+    from services.core.drug_catalog.nfi_harvest_service import RETRYABLE
+    from shared.models.harvest_failure import HarvestFailure
+    rows = (await db.execute(
+        select(HarvestFailure.category,
+               func.count().label("n"),
+               func.min(HarvestFailure.page_id),
+               func.max(HarvestFailure.page_id))
+        .where(HarvestFailure.crawler == "nfi",
+               HarvestFailure.resolved_at.is_(None))
+        .group_by(HarvestFailure.category).order_by(func.count().desc()))).all()
+    resolved = (await db.execute(select(func.count()).select_from(HarvestFailure)
+                                 .where(HarvestFailure.resolved_at.isnot(None)))).scalar() or 0
+    by_cat = [{"category": c, "count": n, "min_id": lo, "max_id": hi,
+               "retryable": c in RETRYABLE} for c, n, lo, hi in rows]
+    return {"pending": sum(x["count"] for x in by_cat),
+            "retryable": sum(x["count"] for x in by_cat if x["retryable"]),
+            "resolved": resolved, "by_category": by_cat}
+
+
+class NfiRetryRequest(BaseModel):
+    proxy: str | None = None
+    delay: float = 0.0
+    limit: int = 20000
+
+
+@router.post("/catalog/nfi/retry-failed")
+async def nfi_retry_failed(body: NfiRetryRequest,
+                           staff: Staff = Depends(require_permission("inventory:write"))):
+    """Re-harvest exactly the pages previously lost to transport failures."""
+    from services.core.drug_catalog import nfi_harvest_service as svc
+    ids = await svc.pending_failures("nfi")
+    if not ids:
+        raise HTTPException(status_code=409, detail="صفحهٔ ناموفقی برای تلاش دوباره نیست.")
+    ids = ids[:max(1, body.limit)]
+    try:
+        return {**svc.start(min(ids), max(ids), delay=body.delay, proxy=body.proxy,
+                            page_ids=ids), "retrying": len(ids)}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.post("/catalog/nfi/stop")
 async def nfi_harvest_stop(staff: Staff = Depends(require_permission("inventory:write"))):
     from services.core.drug_catalog import nfi_harvest_service as svc
