@@ -106,9 +106,13 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
         # ORAL 150 mg"), so keeping it gives the structural matcher a
         # near-exact join key. route (نحوه مصرف) appears in ~2,250 tamin names.
         # Both were parsed and then dropped; they populate on the next crawl.
+        # nfi_id is the /NFI/Detail/<id> page this row came from. It was parsed
+        # and then dropped, which made it impossible to produce a source link for
+        # ANY product — so a suspicious row could never be taken back to the page
+        # that produced it. Keeping it is what makes the pages auditable.
         mono_keys = ("indications", "mechanism", "pharmacokinetics", "warnings",
                      "side_effects", "interactions_text", "advice", "composition", "brands",
-                     "atc_path", "integrity", "generic_full", "route")
+                     "atc_path", "integrity", "generic_full", "route", "nfi_id")
         mono = {k: row[k] for k in mono_keys if row.get(k)}
         out.append(CatalogRecord(
             irc=str(irc).strip(),
