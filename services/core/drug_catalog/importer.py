@@ -169,6 +169,8 @@ def _clamp(field: str, v):
 _STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
                   "brand_owner", "license_valid_until",
                   "announced_price", "last_invoice_price")
+# sticky fields where a literal 0 means "no value", not "the value is zero"
+_ZERO_IS_ABSENT = ("announced_price", "last_invoice_price")
 
 
 def apply_enrichment_gaps(rec: CatalogRecord, enrichments: dict) -> CatalogRecord:
@@ -206,8 +208,18 @@ def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
         license_valid_until=r.license_valid_until, monograph=r.monograph,
     )
     values = {k: _clamp(k, v) for k, v in values.items()}
+
+    def _absent(field: str, v) -> bool:
+        """Is this value 'nothing to say' for a sticky field? For prices a
+        literal 0 counts: NFI pages routinely publish قیمت 0 for a product with
+        no current tariff, and treating that as a real value overwrote 164 good
+        prices even after None was already guarded."""
+        if v is None:
+            return True
+        return field in _ZERO_IS_ABSENT and not v
+
     update_cols = {k: v for k, v in values.items()
-                   if k != "irc" and not (k in _STICKY_FIELDS and v is None)}
+                   if k != "irc" and not (k in _STICKY_FIELDS and _absent(k, v))}
     return values, update_cols
 
 
@@ -247,8 +259,10 @@ async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: s
         if "monograph" in update_cols:
             existing = DrugCatalogItem.__table__.c.monograph
             update_cols = {**update_cols, "monograph": sa_case(
+                # same "0 means absent" rule as the sticky price check, or a
+                # قیمت-0 page would keep the price but strip its provenance
                 (and_(existing.op("?")("price_provenance"),
-                      stmt.excluded.announced_price.is_(None)),
+                      func.coalesce(stmt.excluded.announced_price, 0) == 0),
                  func.coalesce(stmt.excluded.monograph, text("'{}'::jsonb")).op("||")(
                      func.jsonb_build_object("price_provenance",
                                              existing.op("->")("price_provenance")))),

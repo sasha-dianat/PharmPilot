@@ -82,7 +82,7 @@ def test_recrawl_never_erases_a_price_or_its_provenance():
     from services.core.drug_catalog.importer import upsert_catalog
     from services.core.drug_catalog.schema import CatalogRecord
 
-    KEEP, REPL = "__RC_KEEP__", "__RC_REPL__"
+    KEEP, ZERO, REPL = "__RC_KEEP__", "__RC_ZERO__", "__RC_REPL__"
     PROV = {"announced": "insurer-derived", "source": "insurer-refresh:tamin",
             "kind": "gap_fill", "previous": None, "at": "x", "note": "n"}
 
@@ -96,31 +96,35 @@ def test_recrawl_never_erases_a_price_or_its_provenance():
         S = async_sessionmaker(eng, expire_on_commit=False)
         async with S() as db:
             await db.execute(delete(DrugCatalogItem).where(
-                DrugCatalogItem.irc.in_([KEEP, REPL])))
-            for irc in (KEEP, REPL):
+                DrugCatalogItem.irc.in_([KEEP, ZERO, REPL])))
+            for irc in (KEEP, ZERO, REPL):
                 db.add(DrugCatalogItem(irc=irc, name_fa="د", generic_name="g",
                     ingredient_key="g|1 mg|tablet", dosage_form="TABLET",
                     strength="1 mg", announced_price=Decimal("50000"),
                     source="insurer", monograph={"price_provenance": PROV}))
             await db.commit()
 
-            # KEEP: the crawl has NO price → must not erase, stamp survives
-            # REPL: the crawl HAS a price → replaces it, stamp is dropped
-            await upsert_catalog(db, [crawled(KEEP, None), crawled(REPL, Decimal("77000"))],
+            # KEEP:  crawl has NO price          → must not erase, stamp survives
+            # ZERO:  crawl reports قیمت 0          → also "no price", must not erase
+            # REPL:  crawl HAS a real price        → replaces it, stamp is dropped
+            await upsert_catalog(db, [crawled(KEEP, None), crawled(ZERO, Decimal("0")),
+                                      crawled(REPL, Decimal("77000"))],
                                  source="nfi-harvest")
             rows = {r.irc: r for r in (await db.execute(select(DrugCatalogItem).where(
-                DrugCatalogItem.irc.in_([KEEP, REPL])))).scalars().all()}
+                DrugCatalogItem.irc.in_([KEEP, ZERO, REPL])))).scalars().all()}
 
             assert int(rows[KEEP].announced_price) == 50000, "price was erased"
             assert rows[KEEP].monograph["price_provenance"]["kind"] == "gap_fill"
             assert rows[KEEP].monograph["indications"] == "fresh from the crawl"
 
+            assert int(rows[ZERO].announced_price) == 50000, "قیمت 0 must not erase"
+            assert rows[ZERO].monograph["price_provenance"]["kind"] == "gap_fill"
             assert int(rows[REPL].announced_price) == 77000, "real NFI price must win"
             assert "price_provenance" not in (rows[REPL].monograph or {}), \
                 "an NFI-verified price is no longer insurer-derived"
 
             await db.execute(delete(DrugCatalogItem).where(
-                DrugCatalogItem.irc.in_([KEEP, REPL])))
+                DrugCatalogItem.irc.in_([KEEP, ZERO, REPL])))
             await db.commit()
         await eng.dispose()
 
