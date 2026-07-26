@@ -11,13 +11,20 @@ Treat the repository as an advanced prototype/pilot foundation, not a production
 Before substantial work, read:
 
 1. `docs/ai-context/CODEX_PROJECT_BIBLE.md`.
-2. This `AGENTS.md`.
-3. `docs/ROADMAP.md` for current intent and maturity.
-4. The directly relevant code and tests.
+2. `docs/ai-context/AI_COLLABORATION.md` for active ownership and the latest
+   Claude Code/Codex advancement log.
+3. This `AGENTS.md`.
+4. `docs/ROADMAP.md` for current intent and maturity.
+5. The directly relevant code and tests.
 
 If the Project Bible is absent, reconstruct only task-relevant context from this file, `.codex-intake/CODEX_PROJECT_DEEP_DIVE.md`, and `.codex-intake/SOURCE_STATE.md`. Create or update the Bible when write access is available.
 
 Use targeted exploration. Do not reread the entire repository for every task.
+
+Before editing, claim or confirm the workstream in
+`docs/ai-context/AI_COLLABORATION.md`. After the work session, update its status
+and append an evidence-based log entry. Do not edit files owned by another
+active workstream without an explicit handoff recorded there.
 
 ## Source-of-truth priority
 

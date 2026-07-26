@@ -1,3 +1,20 @@
+## Multi-agent coordination (required)
+
+Codex and Claude Code collaborate through the repository; their private chat
+contexts are not shared. Before substantial work:
+
+1. Read `docs/ai-context/AI_COLLABORATION.md` completely.
+2. Confirm the task has one owner and a dedicated branch/worktree.
+3. Inspect the active workstreams and latest advancement-log entries.
+4. Do not edit files owned by another active workstream unless its handoff is
+   explicitly recorded.
+
+At the end of every work session, update the workstream status and append a log
+entry with the branch/commit, files and behavior changed, checks actually run,
+remaining risks, and the next action. Never assume Codex knows anything stated
+only in a Claude conversation. `CURRENT_HANDOFF.md` may describe an individual
+historical task; `AI_COLLABORATION.md` is the canonical cross-model ledger.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
