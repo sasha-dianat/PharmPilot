@@ -126,3 +126,36 @@ def test_board_groups_causes_and_dispositions_make_it_converge():
         await eng.dispose()
 
     asyncio.get_event_loop().run_until_complete(run())
+
+
+def test_jalali_year_month_and_licence_cutoff():
+    """NFI licence dates are Jalali and no converter is installed, so the
+    registry computes its own. Nowruz falls on 20 or 21 March depending on the
+    year, so dates ON a month boundary may land one month either side — stated
+    rather than hidden, and irrelevant for expiry (the licences that matter are
+    years stale). Non-boundary dates must be exact."""
+    from datetime import date
+    for g, expected in ((date(2026, 7, 26), (1405, 5)),
+                        (date(2026, 3, 25), (1405, 1)),
+                        (date(2021, 7, 27), (1400, 5)),
+                        (date(2025, 1, 1), (1403, 10)),
+                        (date(2026, 3, 15), (1404, 12))):
+        assert ir.jalali_year_month(g) == expected, g
+    cut = ir.licence_cutoff()
+    assert len(cut) == 7 and cut[4] == "/"
+    jy, jm = ir.jalali_year_month()
+    assert cut == f"{jy:04d}/{jm:02d}"
+    # a years-old licence sorts below the cutoff; a far-future one above
+    assert "1395/11" < cut < "1499/01"
+
+
+def test_missing_price_is_split_by_licence_validity():
+    """One 4,126-item cause overstated the problem: 84% of the already-crawled
+    rows carrying a licence date are EXPIRED, and a deregistered product having
+    no tariff is correct source data, not a gap. The expired half must sit in
+    the 'expected' lane (acknowledgeable) and the rest stay actionable."""
+    exp = ir.CAUSES["nfi_price_expired_registration"]
+    act = ir.CAUSES["nfi_missing_price_active"]
+    assert exp["lane"] == ir.LANE_EXPECTED and exp["route"] == "acknowledge"
+    assert act["lane"] == ir.LANE_BLOCKED and act["route"] == "nfi_harvest"
+    assert "nfi_missing_price" not in ir.CAUSES, "the merged cause must be gone"

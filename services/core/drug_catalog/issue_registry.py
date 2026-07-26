@@ -47,6 +47,37 @@ LANE_FA = {
 
 DISPOSITIONS = ("accepted", "wont_fix", "resolved", "deferred")
 
+
+def jalali_year_month(d=None) -> tuple[int, int]:
+    """Today's Jalali (year, month), for comparing against NFI licence dates.
+
+    Nowruz falls on 20 or 21 March depending on the year, so a date sitting
+    exactly on a month boundary can land one month either side. That tolerance
+    is irrelevant here: licences are compared to decide whether a registration
+    has LAPSED, and the ones that matter are years stale (متوترکسات 1395,
+    جاکاوی 1400). No Jalali library is installed, hence the local computation.
+    """
+    from datetime import date
+    d = d or date.today()
+    nowruz = date(d.year, 3, 21)
+    if d >= nowruz:
+        jy, days = d.year - 621, (d - nowruz).days
+    else:
+        jy, days = d.year - 622, (d - date(d.year - 1, 3, 21)).days
+    jm = 1
+    for length in (31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 30):
+        if days < length:
+            break
+        days -= length
+        jm += 1
+    return jy, min(jm, 12)
+
+
+def licence_cutoff() -> str:
+    """'YYYY/MM' string; NFI licence dates sort lexically against it."""
+    jy, jm = jalali_year_month()
+    return f"{jy:04d}/{jm:02d}"
+
 # ── the causes ──────────────────────────────────────────────────────────────
 # Each entry: lane, Persian title, why it happens, and the action that closes it.
 CAUSES: dict[str, dict] = {
@@ -98,9 +129,20 @@ CAUSES: dict[str, dict] = {
         "action": "خزش دوبارهٔ NFI با پروکسی ایران (پارسر اکنون کشور را ذخیره می‌کند).",
         "route": "nfi_harvest",
     },
-    "nfi_missing_price": {
-        "lane": LANE_BLOCKED, "title": "قیمت اعلامی ندارد",
-        "why": "فرآورده بدون قیمت مصرف‌کننده در NFI (پروانهٔ منقضی یا عرضه‌نشده).",
+    # «قیمت اعلامی ندارد» was one 4,126-item cause that overstated the problem.
+    # Of the rows already crawled with a licence date, 84% are EXPIRED — a
+    # deregistered product has no current consumer tariff, so NFI publishing
+    # none is correct source data, not a gap. Splitting the cause separates
+    # ~1,778 acknowledgeable rows from ~600 real ones.
+    "nfi_price_expired_registration": {
+        "lane": LANE_EXPECTED, "title": "بدون قیمت — پروانه منقضی شده",
+        "why": "تاریخ اعتبار پروانه گذشته است؛ فرآوردهٔ از رده خارج تعرفهٔ جاری ندارد.",
+        "action": "پذیرش گروهی — نبودِ قیمت برای پروانهٔ منقضی، دادهٔ درست است نه خلأ.",
+        "route": "acknowledge",
+    },
+    "nfi_missing_price_active": {
+        "lane": LANE_BLOCKED, "title": "قیمت اعلامی ندارد (پروانه معتبر)",
+        "why": "پروانه معتبر یا نامشخص است ولی صفحهٔ NFI قیمتی نداشت — خلأ واقعی.",
         "action": "خزش دوباره؛ باقی‌مانده‌ها را می‌توان از مرجع بیمه قیمت‌گذاری کرد.",
         "route": "nfi_harvest",
     },
@@ -175,6 +217,8 @@ async def set_disposition(db, *, issue_type: str, subject_key: str,
 # ── counting ────────────────────────────────────────────────────────────────
 async def _nfi_counts(db) -> dict[str, int]:
     from sqlalchemy import text
+    cutoff = licence_cutoff()
+
     async def n(cond: str) -> int:
         return (await db.execute(text(
             f"SELECT count(*) FROM drug_catalog WHERE {cond}"))).scalar() or 0
@@ -182,7 +226,13 @@ async def _nfi_counts(db) -> dict[str, int]:
         "nfi_spliced": await n("monograph->'integrity'->>'spliced_page'='true' "
                                "AND coalesce(monograph->'integrity'->>'repaired','')<>'true'"),
         "nfi_missing_country": await n("country IS NULL OR country=''"),
-        "nfi_missing_price": await n("announced_price IS NULL OR announced_price=0"),
+        "nfi_price_expired_registration": await n(
+            "coalesce(announced_price,0)=0 AND license_valid_until IS NOT NULL "
+            f"AND license_valid_until <> '' AND left(license_valid_until,7) < '{cutoff}'"),
+        "nfi_missing_price_active": await n(
+            "coalesce(announced_price,0)=0 AND (license_valid_until IS NULL "
+            "OR license_valid_until = '' "
+            f"OR left(license_valid_until,7) >= '{cutoff}')"),
         "nfi_missing_atc": await n("atc IS NULL OR atc=''"),
         "nfi_missing_strength": await n("strength IS NULL OR strength=''"),
     }
