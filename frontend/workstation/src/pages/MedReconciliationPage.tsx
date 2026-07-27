@@ -25,7 +25,6 @@ interface Patient {
 }
 
 type SourceMode = 'home' | 'admission' | 'discharge' | 'prescriber' | 'patient_reported' | 'manual'
-type Side = 'a' | 'b'
 
 const SOURCE_OPTIONS: Array<{ value: SourceMode; label: string }> = [
   { value: 'home', label: 'home' },

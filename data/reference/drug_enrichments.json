@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "exported_at": "2026-07-15T07:14:50.595565+00:00",
+  "entries": [
+    {
+      "key": "a c a",
+      "raw_name": "A.C.A",
+      "irc": null,
+      "generic_name": "استامینوفن + آسپیرین + کافئین",
+      "brand_name": "ACA (آ سی آ)",
+      "manufacturer": "دارو پخش - کارخانه",
+      "country": "Iran",
+      "dosage_form": "قرص",
+      "strengths": [
+        "استامینوفن ۲۵۰ میلی‌گرم + آسپیرین ۲۵۰ میلی‌گرم + کافئین ۶۵ میلی‌گرم"
+      ],
+      "notes": "ترکیب استامینوفن، آسپیرین و کافئین با نام‌های تجاری مختلف از جمله ACA داروپخش، آکسار و آ سی آ البرزدارو در ایران تولید می‌شود.",
+      "sources": [
+        "https://www.darooyab.ir/B-1228158971/ACA-DAROUPAKHSH-TAB",
+        "https://www.darooyab.ir/G-4500/ACA",
+        "https://www.dorvana.com/drugs/142-nsaids/423-a-c-a"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.98
+    },
+    {
+      "key": "almond oil",
+      "raw_name": "ALMOND  OIL",
+      "irc": null,
+      "generic_name": "sweet almond oil",
+      "brand_name": null,
+      "manufacturer": "باریج اسانس",
+      "country": "Iran",
+      "dosage_form": "oil",
+      "strengths": null,
+      "notes": "در فهرست دارونامه ایران به نام «ALMOND OIL» ثبت شده و عمدتاً به صورت روغن بادام شیرین با نام تجاری باریج اسانس شناخته می‌شود. شکل دارویی: روغن موضعی و خوراکی.",
+      "sources": [
+        "https://www.darooyab.ir/G-3574/Almond-Oil",
+        "http://iran-drugstore.ir/%D8%B6%D8%AF-%D8%AA%D8%B1%DA%A9-%D9%88-%D8%B3%D9%84%D9%88%D9%84%DB%8C%D8%AA/142-%D8%B1%D9%88%D8%BA%D9%86-%D8%A8%D8%A7%D8%AF%D8%A7%D9%85-%D8%B4%DB%8C%D8%B1%DB%8C%D9%86-%D8%A8%D8%A7%D8%B1%DB%8C%D8%AC.html",
+        "https://darunet.com/product/%D8%B1%D9%88%D8%BA%D9%86-%D8%A8%D8%A7%D8%AF%D8%A7%D9%85-%D8%B4%DB%8C%D8%B1%DB%8C%D9%86-%D8%A8%D8%A7%D8%B1%DB%8C%D8%AC-%D8%A7%D8%B3%D8%A7%D9%86%D8%B3/"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.9
+    },
+    {
+      "key": "almond oil bitter",
+      "raw_name": "ALMOND  OIL  BITTER",
+      "irc": null,
+      "generic_name": "bitter almond oil",
+      "brand_name": null,
+      "manufacturer": "باریج اسانس",
+      "country": "Iran",
+      "dosage_form": "oil",
+      "strengths": null,
+      "notes": "روغن بادام تلخ (Bitter Almond Oil) یک فرآورده گیاهی است که عمدتاً به صورت موضعی استفاده می‌شود و مصرف خوراکی آن به دلیل سمیت توصیه نمی‌شود. این فرآورده توسط شرکت‌های مختلفی در ایران تولید می‌شود که یکی از شناخته‌شده‌ترین آنها باریج اسانس است.",
+      "sources": [
+        "https://edarookhane.com/product/987/bitter-almond-oil",
+        "https://giyahkala.com/product/badamtalkh/",
+        "https://www.darukade.com/products/cosmetic-anti-hair-loss-29/oil-bitter-almond-oil-60-ml-20540",
+        "https://behbodchem.com/product/bitter-almond-oil/"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.9
+    },
+    {
+      "key": "altuzan bevacizumab",
+      "raw_name": "ALTUZAN® (BEVACIZUMAB)",
+      "irc": null,
+      "generic_name": "bevacizumab",
+      "brand_name": "Altuzan",
+      "manufacturer": "Roche",
+      "country": "Switzerland/Germany",
+      "dosage_form": "vial (sterile solution for infusion)",
+      "strengths": [
+        "100 mg/4 mL",
+        "400 mg/16 mL"
+      ],
+      "notes": "نام تجاری بواسیزوماب در ایران و برخی کشورها Altuzan است. تولیدکننده اصلی شرکت Roche (آلمانی-سوئیسی) است. شکل دارویی ویال تزریقی و دوزهای ۱۰۰ و ۴۰۰ میلی‌گرم موجود است.",
+      "sources": [
+        "https://salamatparsis.com/product/%D8%A2%D9%88%D8%A7%D8%B3%D8%AA%DB%8C%D9%86/",
+        "https://pillintrip.com/medicine/altuzan",
+        "https://sinsa.ir/drug/%D8%A2%D9%88%D8%A7%D8%B3%D8%AA%DB%8C%D9%86-(%D8%A8%D9%88%D8%A7%D8%B3%DB%8C%D8%B2%D9%88%D9%85%D8%A7%D8%A8)"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.98
+    },
+    {
+      "key": "ambenonium",
+      "raw_name": "AMBENONIUM  CHLORIDE",
+      "irc": null,
+      "generic_name": "ambenonium chloride",
+      "brand_name": "Mytelase",
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "tablet",
+      "strengths": [
+        "10 mg"
+      ],
+      "notes": "در ایران تولیدکننده و نام تجاری مشخصی برای این دارو در منابع عمومی یافت نشد. شکل دارویی و قدرت بر اساس منابع بین‌المللی و لیست داروهای ژنریک ایران تعیین شده است.",
+      "sources": [
+        "https://en.wikipedia.org/wiki/Ambenonium_chloride",
+        "https://www.rpsi.ir/fa/genericdrug/index/98"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.85
+    },
+    {
+      "key": "amrinone as lactate",
+      "raw_name": "AMRINONE  (AS  LACTATE)",
+      "irc": null,
+      "generic_name": "inamrinone",
+      "brand_name": "Inocor",
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "injection",
+      "strengths": [
+        "100 mg/20 mL"
+      ],
+      "notes": "نام ژنریک در منابع بین‌المللی به صورت inamrinone (معروف به amrinone) و به شکل لاکتات است. در ایران به نام تجاری Inocor و به صورت تزریقی ( Injection) با قدرت 100 mg/20 mL موجود است.",
+      "sources": [
+        "https://mohsen-ahmad.blogfa.com/post/638",
+        "https://www.drugs.com/pro/inamrinone.html",
+        "https://go.drugbank.com/salts/DBSALT001311"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.9
+    },
+    {
+      "key": "asa acetyl salicylic acid",
+      "raw_name": "ASA  (ACETYL SALICYLIC ACID)",
+      "irc": null,
+      "generic_name": "acetylsalicylic acid",
+      "brand_name": "ASA (Aspirin)",
+      "manufacturer": null,
+      "country": "Iran",
+      "dosage_form": "tablet (enteric-coated)",
+      "strengths": [
+        "80 mg",
+        "81 mg",
+        "100 mg",
+        "325 mg",
+        "500 mg"
+      ],
+      "notes": "ASA در ایران عمدتاً با نام تجاری آسپرین و تحت برندهای مختلف مانند فارماشیمی، پارس دارو و تهران شیمی تولید می‌شود. شکل دارویی رایج قرص انتریک کوتد (روکش‌دار) است. قدرت‌های مختلف از 80 میلی‌گرم تا 500 میلی‌گرم موجود است. نام ژنریک در فهرست دارونامه ایران استیل سالیسیلیک اسید است.",
+      "sources": [
+        "https://pharmachemie.co/shop/%D9%82%D9%84%D8%A8-%D9%88-%D8%B9%D8%B1%D9%88%D9%82/P67-%D8%A2-%D8%A7%D8%B3-%D8%A2-%DB%B8.html",
+        "https://pillix.ir/medicine/med-jnq5",
+        "https://www.darooyab.ir/B-2827229988645412/ASA-MC-TC-500MG-TAB",
+        "https://parsdarou.ir/index.php/fa/36-product/30-asa",
+        "https://www.darooyab.ir/G-18/Aspirin",
+        "https://www.oviro.com/mag/23019/%D9%82%D8%B1%D8%B5-%D8%A7%D8%B3%D8%AA%DB%8C%D9%84-%D8%B3%D8%A7%D9%84%DB%8C%D8%B3%DB%8C%D9%84%DB%8C%DA%A9-%D8%A7%D8%B3%DB%8C%D8%AF-%DB%8C%D8%A7-%D8%A2%D8%B3%D9%BE%D8%B1%DB%8C%D9%86/"
+      ],
+      "researched_by": "mistral",
+      "confidence": 0.95
+    },
+    {
+      "key": "betacarotene",
+      "raw_name": "BETACAROTENE 15MG CAP 15MG CAPSULE",
+      "irc": null,
+      "generic_name": "beta-carotene",
+      "brand_name": null,
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "softgel",
+      "strengths": [
+        "15 mg"
+      ],
+      "notes": "15 mg beta-carotene ≈ 25000 IU provitamin-A activity; softgel capsule (pro-vitamin A)",
+      "sources": [
+        "https://www.carlsonlabs.com/products/super-beta-carotene"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.8
+    },
+    {
+      "key": "ethacridine lantate revanol",
+      "raw_name": "ETHACRIDINE  LANTATE   (REVANOL)",
+      "irc": null,
+      "generic_name": "ethacridine lactate",
+      "brand_name": "Revanol (Rivanol)",
+      "manufacturer": null,
+      "country": null,
+      "dosage_form": "solution",
+      "strengths": [
+        "0.1%"
+      ],
+      "notes": "Source name misspells LACTATE as LANTATE; Revanol/Rivanol is the brand for the ethacridine lactate 0.1% antiseptic solution",
+      "sources": [
+        "https://en.wikipedia.org/wiki/Ethacridine_lactate"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.85
+    },
+    {
+      "key": "ویتامین آ تداژل",
+      "raw_name": "ویتامین آ-تداژل",
+      "irc": null,
+      "generic_name": "vitamin a",
+      "brand_name": "A-Tedagel",
+      "manufacturer": "Tehran Daru (تهران دارو)",
+      "country": "Iran",
+      "dosage_form": "softgel",
+      "strengths": [
+        "25000 IU",
+        "50000 IU"
+      ],
+      "notes": "Fat-soluble vitamin A supplement; softgel; Tehran Daru; 25000/50000 IU",
+      "sources": [
+        "https://www.darooyab.ir/B-1228189258/VITAMIN-A-TEDAGEL-25000IU-SOFT-GEL-CAP",
+        "https://www.darooyab.ir/B-1228189241/VITAMIN-A-TEDAGEL-50000IU-SOFT-GEL-CAP"
+      ],
+      "researched_by": "claude",
+      "confidence": 0.95
+    }
+  ]
+}

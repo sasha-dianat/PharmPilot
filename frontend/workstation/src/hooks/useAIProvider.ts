@@ -57,7 +57,10 @@ export function useAIProvider() {
         temperature: options?.temperature || 0.1,
         force_provider: options?.forceProvider,
       })
-      return res.data as AIResponse & { content: string; latency_ms: number; cost_usd: number }
+      return res.data as AIResponse & {
+        content: string; latency_ms: number; cost_usd: number
+        tokens_input: number; tokens_output: number; invocation_id: string; from_fallback: boolean
+      }
     },
     onSuccess: (data) => {
       setResponse(data.content)

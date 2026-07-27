@@ -8,7 +8,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Home, Package, Brain, ShieldCheck, DollarSign, Users, Mic, Bot, BookOpen,
+  Home, Package, Brain, ShieldCheck, DollarSign, Users, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
   Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
@@ -20,7 +20,6 @@ import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
 import FinancialOperations   from './dashboards/FinancialOperations'
 import PatientAdherence      from './dashboards/PatientAdherence'
-import AudioIntelligence     from './dashboards/AudioIntelligence'
 import AIIntelligenceHub     from './dashboards/AIIntelligenceHub'
 import KnowledgeManager      from './dashboards/KnowledgeManager'
 import DepotRestocking       from './dashboards/DepotRestocking'
@@ -36,6 +35,7 @@ import InteractionAuditView  from './dashboards/InteractionAuditView'
 import InteractionBundleAdmin from './dashboards/InteractionBundleAdmin'
 import PriceProposalsAdmin   from './dashboards/PriceProposalsAdmin'
 import DrugCatalogAdmin      from './dashboards/DrugCatalogAdmin'
+import CoverageAdmin         from './dashboards/CoverageAdmin'
 import LabSafetyPage         from './pages/LabSafetyPage'
 import MedReconciliationPage from './pages/MedReconciliationPage'
 
@@ -63,6 +63,7 @@ const SECTIONS = [
   { id:'interaction-bundle', key:'u', label:'Interaction Bundle', icon:Database, description:'Install the DDI knowledge bundle', shortcut:'Alt+U' },
   { id:'price-proposals', key:'p', label:'Price Proposals', icon:DollarSign, description:'Approve daily price-sync changes', shortcut:'Alt+P' },
   { id:'drug-catalog', key:'x', label:'Drug Catalog', icon:Database, description:'NFI harvest + catalog import', shortcut:'Alt+X' },
+  { id:'coverage', key:'b', label:'Insurance Coverage', icon:ShieldCheck, description:'دارونامه sources, harvest & review', shortcut:'Alt+B' },
 ] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -84,7 +85,6 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   security:  SecuritySurveillance,
   financial: FinancialOperations,
   adherence: PatientAdherence,
-  audio:     AudioIntelligence,
   'ai-hub':  AIIntelligenceHub,
   knowledge: KnowledgeManager,
   depot:     DepotRestocking,
@@ -92,6 +92,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   'interaction-bundle': InteractionBundleAdmin,
   'price-proposals': PriceProposalsAdmin,
   'drug-catalog': DrugCatalogAdmin,
+  coverage: CoverageAdmin,
 }
 
 interface Props {
@@ -162,7 +163,6 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   // Section alert badges
   const sectionBadges: Partial<Record<SectionId, { value: string; tone: 'critical' | 'attention' }>> = {
     security: criticalAlerts > 0 ? { value: String(criticalAlerts), tone: 'critical' } : undefined,
-    audio:    { value: '3', tone: 'attention' },  // Pending profile updates
     clinical: { value: '2', tone: 'attention' },  // REMS blockers
   }
 

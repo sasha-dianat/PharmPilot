@@ -196,6 +196,28 @@ class AIProviderRegistry:
             cost_per_1k_output=0.009,
             supports_streaming=True,
         ),
+        # Search-only providers: no LLM models — their keys are managed here so
+        # the AI Hub key cards work, but no AITask ever routes to them.
+        "youcom": ProviderConfig(
+            name="You.com Search (وب‌جستجو)", api_key_env="YOUCOM_API_KEY",
+            base_url="https://ydc-index.io/v1",
+            models=[], default_model="",
+            strengths=["web_search"],
+            has_baa=False,
+            cost_per_1k_input=0.0,
+            cost_per_1k_output=0.0,
+            supports_streaming=False,
+        ),
+        "brave": ProviderConfig(
+            name="Brave Search (وب‌جستجو)", api_key_env="BRAVE_API_KEY",
+            base_url="https://api.search.brave.com/res/v1",
+            models=[], default_model="",
+            strengths=["web_search"],
+            has_baa=False,
+            cost_per_1k_input=0.0,
+            cost_per_1k_output=0.0,
+            supports_streaming=False,
+        ),
         "groq": ProviderConfig(
             name="Groq", api_key_env="GROQ_API_KEY",
             base_url="https://api.groq.com/openai/v1",
@@ -561,7 +583,11 @@ class AIProviderRegistry:
             return text, int(tokens_in), int(tokens_out)
 
         elif provider == "mistral":
-            from mistralai import Mistral
+            # SDK v2 moved the client to mistralai.client; v1 exported it top-level.
+            try:
+                from mistralai.client import Mistral
+            except ImportError:
+                from mistralai import Mistral
             client = Mistral(api_key=os.environ.get("MISTRAL_API_KEY", ""))
             msgs = []
             if system_prompt:

@@ -3,7 +3,7 @@
  * Shows biometric enrollment status and allergy count.
  * Used in Rx intake, patient lookup, and counseling workflows.
  */
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { patientApi } from '../lib/api'
 

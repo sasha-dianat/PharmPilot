@@ -52,7 +52,7 @@ export default function DictateNote({
   compact = false,
 }: Props) {
   const [stage, setStage]         = useState<Stage>('idle')
-  const [transcript, setTranscript] = useState('')
+  const [, setTranscript] = useState('')
   const [editedText, setEditedText] = useState('')
   const [error, setError]         = useState('')
   const [elapsed, setElapsed]     = useState(0)

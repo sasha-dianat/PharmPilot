@@ -44,6 +44,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "category": ("category", "نوع", "type", "دسته", "گروه", "نوع_فرآورده", "نوع_محصول"),
     "is_generic": ("is_generic", "generic_flag", "ژنریک_است"),
     "coverage": ("coverage",),
+    "country": ("country", "کشور", "کشور_تولیدکننده"),
+    "license_owner": ("license_owner",),
+    "brand_owner": ("brand_owner",),
+    "license_valid_until": ("license_valid_until",),
 }
 
 # Persian / Arabic-Indic digits → ASCII, and thousands separators → "".
@@ -53,7 +57,9 @@ _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890
 def normalize_header(h) -> str:
     """FDA/NFI headers use spaces + ZWNJ (نیم‌فاصله). Fold both to '_' and lower
     so 'قیمت مصرف‌کننده' → 'قیمت_مصرف_کننده' to match the alias table."""
-    s = str(h).strip().lower().replace("‌", "_")   # ZWNJ → _
+    # BOM survives pandas' default utf-8 read of a utf-8-sig CSV and would make
+    # the first column ('﻿drug_code') invisible to every alias/role lookup
+    s = str(h).replace("﻿", "").strip().lower().replace("‌", "_")   # ZWNJ → _
     return re.sub(r"\s+", "_", s)
 
 
@@ -95,6 +101,19 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
         cat_raw = (str(_pick(row, "category") or "drug")).strip().lower()
         category = _CATEGORY_MAP.get(cat_raw, ItemCategory.DRUG)
         gen_flag = _pick(row, "is_generic")
+        # generic_full (نام عمومی) is NFI's own structured name — the SAME
+        # controlled vocabulary the insurer دارونامه uses ("RANITIDINE TABLET
+        # ORAL 150 mg"), so keeping it gives the structural matcher a
+        # near-exact join key. route (نحوه مصرف) appears in ~2,250 tamin names.
+        # Both were parsed and then dropped; they populate on the next crawl.
+        # nfi_id is the /NFI/Detail/<id> page this row came from. It was parsed
+        # and then dropped, which made it impossible to produce a source link for
+        # ANY product — so a suspicious row could never be taken back to the page
+        # that produced it. Keeping it is what makes the pages auditable.
+        mono_keys = ("indications", "mechanism", "pharmacokinetics", "warnings",
+                     "side_effects", "interactions_text", "advice", "composition", "brands",
+                     "atc_path", "integrity", "generic_full", "route", "nfi_id")
+        mono = {k: row[k] for k in mono_keys if row.get(k)}
         out.append(CatalogRecord(
             irc=str(irc).strip(),
             name_fa=str(name).strip(),
@@ -111,6 +130,11 @@ def build_records(rows: Iterable[dict]) -> list[CatalogRecord]:
             package_count=(int(_pick(row, "package_count")) if str(_pick(row, "package_count") or "").isdigit() else None),
             gtin=(str(_pick(row, "gtin")).strip() if _pick(row, "gtin") else None),
             coverage=(row.get("coverage") if isinstance(row.get("coverage"), dict) else None),
+            country=(str(_pick(row, "country")).strip() if _pick(row, "country") else None),
+            license_owner=(str(_pick(row, "license_owner")).strip() if _pick(row, "license_owner") else None),
+            brand_owner=(str(_pick(row, "brand_owner")).strip() if _pick(row, "brand_owner") else None),
+            license_valid_until=(str(_pick(row, "license_valid_until")).strip() if _pick(row, "license_valid_until") else None),
+            monograph=(mono or None),
         ))
     return out
 
@@ -128,7 +152,9 @@ def load_seed() -> list[CatalogRecord]:
 # row (multivitamin composition strings…) can't abort a bulk ingest.
 _COL_LIMITS = {"irc": 32, "gtin": 20, "name_fa": 300, "generic_name": 200,
                "ingredient_key": 300, "dosage_form": 80, "strength": 80,
-               "brand_name": 200, "manufacturer": 200, "atc": 16, "source": 40}
+               "brand_name": 200, "manufacturer": 200, "atc": 16, "source": 40,
+               "country": 80, "license_owner": 200, "brand_owner": 200,
+               "license_valid_until": 20}
 
 
 def _clamp(field: str, v):
@@ -138,27 +164,113 @@ def _clamp(field: str, v):
     return v[:limit] if limit else v
 
 
-async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi") -> int:
+# Nullable enrichment a source may not carry — omit from the UPDATE when None so
+# e.g. an Excel price import can't wipe NFI monographs or insurer coverage.
+# Fields a re-import may FILL but never ERASE. Prices are sticky because an NFI
+# page that simply omits a price would otherwise null a good value: the 2026-07-25
+# re-crawl wiped 728 prices this way, including gap-fills the owner had just
+# approved. A stale price with a visible announced_price_at beats no price.
+_STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
+                  "brand_owner", "license_valid_until",
+                  "announced_price", "last_invoice_price")
+# sticky fields where a literal 0 means "no value", not "the value is zero"
+_ZERO_IS_ABSENT = ("announced_price", "last_invoice_price")
+
+
+def apply_enrichment_gaps(rec: CatalogRecord, enrichments: dict) -> CatalogRecord:
+    """Gap-fill ONLY blank catalog fields from an owner-approved enrichment —
+    NFI-provided values are authoritative and never overwritten. Keyed by the
+    record's name, falling back to its generic. Returns rec unchanged if no
+    approved enrichment matches."""
+    import dataclasses
+    from .enrichment import enrich_key
+    e = enrichments.get(enrich_key(rec.name_fa)) or enrichments.get(enrich_key(rec.generic_name))
+    if not e:
+        return rec
+    patch: dict = {}
+    for field, src in (("country", "country"), ("manufacturer", "manufacturer"),
+                       ("brand_name", "brand_name"), ("dosage_form", "dosage_form")):
+        if not getattr(rec, field, None) and e.get(src):
+            patch[field] = str(e[src]).strip()
+    if not rec.strength and e.get("strengths"):
+        patch["strength"] = str(e["strengths"][0]).strip()
+    return dataclasses.replace(rec, **patch) if patch else rec
+
+
+def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
+    """(insert values, on-conflict update columns) for one record."""
+    values = dict(
+        irc=r.irc, name_fa=r.name_fa, generic_name=r.generic_name,
+        ingredient_key=r.ingredient_key, dosage_form=r.dosage_form, strength=r.strength,
+        brand_name=r.brand_name, manufacturer=r.manufacturer, atc=r.atc,
+        package_count=r.package_count, gtin=r.gtin, is_generic=r.is_generic,
+        category=r.category.value,
+        announced_price=(int(r.announced_price) if r.announced_price is not None else None),
+        last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
+        coverage=r.coverage, source=source,
+        country=r.country, license_owner=r.license_owner, brand_owner=r.brand_owner,
+        license_valid_until=r.license_valid_until, monograph=r.monograph,
+    )
+    values = {k: _clamp(k, v) for k, v in values.items()}
+
+    def _absent(field: str, v) -> bool:
+        """Is this value 'nothing to say' for a sticky field? For prices a
+        literal 0 counts: NFI pages routinely publish قیمت 0 for a product with
+        no current tariff, and treating that as a real value overwrote 164 good
+        prices even after None was already guarded."""
+        if v is None:
+            return True
+        return field in _ZERO_IS_ABSENT and not v
+
+    update_cols = {k: v for k, v in values.items()
+                   if k != "irc" and not (k in _STICKY_FIELDS and _absent(k, v))}
+    return values, update_cols
+
+
+async def upsert_catalog(session, records: Iterable[CatalogRecord], *, source: str = "nfi",
+                         enrichments: dict | None = None,
+                         overrides: dict | None = None) -> int:
     """Upsert CatalogRecords into drug_catalog by IRC, computing ingredient_key.
+    When `enrichments` (owner-approved reference) is supplied, blank catalog
+    fields are gap-filled from it before write — NFI values are never overwritten.
     Returns the number of rows written."""
+    from sqlalchemy import and_, case as sa_case, func, text
     from sqlalchemy.dialects.postgresql import insert
     from shared.models.drug_catalog import DrugCatalogItem
 
     n = 0
     for r in records:
-        values = dict(
-            irc=r.irc, name_fa=r.name_fa, generic_name=r.generic_name,
-            ingredient_key=r.ingredient_key, dosage_form=r.dosage_form, strength=r.strength,
-            brand_name=r.brand_name, manufacturer=r.manufacturer, atc=r.atc,
-            package_count=r.package_count, gtin=r.gtin, is_generic=r.is_generic,
-            category=r.category.value,
-            announced_price=(int(r.announced_price) if r.announced_price is not None else None),
-            last_invoice_price=(int(r.last_invoice_price) if r.last_invoice_price is not None else None),
-            coverage=r.coverage, source=source,
-        )
-        values = {k: _clamp(k, v) for k, v in values.items()}
+        if enrichments:
+            r = apply_enrichment_gaps(r, enrichments)
+        if overrides:
+            # X3: owner corrections are re-asserted over the freshly imported
+            # source values, so a manual fix is permanent policy rather than a
+            # value the next crawl silently erases. Applied LAST — it wins.
+            from .crosswalk import apply_overrides
+            r = apply_overrides(r, overrides)
+        values, update_cols = upsert_values(r, source=source)
         stmt = insert(DrugCatalogItem).values(**values)
-        update_cols = {k: v for k, v in values.items() if k != "irc"}
+        # monograph is rebuilt from the crawled page, which would discard
+        # price_provenance — the record of a price being insurer-derived rather
+        # than NFI-verified (1,843 stamps were lost this way). Carry it across
+        # UNLESS this crawl actually supplies a price, in which case the value
+        # is NFI-verified now and the stamp should rightly disappear.
+        # ON CONFLICT bypasses the ORM's onupdate, so updated_at was never
+        # stamped by a crawl — max(updated_at) sat frozen while thousands of
+        # rows were rewritten, making "when did the crawl last touch this?"
+        # unanswerable. Stamp it explicitly.
+        update_cols = {**update_cols, "updated_at": func.now()}
+        if "monograph" in update_cols:
+            existing = DrugCatalogItem.__table__.c.monograph
+            update_cols = {**update_cols, "monograph": sa_case(
+                # same "0 means absent" rule as the sticky price check, or a
+                # قیمت-0 page would keep the price but strip its provenance
+                (and_(existing.op("?")("price_provenance"),
+                      func.coalesce(stmt.excluded.announced_price, 0) == 0),
+                 func.coalesce(stmt.excluded.monograph, text("'{}'::jsonb")).op("||")(
+                     func.jsonb_build_object("price_provenance",
+                                             existing.op("->")("price_provenance")))),
+                else_=stmt.excluded.monograph)}
         stmt = stmt.on_conflict_do_update(index_elements=["irc"], set_=update_cols)
         await session.execute(stmt)
         n += 1

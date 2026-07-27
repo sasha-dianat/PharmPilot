@@ -1,0 +1,29 @@
+{
+  "_comment": "INN/BAN → USAN ingredient synonyms, plus qualifier drops. Every mapping was verified against the NFI catalog: the TARGET exists as an NFI generic_name and the SOURCE does not, so each entry converts an unmatchable formulary row into a real product. Same molecule, different naming authority — never a therapeutic substitution. Extend only with equivalences you can cite.",
+  "_verified": "2026-07-25 against 1,353 distinct NFI generics",
+  "synonyms": {
+    "ciclosporin": "cyclosporine",
+    "aciclovir": "acyclovir",
+    "salbutamol": "albuterol",
+    "mesalazine": "mesalamine",
+    "l carnitine": "levocarnitine",
+    "lignocaine": "lidocaine",
+    "frusemide": "furosemide",
+    "rifampicin": "rifampin",
+    "glibenclamide": "glyburide",
+    "amoxycillin": "amoxicillin",
+    "oestradiol": "estradiol",
+    "ursodeoxycholic acid": "ursodiol",
+    "prostaglandin e2": "dinoprostone",
+    "epoetin": "epoetin alfa",
+    "follitropin alfa": "follitropin",
+    "follitropin beta": "follitropin",
+    "peginterferon alfa": "peginterferon",
+    "charcoal activated": "activated charcoal",
+    "indometacin": "indomethacin",
+    "phenobarbitone": "phenobarbital",
+    "sodium valproate": "valproate sodium",
+    "adrenaline": "epinephrine",
+    "noradrenaline": "norepinephrine"
+  }
+}

@@ -50,6 +50,30 @@ apiClient.interceptors.response.use(
   }
 )
 
+/**
+ * Coerce any API error into a display string. FastAPI `detail` can be a string,
+ * a request-validation array `[{type,loc,msg,input}]`, or an object (e.g. the
+ * probe's `{message, diagnostics}`) — rendering any non-string as a React child
+ * throws "Objects are not valid as a React child". Always run errors through this.
+ */
+export function apiErrorText(e: unknown, fallback = 'خطای ناشناخته'): string {
+  const d = (e as any)?.response?.data?.detail
+  if (d == null) return (e as any)?.message || fallback
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) {
+    const msgs = d.map((x: any) => (x?.loc ? `${x.loc.slice(-1)[0]}: ` : '') + (x?.msg || JSON.stringify(x)))
+    return msgs.join(' · ') || fallback
+  }
+  if (typeof d === 'object') {
+    if (d.diagnostics?.summary) {
+      const s = d.diagnostics.summary
+      return `[${s.worst_category || '—'}] ${s.top_hint || d.message || fallback}`
+    }
+    return d.message || JSON.stringify(d)
+  }
+  return String(d) || fallback
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 export const authApi = {
   login: (username: string, password: string, workstationId?: string) =>
@@ -114,17 +138,107 @@ export const pricingApi = {
   runSync: () => apiClient.post('/pricing/sync/run', {}),
   importCatalog: (file: File) => {
     const fd = new FormData(); fd.append('file', file)
-    return apiClient.post('/pricing/catalog/import', fd)
+    // Content-Type: undefined lets axios set multipart/form-data + boundary,
+    // overriding the instance's default application/json (else the file field
+    // is dropped and FastAPI returns a 422 "file required").
+    return apiClient.post('/pricing/catalog/import', fd, { headers: { 'Content-Type': undefined } })
   },
   catalogStats: () => apiClient.get('/pricing/catalog/stats'),
+  catalogItems: (params: { q?: string; missing?: string; limit?: number; offset?: number }) =>
+    apiClient.get('/pricing/catalog/items', { params }),
+  catalogEdit: (irc: string, fields: Record<string, unknown>, reason?: string) =>
+    apiClient.patch(`/pricing/catalog/items/${irc}`, { fields, reason }),
+  crosswalkList: (params: { insurer?: string; status?: string; limit?: number }) =>
+    apiClient.get('/pricing/crosswalk', { params }),
+  overridesList: () => apiClient.get('/pricing/overrides'),
+  overrideDelete: (id: string) => apiClient.delete(`/pricing/overrides/${id}`),
+  canonicalExport: () => apiClient.post('/pricing/canonical/export', {}),
+  canonicalImport: () => apiClient.post('/pricing/canonical/import-decided', {}),
   importCoverage: (file: File, insurer: string) => {
     const fd = new FormData(); fd.append('file', file)
-    return apiClient.post('/pricing/coverage/import', fd, { params: { insurer } })
+    return apiClient.post('/pricing/coverage/import', fd,
+      { params: { insurer }, headers: { 'Content-Type': undefined } })
   },
-  nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
+  uploadCoverageRun: (files: File[], insurer: string) => {
+    const fd = new FormData(); files.forEach(f => fd.append('files', f))
+    return apiClient.post('/pricing/coverage/upload-run', fd,
+      { params: { insurer }, headers: { 'Content-Type': undefined } })
+  },
+  catalogIntegrity: () => apiClient.get('/pricing/catalog/integrity'),
+  catalogIntegrityApply: (ircs: string[]) =>
+    apiClient.post('/pricing/catalog/integrity/apply', { ircs }),
+  nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string
+                     mode?: 'ingest' | 'audit' }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
+  nfiResume: (body: { proxy?: string; delay?: number }) =>
+    apiClient.post('/pricing/catalog/nfi/resume', body),
+  nfiAuditSummary: () => apiClient.get('/pricing/catalog/nfi/audit-summary'),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
+  nfiFailures: () => apiClient.get('/pricing/catalog/nfi/failures'),
+  countryProposals: (minConfidence = 0) =>
+    apiClient.get('/pricing/catalog/country-proposals', { params: { min_confidence: minConfidence } }),
+  countryProposalsApply: (body: { ircs?: string[]; min_confidence?: number }) =>
+    apiClient.post('/pricing/catalog/country-proposals/apply', body),
+  nfiRetryFailed: (body: { proxy?: string; delay?: number; limit?: number }) =>
+    apiClient.post('/pricing/catalog/nfi/retry-failed', body),
   nfiStop: () => apiClient.post('/pricing/catalog/nfi/stop', {}),
+  // دارونامه coverage sources & staged runs
+  coverageSources: () => apiClient.get('/pricing/coverage/sources'),
+  coverageSourceSave: (id: string | null, body: Record<string, unknown>) =>
+    id ? apiClient.put(`/pricing/coverage/sources/${id}`, body)
+       : apiClient.post('/pricing/coverage/sources', body),
+  coverageSourceDelete: (id: string) => apiClient.delete(`/pricing/coverage/sources/${id}`),
+  coverageProbe: (id: string) => apiClient.post(`/pricing/coverage/sources/${id}/probe`, {}),
+  coverageHarvest: (id: string) => apiClient.post(`/pricing/coverage/sources/${id}/harvest`, {}),
+  coverageHarvestStatus: () => apiClient.get('/pricing/coverage/harvest/status'),
+  coverageRuns: (sourceId?: string) =>
+    apiClient.get('/pricing/coverage/runs', { params: sourceId ? { source_id: sourceId } : {} }),
+  coverageRun: (id: string) => apiClient.get(`/pricing/coverage/runs/${id}`),
+  coverageApprove: (id: string, body: { remove_missing: boolean; accepted_review_ids: number[]
+                                        reject_reasons?: Record<string, { code?: string; note?: string }> }) =>
+    apiClient.post(`/pricing/coverage/runs/${id}/approve`, body),
+  coverageReject: (id: string) => apiClient.post(`/pricing/coverage/runs/${id}/reject`, {}),
+  coverageProposePrices: (id: string, body: { min_confidence: number; min_pct: number }) =>
+    apiClient.post(`/pricing/coverage/runs/${id}/propose-prices`, body),
+  taminHarvestStart: (body: { input_html?: string; delay?: number; timeout?: number
+                              max_retries?: number; retry_delay?: number; pages?: string }) =>
+    apiClient.post('/pricing/coverage/tamin-harvest/start', body),
+  taminHarvestStatus: () => apiClient.get('/pricing/coverage/tamin-harvest/status'),
+  taminHarvestStop: () => apiClient.post('/pricing/coverage/tamin-harvest/stop', {}),
+  issuesBoard: () => apiClient.get('/pricing/issues/board'),
+  issuesRuling: (body: { cause: string; disposition: string; reason?: string }) =>
+    apiClient.post('/pricing/issues/ruling', body),
+  issuesRulingClear: (cause: string) =>
+    apiClient.delete(`/pricing/issues/ruling/${cause}`),
+  inconsistencies: (insurer: string, threshold: number) =>
+    apiClient.get('/pricing/inconsistencies', { params: { insurer, price_threshold_pct: threshold } }),
+  inconsistencyDrug: (irc: string, insurer: string) =>
+    apiClient.get(`/pricing/inconsistencies/drug/${irc}`, { params: { insurer } }),
+  // هوش‌یار دارو — drug enrichment intelligence
+  enrichWorklist: (insurer?: string) =>
+    apiClient.get('/pricing/enrichment/worklist', { params: insurer ? { insurer } : {} }),
+  enrichRun: (body: { limit: number; min_confidence: number; workers?: number
+                      provider?: string; refresh?: boolean }) =>
+    apiClient.post('/pricing/enrichment/run', body),
+  enrichRunStatus: () => apiClient.get('/pricing/enrichment/run/status'),
+  enrichStop: () => apiClient.post('/pricing/enrichment/run/stop', {}),
+  enrichProviderTest: (provider: string) =>
+    apiClient.post('/pricing/enrichment/provider-test', { provider }),
+  enrichSuggestions: (status = 'suggested') =>
+    apiClient.get('/pricing/enrichment/suggestions', { params: { status } }),
+  enrichDecide: (ids: string[], approve: boolean) =>
+    apiClient.post('/pricing/enrichment/decide', { ids, approve }),
+  enrichMarkBulk: (names: string[]) =>
+    apiClient.post('/pricing/enrichment/mark-bulk', { names }),
+  priceHistoryBackfill: () => apiClient.post('/pricing/price-history/backfill', {}),
+  priceHistoryStale: (maxAgeDays = 180) =>
+    apiClient.get('/pricing/price-history/stale', { params: { max_age_days: maxAgeDays } }),
+  priceHistory: (irc: string) => apiClient.get(`/pricing/price-history/${irc}`),
+  matchIntelRetrain: (mode: 'decisions' | 'bootstrap' = 'decisions') =>
+    apiClient.post('/pricing/match-intel/retrain', { mode }),
+  matchIntelStatus: () => apiClient.get('/pricing/match-intel/status'),
+  enrichExport: () => apiClient.post('/pricing/enrichment/export', {}),
+  enrichImport: () => apiClient.post('/pricing/enrichment/import', {}),
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────
@@ -261,6 +375,7 @@ export interface AllergyData {
 }
 export interface RxIntakeData {
   patient_id: string; prescriber_id: string; ndc: string; drug_name: string
+  drug_strength?: string
   sig_text: string; quantity_prescribed: number; days_supply: number
   refills_authorized?: number; written_date: string; source?: string; dea_schedule?: string
 }

@@ -1,0 +1,19 @@
+
+# Exclude raster images from headless claude-cli semantic extraction
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.heic
+*.avif
+
+# Additional image/vector formats excluded from headless claude-cli extraction
+*.svg
+*.ico
+*.jfif
+*.heif
+*.eps

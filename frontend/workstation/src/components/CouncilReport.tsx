@@ -36,7 +36,7 @@ const SEVERITY_STYLE: Record<string, { bg: string; border: string; icon: string;
   clarification: { bg: 'bg-purple-50', border: 'border-purple-400', icon: '❓', label: 'Clarify' },
 }
 
-export default function CouncilReport({ prescriptionId, patientId, pharmacyId }: Props) {
+export default function CouncilReport({ prescriptionId, patientId }: Props) {
   const [findings, setFindings] = useState<CouncilFinding[]>([])
   const [completedSpecialists, setCompletedSpecialists] = useState<string[]>([])
   const [status, setStatus] = useState<'idle' | 'loading' | 'complete' | 'error'>('idle')

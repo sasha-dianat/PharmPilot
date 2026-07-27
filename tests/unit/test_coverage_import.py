@@ -115,3 +115,245 @@ def test_build_coverage_not_covered_row():
     links = link_rows(rows, CATALOG)
     cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
     assert cov.applied["444"]["salamat"]["covered"] is False
+
+
+def test_infer_columns_folds_arabic_yeh_in_headers():
+    # the real salamat .xls uses Arabic ي: 'کد ژنريک' must still match 'کد ژنریک'
+    rows = [{"کد ژنريک": "14083", "عنوان": "ABCIXIMAB VIAL 10MG",
+             "درصد سهم سازمان": "71.693", "قيمت": "3,100,000"}]
+    roles = infer_columns(rows)
+    assert roles["کد ژنريک"] == "generic_code"
+    assert roles["عنوان"] == "drug_name"
+    assert roles["درصد سهم سازمان"] == "share_pct"
+    assert roles["قيمت"] == "reference_price"
+
+
+def test_share_pct_with_percent_sign_and_float():
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "share_pct": "70%",
+             "reference_price": "8,000"}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
+    assert cov.applied["111"]["salamat"]["share_pct"] == 70
+
+
+def test_empty_covered_cell_means_covered():
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "covered": ""}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.6)
+    assert cov.applied["111"]["salamat"]["covered"] is True
+
+
+def test_blocking_still_links_typos_within_prefix():
+    # blocking keys on the first 3 latin chars — "ATORVASTATINE" (typo) and
+    # "atorvastatin" share "ato", so fuzzy linkage must still find it
+    rows = [{"drug_name": "ATORVASTATINE 20MG TAB"}]
+    links = link_rows(rows, CATALOG)
+    assert links[0].matched and links[0].record.irc == "222"
+
+
+def test_blocking_scales_linearly_not_quadratically():
+    # 1000 rows × 5000 products must finish in seconds, not minutes. Names get
+    # DIVERSE 3-letter prefixes (like real ingredients) so the blocking index
+    # actually partitions the catalog — a single shared prefix would collapse
+    # everything into one bucket and measure brute force instead.
+    import time
+
+    def name(i: int) -> str:
+        p = chr(97 + (i // 676) % 26) + chr(97 + (i // 26) % 26) + chr(97 + i % 26)
+        return f"{p}statin{i:05d}"
+
+    big_catalog = [
+        _cat(f"C{i:05d}", name(i), "10 mg", "TABLET", 1000 + i)
+        for i in range(5000)
+    ]
+    rows = [{"drug_name": f"{name(i % 5000).upper()} 10 MG TABLET"} for i in range(1000)]
+    t0 = time.time()
+    links = link_rows(rows, big_catalog)
+    elapsed = time.time() - t0
+    assert elapsed < 20, f"link_rows took {elapsed:.1f}s — blocking not effective"
+    assert sum(1 for l in links if l.matched) >= 900   # same-prefix rows still link
+
+
+def test_strength_mg_normalizes_units():
+    # 0.05 mg and 50 microgram are the SAME dose in different units
+    from services.core.drug_catalog.coverage_import import _strength_mg, _mg_agree
+    assert _strength_mg("OCTREOTIDE 0.05 mg") == {0.05}
+    assert _strength_mg("50 microgram") == {0.05}
+    assert _strength_mg("OCTREOTIDE 30MG") == {30.0}
+    assert _strength_mg("6 mg/1mL") == {6.0}          # concentration → the mg part
+    assert _strength_mg("500IU") == set()             # non-mass units ignored
+    assert _mg_agree({0.05}, {0.05}) and not _mg_agree({30.0}, {0.05})
+
+
+# same-generic products of DIFFERENT strength must not silently share coverage
+_OCTREO = [
+    _cat("O50", "octreotide", "50 microgram", "INJECTION", 32600, "اکتروتاید ۵۰"),
+    _cat("O30", "octreotide", "30 mg", "INJECTION", 66000000, "اکتروتاید ۳۰"),
+]
+
+
+def test_cross_strength_row_not_autoapplied():
+    # a formulary row for octreotide 30MG must NOT auto-apply onto the 50mcg
+    # product; with no 30mg-token confusion it links to O30, and even if it
+    # reaches O50 the confidence stays below the 0.75 auto-apply line.
+    links = link_rows([{"drug_name": "OCTREOTIDE 30 mg", "reference_price": "66000000"}], _OCTREO)
+    l = links[0]
+    assert l.record is not None and l.record.irc == "O30"     # picks the right strength
+    cov = build_coverage(links, insurer="salamat", min_confidence=0.75)
+    # the cheap 50mcg product must NOT receive the 66M reference
+    assert "O50" not in cov.applied
+
+
+def test_microgram_milligram_equivalent_still_matches():
+    # 0.05 mg row ↔ 50 microgram catalog: same dose, must match with the
+    # strength bonus (not demoted by the conflict rule)
+    links = link_rows([{"drug_name": "OCTREOTIDE 0.05 mg"}], _OCTREO)
+    l = links[0]
+    assert l.matched and l.record.irc == "O50" and l.confidence >= 0.8
+
+
+def test_real_salamat_headers_map_price_not_brand_code():
+    # the REAL salamat .xls headers (post read_table normalization): the Arabic-yeh
+    # 'قيمت' column must claim reference_price via the folded alias, so the numeric
+    # brand-code column can't steal it through value inference.
+    rows = [
+        {"رديف": "1", "کد_ژنريک": "00001", "کد_برند": "14083",
+         "عنوان": "ABCIXIMAB VIAL 10MG", "شرايط_تعهد": "",
+         "سهم_سازمان": "70%", "قيمت": "3,100,000"},
+        {"رديف": "2", "کد_ژنريک": "00522", "کد_برند": "20991",
+         "عنوان": "ACETAMINOPHEN TAB 500MG", "شرايط_تعهد": "بيمارستاني",
+         "سهم_سازمان": "70%", "قيمت": "29,250"},
+    ]
+    roles = infer_columns(rows)
+    assert roles["قيمت"] == "reference_price"
+    assert roles.get("کد_برند") != "reference_price"
+    assert roles["سهم_سازمان"] == "share_pct"
+    assert roles["عنوان"] == "drug_name"
+    assert roles["کد_ژنريک"] == "generic_code"
+
+
+def test_english_normalized_not_covered_is_false():
+    # the tamin harvester emits normalized english statuses; 'not_covered' must
+    # not fall through _to_bool's default-True (presence ⇒ covered) rule
+    rows = [{"drug_name": "METFORMIN HCL 500 MG TABLET", "covered": "not_covered"}]
+    links = link_rows(rows, CATALOG)
+    cov = build_coverage(links, insurer="tamin", min_confidence=0.6)
+    assert cov.applied["111"]["tamin"]["covered"] is False
+
+
+def test_num_takes_first_value_from_multi_value_cell():
+    """Regression: tamin packs tiered organization shares in one column as
+    "70%\\r90%" (سرپایی/بستری). Stripping the separators concatenated them into
+    7090 — an impossible share and, via the same parser, a 25000× price fault.
+    _num must take the FIRST value and keep thousand-separated numbers intact."""
+    from services.core.drug_catalog.coverage_import import _num
+    assert _num("70%\r90%") == 70.0
+    assert _num("46.42%\r80.34%\r90%") == 46.42
+    assert _num("100%\r70%") == 100.0
+    assert _num("90%\r100%") == 90.0
+    # single numbers with thousand separators survive whole (Latin + Persian)
+    assert _num("16,425,650") == 16425650.0
+    assert _num("۱۶٬۴۲۵٬۶۵۰") == 16425650.0
+    assert _num("") is None and _num("covered") is None
+
+
+def test_multi_share_row_yields_valid_coverage_share():
+    """End-to-end: a row whose share cell holds two tiers links and applies a
+    share ≤100, never the concatenation."""
+    row = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70%\r90%",
+           "reference_price": "8,000", "covered": "covered"}
+    links = link_rows([row], CATALOG)
+    cov = build_coverage(links, insurer="tamin", catalog=CATALOG)
+    entry = next(iter(cov.applied.values()))["tamin"]
+    assert entry["share_pct"] == 70 and entry["share_pct"] <= 100
+    assert entry["reference_price"] == 8000
+
+
+# ── شرایط تعهد: policy text, not a boolean ───────────────────────────────────
+def test_conditions_column_is_not_the_covered_flag():
+    """salamat's «شرايط_تعهد» is the CONDITIONS of coverage. The loose "تعهد"
+    alias used to claim it as the covered flag, so 610 rows that say
+    «داروهاي غير بيمه اي» (explicitly NOT insured) were stored as covered."""
+    rows = [{"کد_ژنريک": "00287", "عنوان": "CICLOSPORIN",
+             "شرايط_تعهد": "داروهاي غير بيمه اي مشمول کد اصالت",
+             "قيمت": "692355", "سهم_سازمان": "0%",
+             "قيمت_کل_مورد_درتعهد_با_احتساب_يارانه_ارزي": "0"}] * 3
+    roles = infer_columns(rows)
+    assert roles["شرايط_تعهد"] == "conditions"
+    # a MONEY column may only take a money role — this one used to become covered
+    assert roles.get("قيمت_کل_مورد_درتعهد_با_احتساب_يارانه_ارزي") != "covered"
+    assert roles["قيمت"] == "reference_price"
+
+
+def test_parse_conditions_extracts_policy():
+    from services.core.drug_catalog.coverage_import import parse_conditions
+    c = parse_conditions("داروهاي غير بيمه اي مشمول کد اصالت")
+    assert c["covered"] is False and "authenticity_code" in c["flags"]
+    # share stated in the text is authoritative
+    c2 = parse_conditions("تجويز توسط پزشك متخصص با سهم سازمان 90 درصد")
+    assert c2["share_pct"] == 90 and "specialist" in c2["flags"]
+    assert c2.get("covered") is None                  # not stated ⇒ unchanged
+    # hospital-only and age bands
+    c3 = parse_conditions("بيمارستاني")
+    assert "inpatient_only" in c3["flags"]
+    c4 = parse_conditions("بيش از 0 سال  کمتر از 12 سال")
+    assert c4["age_min"] == 0 and c4["age_max"] == 12
+    # Arabic-yeh/kaf spellings fold to the same result
+    assert parse_conditions("تجويز توسط پزشك متخصص")["flags"] == \
+        parse_conditions("تجویز توسط پزشک متخصص")["flags"]
+    assert parse_conditions("") == {} and parse_conditions(None) == {}
+
+
+def test_conditions_override_coverage_entry():
+    """A non-insured row must not be applied as covered, and the share stated in
+    the conditions text wins over the column."""
+    row = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70",
+           "conditions": "داروهاي غير بيمه اي مشمول کد اصالت"}
+    cov = build_coverage(link_rows([row], CATALOG), insurer="salamat", catalog=CATALOG)
+    entry = next(iter(cov.applied.values()))["salamat"]
+    assert entry["covered"] is False
+    assert entry["restrictions"] == ["authenticity_code"]
+    assert "غير بيمه" in entry["conditions_text"] or "غیر بیمه" in entry["conditions_text"]
+
+    row2 = {"drug_name": "METFORMIN 500 TABLET", "share_pct": "70",
+            "conditions": "بيمارستاني   تجويز توسط پزشك متخصص با سهم سازمان 90 درصد"}
+    cov2 = build_coverage(link_rows([row2], CATALOG), insurer="salamat", catalog=CATALOG)
+    e2 = next(iter(cov2.applied.values()))["salamat"]
+    assert e2["share_pct"] == 90 and e2["inpatient"] is True
+    assert set(e2["restrictions"]) >= {"inpatient_only", "specialist"}
+
+
+# ── ingredient-agreement floor: refuse a same-prefix DIFFERENT molecule ──────
+def test_ingredient_floor_refuses_same_prefix_different_drug():
+    """The 3-char prefix block is a speed optimization, never evidence of
+    identity. With agreeing strength+form, a same-prefix different MOLECULE used
+    to cross the review line — verified real cases: Rivanol (ethacridine
+    antiseptic) → rivaroxaban (anticoagulant), Perforan (St John's wort) →
+    perampanel, methylphenidate → metaproterenol, calcium folinate → calcitonin.
+    True equivalences are handled by canonical_ingredient, so a low score here
+    means a different drug and the honest answer is unmatched."""
+    from services.core.drug_catalog.coverage_import import INGREDIENT_FLOOR
+    cat = [
+        _cat("R1", "rivaroxaban", "10 mg", "TABLET", 500000, "ریواروکسابان"),
+        _cat("P1", "perampanel", "4 mg", "TABLET", 900000, "پرامپانل"),
+        _cat("M1", "metaproterenol sulfate", "20 mg", "TABLET", 9000, "متاپروترنول"),
+        _cat("C1", "calcitonin", "50 mg/1mL", "INJECTION", 300000, "کلسیتونین"),
+    ]
+    for name in ("RIVANOL 0.1% SOLUTION", "PERFORAN 4 mg TABLET ORAL",
+                 "METHYLPHENIDATE HYDROCHLORIDE 20 mg TABLET ORAL",
+                 "CALCIUM FOLINATE 50 mg/1mL INJECTION PARENTERAL"):
+        link = link_rows([{"drug_name": name}], cat)[0]
+        assert not link.matched, f"{name} wrongly matched {link.record and link.record.generic_name}"
+    # a genuine salt/acid pair (0.692) and a spelling variant still match
+    cat2 = [_cat("A1", "alendronic acid", "70 mg", "TABLET", 50000, "آلندرونیک")]
+    assert link_rows([{"drug_name": "ALENDRONATE (AS SODIUM) 70 mg TABLET ORAL"}], cat2)[0].matched
+    assert INGREDIENT_FLOOR == 0.66
+
+
+def test_header_row_restated_as_data_is_not_a_product():
+    """Iranian sheets restate «نام ژنريک» mid-table; it was matching nandrolone."""
+    cat = [_cat("N1", "nandrolone decanoate", "25 mg", "INJECTION", 90000, "ناندرودک")]
+    link = link_rows([{"drug_name": "نام ژنريک"}], cat)[0]
+    assert not link.matched and link.method == "header_row"
+    # a real product name is unaffected
+    assert link_rows([{"drug_name": "METFORMIN 500 TABLET"}], CATALOG)[0].matched

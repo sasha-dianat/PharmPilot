@@ -104,7 +104,6 @@ export default function PaymentCollection({
   const cashAmount     = parseFloat(cashGiven)  || 0
   const splitCashAmt   = parseFloat(splitCash)  || 0
   const changeDue      = tenderType === 'cash'  ? Math.max(0, cashAmount  - patientPay) : 0
-  const splitChangeDue = tenderType === 'split' ? Math.max(0, splitCashAmt - patientPay) : 0
   const splitCardAmt   = tenderType === 'split' ? Math.max(0, patientPay - splitCashAmt) : 0
 
   const canCollect = (

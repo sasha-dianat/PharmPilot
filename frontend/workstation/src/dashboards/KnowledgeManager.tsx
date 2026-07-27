@@ -281,11 +281,11 @@ export default function KnowledgeManager() {
 }
 
 // ── File Drop Tab ─────────────────────────────────────────────────────────────
-function FilesTab({ language, collection, onFiles, dragOver, setDragOver, fileInputRef }: {
+function FilesTab({ onFiles, dragOver, setDragOver, fileInputRef }: {
   language: string; collection: string
   onFiles: (files: FileList | File[]) => void
   dragOver: boolean; setDragOver: (v: boolean) => void
-  fileInputRef: React.RefObject<HTMLInputElement>
+  fileInputRef: React.RefObject<HTMLInputElement | null>
 }) {
   return (
     <div className="space-y-3">
@@ -323,7 +323,7 @@ function FilesTab({ language, collection, onFiles, dragOver, setDragOver, fileIn
 }
 
 // ── SQLite Tab ────────────────────────────────────────────────────────────────
-function SqliteTab({ language, collection, jobs, addJob, finishJob, failJob, invalidate }: {
+function SqliteTab({ language, collection, addJob, finishJob, failJob, invalidate }: {
   language: string; collection: string; jobs: JobStatus[]
   addJob: Function; finishJob: Function; failJob: Function; invalidate: Function
 }) {

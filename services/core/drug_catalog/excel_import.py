@@ -31,10 +31,12 @@ def read_table(path: str | Path) -> list[dict]:
         for k, v in r.items():
             if k is None:
                 continue
-            val = "" if v is None else str(v).strip()
+            # NUL bytes (legacy .xls padding) are rejected by Postgres JSONB —
+            # strip them here so every ingestion path is safe to persist.
+            val = "" if v is None else str(v).replace("\x00", "").strip()
             if val.lower() in ("nan", "none"):
                 val = ""
-            norm[normalize_header(k)] = val
+            norm[normalize_header(str(k).replace("\x00", ""))] = val
         out.append(norm)
     return out
 
@@ -51,7 +53,8 @@ def _read_excel(path: Path) -> list[dict]:
 def _read_csv(path: Path, sep=None) -> list[dict]:
     try:
         import pandas as pd
-        df = pd.read_csv(path, dtype=str, sep=sep, engine="python")
+        df = pd.read_csv(path, dtype=str, sep=sep, engine="python",
+                         encoding="utf-8-sig")
         return df.to_dict(orient="records")
     except Exception:
         # stdlib fallback (no pandas)

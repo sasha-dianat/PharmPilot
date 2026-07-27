@@ -4,20 +4,13 @@
  * Calm when clear. Immediately alarming when active.
  * Operator principle: no false urgency. Red means now.
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 
-const ZONE_COLORS: Record<string, string> = {
-  waiting_area: '#1e293b', dispensing_counter_public: '#1d4ed8',
-  dispensing_counter_interior: '#7c3aed', vault_room: '#7f1d1d',
-  otc_shelves: '#1e3a5f', pharmacist_only: '#4c1d95', general_floor: '#1e293b',
-}
-const SEVERITY_RING: Record<string, string> = { critical:'ring-2 ring-red-500', high:'ring-1 ring-orange-500', warning:'ring-1 ring-yellow-600', info:'' }
-
 // ── Pharmacy Floor Live Map ───────────────────────────────────────────────
-function PharmacyFloorMap({ events }: { events: any[] }) {
+function PharmacyFloorMap(_props: { events: any[] }) {
   const persons = [
     { id:1, x:20, y:30, zone:'waiting_area', dwell:180, identity:'patient', alert:null },
     { id:2, x:55, y:75, zone:'vault_room', dwell:45, identity:'staff', alert:'vault_zone_intrusion' },
@@ -121,7 +114,6 @@ function BehavioralTimeline({ events }: { events: any[] }) {
 
 // ── Duress Protocol Panel ─────────────────────────────────────────────────
 function DuressPanel() {
-  const [activating, setActivating] = useState(false)
   const [confirm, setConfirm] = useState(false)
 
   return (

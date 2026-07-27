@@ -5,7 +5,7 @@
  * Human-supervised AI. Pharmacist controls all decisions.
  * Key principle: Council supports, never replaces pharmacist judgment.
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell,
@@ -14,9 +14,6 @@ import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import DURConsistencyCard from '../components/DURConsistencyCard'
 
-const SEVERITY_ICON: Record<string, string> = {
-  allergy:'⚠️', interaction:'⚡', beers:'👴', renal:'🫘', opioid:'💊', duplicate:'🔄'
-}
 const TIER_COLOR = { low:'#22c55e', medium:'#eab308', high:'#f97316', critical:'#ef4444' }
 
 // ── Clinical Risk Heatmap Row ─────────────────────────────────────────────
@@ -123,7 +120,7 @@ function DURDistribution() {
               <Pie data={chart} dataKey="value" innerRadius={30} outerRadius={55} paddingAngle={2}>
                 {chart.map((d, i) => <Cell key={i} fill={d.fill} />)}
               </Pie>
-              <Tooltip formatter={(v: number, _n, p: any) => [`${v}% (${p.payload.count})`]} contentStyle={{ background: '#1a1f2e', border: '1px solid #334155', borderRadius: 8, fontSize: 11 }} />
+              <Tooltip formatter={(v, _n, p: any) => [`${Number(v ?? 0)}% (${p.payload.count})`]} contentStyle={{ background: '#1a1f2e', border: '1px solid #334155', borderRadius: 8, fontSize: 11 }} />
             </PieChart>
           </ResponsiveContainer>
           <div className="flex-1 space-y-1.5">

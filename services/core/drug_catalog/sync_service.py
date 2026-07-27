@@ -19,12 +19,16 @@ def _i(d) -> int | None:
     return int(d) if d is not None else None
 
 
-async def run_sync(db: AsyncSession, incoming: list[dict], *, source: str = "sync") -> dict:
+async def run_sync(db: AsyncSession, incoming: list[dict], *, source: str = "sync",
+                   min_pct: float = 0.0) -> dict:
     """Diff the feed against the catalog → replace pending proposals for the
-    affected IRCs. Never mutates catalog prices directly."""
+    affected IRCs. Never mutates catalog prices directly. `min_pct` drops
+    proposals whose |pct_change| is below the threshold (noise floor)."""
     ircs = [str(r.get("irc")).strip() for r in incoming if r.get("irc")]
     current = await repo.fetch_by_irc(db, ircs)
     proposals = compute_proposals(list(current.values()), incoming)
+    if min_pct > 0:
+        proposals = [p for p in proposals if abs(float(p.pct_change)) >= min_pct]
 
     if proposals:
         await db.execute(delete(DrugPriceProposal).where(
@@ -45,17 +49,134 @@ async def run_sync(db: AsyncSession, incoming: list[dict], *, source: str = "syn
     return {"feed_rows": len(incoming), "proposals_created": len(proposals), "by_kind": by_kind}
 
 
+async def propose_prices_from_run(db: AsyncSession, run_id, *,
+                                  min_confidence: float = 0.85,
+                                  min_pct: float = 25.0,
+                                  only_increases: bool = True) -> dict:
+    """Turn an insurer coverage run's HIGH-CONFIDENCE matched prices into price
+    proposals — the price-refresh: an insurer's current price (e.g. tamin's
+    accepted_total_price) refreshes a stale catalog announced_price, but ONLY
+    for confident matches and only when the divergence clears min_pct. Flows
+    into the existing proposal review → apply → price_history pipeline; nothing
+    is applied without owner approval.
+
+    `only_increases` (default ON) is a semantic guard, not a preference. The
+    insurer figure is «قیمت مورد تعهد» — the amount the organization ACCEPTS,
+    which is deliberately capped BELOW retail for most products. Measured on the
+    real data: the insurer reference is lower than the catalog price in 8,382
+    rows and higher in 12,121. Only the second group means "the NFI price is
+    stale"; proposing the first group would pull قیمت مصرف‌کننده down to a
+    reimbursement cap and understate retail. Pass False only when the feed is
+    known to be a true consumer-price source.
+
+    Reads the run's staged entries (irc → {reference_price, match_confidence,
+    match_method}). Returns run_sync's summary + how many entries qualified."""
+    from shared.models.coverage import CoverageRun
+    run = (await db.execute(select(CoverageRun).where(CoverageRun.id == run_id))).scalar_one()
+    staged = run.staged if isinstance(run.staged, dict) else {}
+    insurer = run.insurer
+
+    incoming: list[dict] = []
+    for irc, per_ins in staged.items():
+        entry = (per_ins or {}).get(insurer) if isinstance(per_ins, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        price = entry.get("reference_price")
+        conf = entry.get("match_confidence")
+        method = entry.get("match_method")
+        # exact-code matches are ground truth (conf may be absent); else gate on conf
+        ok_conf = method == "irc" or (conf is not None and conf >= min_confidence)
+        if price and ok_conf:
+            incoming.append({"irc": str(irc), "announced_price": price})
+
+    # A proposed price that matches ANOTHER FORM of the same generic far better
+    # than the matched product is explained by a form mismatch, not by staleness
+    # — 521 of the 1,917 extreme proposals were of this kind. Refuse those.
+    skipped_form_mismatch = 0
+    if incoming:
+        from . import structural_match as sm
+        current = await repo.fetch_by_irc(db, [r["irc"] for r in incoming])
+        # ATC-keyed families: NFI spells the same substance differently across
+        # forms (promethazine tablets vs "isopromethazine" injections), so a
+        # generic_name family cannot see across them and the guard misses.
+        fam_idx = sm.family_index(await repo.fetch_all(db))
+        kept = []
+        for r in incoming:
+            rec = current.get(r["irc"])
+            mine = float(getattr(rec, "announced_price", 0) or 0) if rec else 0.0
+            fam = sm.family_of(rec, fam_idx) if rec else []
+            prop = float(r["announced_price"])
+            if mine > 0 and len(fam) > 1:
+                other = [f for f in fam
+                         if str(f.dosage_form or "") != str(rec.dosage_form or "")
+                         and float(f.announced_price or 0) > 0]
+                mine_gap = max(prop, mine) / min(prop, mine)
+                best_other = min((max(prop, float(f.announced_price)) /
+                                  min(prop, float(f.announced_price)) for f in other),
+                                 default=None)
+                if best_other is not None and best_other * 3.0 <= mine_gap:
+                    skipped_form_mismatch += 1
+                    continue
+            kept.append(r)
+        incoming = kept
+
+    skipped_decreases = 0
+    if only_increases and incoming:
+        current = await repo.fetch_by_irc(db, [r["irc"] for r in incoming])
+        kept = []
+        for r in incoming:
+            rec = current.get(r["irc"])
+            now_price = getattr(rec, "announced_price", None) if rec else None
+            if now_price and float(r["announced_price"]) <= float(now_price):
+                skipped_decreases += 1
+                continue
+            kept.append(r)
+        incoming = kept
+
+    res = await run_sync(db, incoming, source=f"insurer-refresh:{insurer}", min_pct=min_pct)
+    res["qualified"] = len(incoming)
+    res["skipped_decreases"] = skipped_decreases
+    res["skipped_form_mismatch"] = skipped_form_mismatch
+    res["insurer"] = insurer
+    return res
+
+
 async def _apply_to_catalog(db: AsyncSession, pr: DrugPriceProposal) -> None:
     item = (await db.execute(select(DrugCatalogItem).where(
         DrugCatalogItem.irc == pr.irc))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
+    # Phase C: every approved price change also appends a dated history point.
+    from .price_history import record_price
     if item:
         if pr.proposed_announced is not None:
+            was = item.announced_price
             item.announced_price = int(pr.proposed_announced)
             item.announced_price_at = now
+            await record_price(db, pr.irc, "announced", pr.proposed_announced,
+                               source=pr.source or "sync", at=now)
+            # Provenance: an insurer figure is «قیمت مورد تعهد», an acceptance
+            # amount — NOT an NFI-verified consumer price. Stamp where the number
+            # came from, and whether it FILLED an empty price or refreshed a
+            # stale one, so the GUI can show it as unverified and the owner can
+            # tell the two apart later. Deliberately in monograph JSONB rather
+            # than field_overrides: an override would make it permanent policy
+            # and stop the next NFI crawl from replacing it with a real price.
+            if str(pr.source or "").startswith("insurer-refresh:"):
+                mono = dict(item.monograph or {})
+                mono["price_provenance"] = {
+                    "announced": "insurer-derived",
+                    "source": pr.source,
+                    "kind": "gap_fill" if not was else "refresh",
+                    "previous": int(was) if was else None,
+                    "at": now.isoformat(),
+                    "note": "مبلغ مورد قبول بیمه — قیمت مصرف‌کنندهٔ تأییدشدهٔ NFI نیست",
+                }
+                item.monograph = mono
         if pr.proposed_invoice is not None:
             item.last_invoice_price = int(pr.proposed_invoice)
             item.last_invoice_at = now
+            await record_price(db, pr.irc, "invoice", pr.proposed_invoice,
+                               source=pr.source or "sync", at=now)
     else:
         # 'new' item from a price feed — stub row; enrich via a full catalog ingest.
         db.add(DrugCatalogItem(

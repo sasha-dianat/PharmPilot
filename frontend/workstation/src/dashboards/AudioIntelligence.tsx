@@ -5,8 +5,6 @@
  * Pharmacist approves all AI-extracted clinical facts before they are saved.
  */
 import { useState, useEffect, useRef } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { CounselingScorecard } from '../components/IntelligenceWorkflowBits'
 
@@ -21,7 +19,7 @@ const ENTITY_STYLE: Record<string, string> = {
 
 // ── Live Transcript Feed ───────────────────────────────────────────────────
 function LiveTranscriptFeed() {
-  const [segments, setSegments] = useState([
+  const [segments] = useState([
     { speaker:'PHARMACIST', text:'Good morning! I see you\'re here to pick up your ', entities:[] },
     { speaker:'PATIENT', text:'Yes, also I wanted to mention I started taking a ', entities:[{word:'new supplement',type:'drug'}], suffix:' for my joints.' },
     { speaker:'PHARMACIST', text:'Which supplement? Any ', entities:[{word:'allergies',type:'allergy'}], suffix:' I should know about?' },
