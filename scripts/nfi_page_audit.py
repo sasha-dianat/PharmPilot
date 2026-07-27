@@ -76,14 +76,41 @@ def page_flags(rec: dict, html: str) -> list[str]:
 
 
 def load_done() -> set[int]:
+    """Ids that actually produced a page. A FAILED fetch is not 'done' — it is
+    the thing a re-run exists to retry. Counting failures here meant one bad
+    proxy run recorded 5,000 unreachable ids and then refused to scan them
+    again."""
     done = set()
     if INDEX.exists():
         for line in INDEX.open(encoding="utf-8"):
             try:
-                done.add(int(json.loads(line)["page_id"]))
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("error") or d.get("http"):
+                continue                      # unreachable → retry next time
+            try:
+                done.add(int(d["page_id"]))
             except Exception:
                 continue
     return done
+
+
+def preflight(opener, proxy: str | None) -> str | None:
+    """Fetch one known-good page before scanning thousands. Returns an error
+    string to abort on. A placeholder proxy («http://host:port») previously
+    produced 5,000 identical InvalidURL failures before anyone found out."""
+    if proxy and ("host:port" in proxy or "://" not in proxy):
+        return (f"پروکسی نامعتبر است: {proxy!r} — نشانی واقعی را بدهید "
+                f"(مثال: http://127.0.0.1:8086)")
+    try:
+        status, body, _ = fetch_detail_raw(212, opener)   # the ranitidine page
+    except Exception as e:
+        return (f"اتصال برقرار نشد ({type(e).__name__}: {str(e)[:80]}) — "
+                f"پروکسی ایران لازم است؛ دسترسی مستقیم به irc.fda.gov.ir قطع است.")
+    if status != 200 or not body:
+        return f"صفحهٔ آزمایشی HTTP {status} برگرداند — پروکسی یا مقصد در دسترس نیست."
+    return None
 
 
 def main() -> int:
@@ -120,25 +147,35 @@ def main() -> int:
         return 0
 
     opener = make_opener(a.proxy)
+    err = preflight(opener, a.proxy)
+    if err:
+        print(f"\n✗ {err}\n  هیچ صفحه‌ای پویش نشد.", file=sys.stderr)
+        return 2
+    print("✓ اتصال آزمایشی موفق — شروع پویش")
+
     idx = INDEX.open("a", encoding="utf-8")
     mp = IRCMAP.open("a", newline="", encoding="utf-8")
     wr = csv.writer(mp)
     if IRCMAP.stat().st_size == 0:
         wr.writerow(["irc", "page_id", "name_fa"])
 
-    ok = flagged = failed = 0
+    ok = flagged = failed = streak = 0
     t0 = time.time()
     for n, pid in enumerate(todo, 1):
+        if streak >= 100:                     # the link died mid-run; stop early
+            print(f"\n✗ {streak} خطای پیاپی — پویش متوقف شد (اتصال قطع شده).",
+                  file=sys.stderr)
+            break
         try:
             status, body, _hdrs = fetch_detail_raw(pid, opener)
         except Exception as e:
             idx.write(json.dumps({"page_id": pid, "error": type(e).__name__}) + "\n")
-            failed += 1
+            failed += 1; streak += 1
             continue
         html = body.decode("utf-8", "replace") if body else ""
         if status != 200 or not html:
             idx.write(json.dumps({"page_id": pid, "http": status}) + "\n")
-            failed += 1
+            failed += 1; streak += 1
             continue
         rec = parse_detail(html, pid) or {}
         flags = page_flags(rec, html)
@@ -158,7 +195,7 @@ def main() -> int:
         if flags or a.save_all:
             (PAGES / f"{pid}.html").write_text(html, encoding="utf-8")
             flagged += 1
-        ok += 1
+        ok += 1; streak = 0
         if n % 200 == 0:
             idx.flush(); mp.flush()
             el = time.time() - t0
