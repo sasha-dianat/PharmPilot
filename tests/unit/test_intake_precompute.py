@@ -50,10 +50,19 @@ def _make_db(rx_data: dict | None = None, dur_alerts: list | None = None,
 
 
 def _std_rx():
+    """One stubbed prescriptions row.
+
+    MUST carry every column _load_rx SELECTs — the stub hands this dict back as
+    the row, so a missing key raises KeyError inside the service instead of
+    failing loudly here. That is exactly how pharmacy_id went unnoticed: it was
+    added to the query and the dict build in 373d2f7 without being added here,
+    so all six tests saw status 'failed' rather than a clear fixture error.
+    """
     pid = str(uuid4())
     return {
         "id": str(uuid4()),
         "patient_id": pid,
+        "pharmacy_id": str(uuid4()),
         "drug_name": "Amlodipine",
         "drug_strength": "5mg",
         "sig_text": "Take 1 tablet daily",
@@ -200,3 +209,25 @@ def test_precompute_g6pd_relative_triggers_caution():
     g6pd_hit = any("g6pd" in str(f).lower() or "favism" in str(f).lower()
                    or "oxidant" in str(f).lower() for f in combined)
     assert g6pd_hit, f"G6PD finding not in council output: {council}"
+
+
+def test_interaction_precompute_receives_the_rx_pharmacy_id():
+    """Regression guard for the stale-fixture class of bug.
+
+    _load_rx reads row["pharmacy_id"] and hands it to the interaction
+    precompute. When the fixture lacked that key the service raised KeyError,
+    caught it, and returned status 'failed' — so the six tests failed with an
+    opaque assertion instead of naming the missing column. Asserting the value
+    is actually threaded through makes any future drift fail here, loudly.
+    """
+    rx = _std_rx()
+    db = _make_db(rx_data=rx)
+    with patch("services.core.pharmacy_workflow.intake_precompute"
+               ".recompute_for_patient_id", new_callable=AsyncMock) as spy:
+        result = asyncio.run(IntakePrecomputeService(db).run(rx["id"]))
+
+    assert result["status"] == "ready"
+    spy.assert_awaited_once()
+    kw = spy.await_args.kwargs
+    assert str(kw["pharmacy_id"]) == rx["pharmacy_id"]
+    assert str(kw["patient_id"]) == rx["patient_id"]
