@@ -130,6 +130,41 @@ incorrect one rather than silently rewriting history.
 - Next action: open a stacked draft PR into `feat/darunameh-crawler`, then begin
   CX-002 at a pinned PR #22 head after the project owner accepts the split.
 
+### 2026-07-27 — Claude Code — NFI audit mode + resume; surveillance platform design
+
+- Workstream: `CL-001` (NFI harvest), plus new design artifact
+- Branch/commit: `feat/darunameh-crawler` at `1869546`
+- Changed: `services/core/drug_catalog/nfi_audit.py` (new, shared flag/index
+  rules), `nfi_harvest_service.py` (audit mode, disk-persisted resume point,
+  skip-already-audited, mode validated before lock acquisition),
+  `routers/pricing.py` (`POST /catalog/nfi/resume`, `GET /catalog/nfi/audit-summary`,
+  `mode` on start), `scripts/nfi_page_audit.py` (now imports the shared module
+  instead of duplicating it), `DrugCatalogAdmin.tsx` + `lib/api.ts` (mode
+  selector, resume button, findings panel).
+- Interfaces/schema/data: two new endpoints; no migration; new on-disk artifacts
+  `logs/harvest/nfi_progress.json` and `logs/nfi_audit/`.
+- Verification: `pytest tests/unit/test_nfi_audit_mode.py` 11 passed;
+  harvest-related suites 34 passed; `npx tsc --noEmit` clean; backend restarted
+  (launchd, PID 57676, single listener :8001) and both routes confirmed present
+  in the served OpenAPI. Full `tests/unit` = 826 passed / 11 failed; those 11
+  (`test_intake_precompute`, `test_integrations_sandbox`, `test_researcher`)
+  fail identically without these changes and pass in isolation — pre-existing
+  event-loop pollution, untouched here.
+- Also added: `docs/design/SURVEILLANCE_PLATFORM.md` — proposed architecture for
+  pharmacy/warehouse video analytics. **Not approved, not implemented.** It
+  records four findings about the existing `services/biometric/` tree that need
+  an owner decision before that subsystem is extended: consent columns on
+  `BiometricIdentity` are never read by any code; `PatientResolver` accepts a
+  face match >=0.80 as a patient-identity signal and auto-loads a chart at
+  combined >=0.88 without pharmacist confirmation; `phase32.py:344` mints a
+  permanent biometric identity at >=0.80; dormant watchlist fields exist.
+  `LivenessDetector` also fails open on exception (`engine.py:146`).
+- Risks/blockers: the biometric findings are owner decisions, not defects I
+  should fix unilaterally — they change product behavior and legal posture.
+- Next action/owner: project owner to rule on the surveillance design's open
+  questions (esp. whether customer face recognition is implemented at all);
+  crawl ids 43,001-70,000 and the 625 pending retries remain outstanding on CL-001.
+
 ## Entry template
 
 ```markdown
