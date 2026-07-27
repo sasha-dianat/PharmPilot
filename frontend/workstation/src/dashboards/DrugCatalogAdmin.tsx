@@ -10,10 +10,25 @@ import { pricingApi, apiErrorText } from '../lib/api'
 interface Stats { total: number; priced: number; ingredient_groups: number; last_updated: string | null }
 interface HarvestStatus {
   running: boolean; scanned: number; products: number; ingested: number
-  quarantined?: number
+  quarantined?: number; flagged?: number; mode?: 'ingest' | 'audit'
   last_id: number; start_id: number; end_id: number; progress_pct: number
   elapsed_sec: number; eta_sec: number | null; message: string; error: string | null
   diagnostics?: { failed: number; worst_category: string | null; top_hint: string | null }
+  // set only while a stopped run has ground left to cover
+  resume?: { resume_from: number; end_id: number; mode: 'ingest' | 'audit'
+             source: string; saved_at: string } | null
+}
+interface AuditSummary {
+  pages: number; flagged: number; failed: number
+  by_flag: Record<string, number>; index: string; irc_map: string
+}
+const FLAG_FA: Record<string, string> = {
+  no_irc: 'بدون IRC', no_country: 'بدون کشور', no_price: 'بدون قیمت',
+  no_strength: 'بدون دوز', no_atc: 'بدون ATC', no_generic: 'بدون ژنریک',
+  no_brands_table: 'بدون جدول محصولات مشابه',
+  section_similar_absent: 'بخش «محصولات مشابه» در منبع نیست',
+  section_price_absent: 'بخش قیمت در منبع نیست',
+  spliced: 'صفحهٔ دوپاره', unparsable: 'غیرقابل تجزیه',
 }
 
 const fa = (n: number) => new Intl.NumberFormat('fa-IR').format(n)
@@ -30,6 +45,7 @@ export default function DrugCatalogAdmin() {
   const [startId, setStartId] = useState(1)
   const [endId, setEndId] = useState(60000)
   const [delay, setDelay] = useState(0.25)
+  const [mode, setMode] = useState<'ingest' | 'audit'>('ingest')
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -48,13 +64,25 @@ export default function DrugCatalogAdmin() {
   const start = async () => {
     setBusy(true); setMsg(null)
     try {
-      await pricingApi.nfiStart({ start_id: startId, end_id: endId, delay, proxy: proxy || undefined })
+      await pricingApi.nfiStart({ start_id: startId, end_id: endId, delay,
+                                 proxy: proxy || undefined, mode })
       qc.invalidateQueries({ queryKey: ['nfi-status'] })
     } catch (e: unknown) {
       setMsg({ kind: 'err', text: apiErrorText(e, 'شروع برداشت ناموفق بود.') })
     } finally { setBusy(false) }
   }
   const stop = async () => { await pricingApi.nfiStop(); qc.invalidateQueries({ queryKey: ['nfi-status'] }) }
+  // a manually stopped run leaves its position on disk, so it can be picked up
+  // again later — even after the backend restarts
+  const resume = async () => {
+    setBusy(true); setMsg(null)
+    try {
+      await pricingApi.nfiResume({ proxy: proxy || undefined, delay })
+      qc.invalidateQueries({ queryKey: ['nfi-status'] })
+    } catch (e: unknown) {
+      setMsg({ kind: 'err', text: apiErrorText(e, 'ادامهٔ برداشت ناموفق بود.') })
+    } finally { setBusy(false) }
+  }
 
   // pages previous passes lost to transport failures — retrying only those
   // avoids re-sweeping ~70,000 ids to recover a few thousand
@@ -75,6 +103,14 @@ export default function DrugCatalogAdmin() {
       setMsg({ kind: 'err', text: apiErrorText(e, 'تلاش دوباره ناموفق بود.') })
     } finally { setBusy(false) }
   }
+
+  // audit-mode output lives on disk, not in the catalog — surface its shape so a
+  // finished pass is readable without opening logs/nfi_audit/index.jsonl
+  const { data: audit } = useQuery<AuditSummary>({
+    queryKey: ['nfi-audit-summary'],
+    queryFn: () => pricingApi.nfiAuditSummary().then(r => r.data),
+    refetchInterval: q => (hs?.running && hs?.mode === 'audit' ? 5_000 : 60_000),
+  })
 
   const importCatalog = async (file: File) => {
     setBusy(true); setMsg(null)
@@ -110,6 +146,23 @@ export default function DrugCatalogAdmin() {
           <span className="text-[11px] text-slate-500">نیازمند پروکسی ایران — کل پایگاه از طریق صفحات محصول برداشت می‌شود</span>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          {([['ingest', 'برداشت به کاتالوگ', 'صفحات خوانده و در کاتالوگ ثبت می‌شوند'],
+             ['audit', 'پویش ممیزی', 'چیزی در کاتالوگ نوشته نمی‌شود؛ منبع صفحات مشکوک برای بررسی ذخیره می‌شود']] as const)
+            .map(([m, label, hint]) => (
+            <button key={m} onClick={() => setMode(m)} disabled={running} title={hint}
+              className={`px-3 py-1 rounded-lg border transition-colors disabled:opacity-50 ${
+                mode === m ? 'bg-indigo-600/25 border-indigo-500 text-indigo-200'
+                           : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}`}>
+              {label}
+            </button>))}
+          <span className="text-[11px] text-slate-500">
+            {mode === 'audit'
+              ? 'فقط بررسی — منبع خام صفحات پرچم‌خورده در logs/nfi_audit ذخیره می‌شود'
+              : 'صفحات خوانده و مستقیماً در کاتالوگ ثبت می‌شوند'}
+          </span>
+        </div>
+
         <div className="flex flex-wrap items-end gap-3 text-[12px]">
           <Field label="پروکسی (اختیاری — یا HTTPS_PROXY سرور)">
             <input value={proxy} onChange={e => setProxy(e.target.value)} placeholder="http://host:port"
@@ -123,7 +176,15 @@ export default function DrugCatalogAdmin() {
             onChange={e => setDelay(+e.target.value)} className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 disabled:opacity-50" /></Field>
           {running
             ? <button onClick={stop} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded-lg">توقف</button>
-            : <button onClick={start} disabled={busy} className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg disabled:opacity-50">شروع برداشت</button>}
+            : <button onClick={start} disabled={busy} className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg disabled:opacity-50">
+                {mode === 'audit' ? 'شروع پویش' : 'شروع برداشت'}</button>}
+          {!running && hs?.resume && (
+            <button onClick={resume} disabled={busy}
+              title={`${hs.resume.mode === 'audit' ? 'پویش ممیزی' : 'برداشت'} متوقف‌شده — `
+                + `تا شناسه ${hs.resume.end_id} · ذخیره در ${new Date(hs.resume.saved_at).toLocaleString('fa-IR')}`}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg disabled:opacity-50">
+              ▶ ادامه از شناسهٔ {fa(hs.resume.resume_from)}
+            </button>)}
           {!running && (fails?.retryable ?? 0) > 0 && (
             <button onClick={retryFailed} disabled={busy}
               title={(fails?.by_category || []).filter(c => c.retryable)
@@ -140,9 +201,13 @@ export default function DrugCatalogAdmin() {
             </div>
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-400 font-mono">
               <span>{hs.progress_pct}٪</span>
+              {hs.mode === 'audit' && <span className="text-indigo-300">حالت: پویش ممیزی</span>}
               <span>پیموده‌شده: {fa(hs.scanned)}</span>
               <span className="text-emerald-300">محصولات: {fa(hs.products)}</span>
-              <span className="text-indigo-300">ثبت‌شده: {fa(hs.ingested)}</span>
+              {hs.mode === 'audit'
+                ? <span className="text-amber-300" title="صفحاتی که منبع خامشان برای بررسی ذخیره شد">
+                    پرچم‌خورده: {fa(hs.flagged ?? 0)}</span>
+                : <span className="text-indigo-300">ثبت‌شده: {fa(hs.ingested)}</span>}
               {(hs.quarantined ?? 0) > 0 && (
                 <span className="text-rose-300"
                   title="صفحات دوپاره (مونوگراف دارویی دیگر) — بلوک محصول حفظ شد، مونوگراف بیگانه وارد نشد">
@@ -158,6 +223,28 @@ export default function DrugCatalogAdmin() {
           </div>
         )}
       </div>
+
+      {/* ── Audit findings ────────────────────────────────────────────────── */}
+      {(audit?.pages ?? 0) > 0 && (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-semibold text-sm">یافته‌های پویش ممیزی</span>
+            <span className="text-[11px] text-slate-400 font-mono">
+              صفحات: {fa(audit!.pages)} · پرچم‌خورده: {fa(audit!.flagged)} · ناموفق: {fa(audit!.failed)}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            منبع خام صفحات پرچم‌خورده در <code className="font-mono">{audit!.index.replace('index.jsonl', 'pages/')}</code> ذخیره شده است —
+            نبودِ یک بخش در منبع یعنی داده اصلاً منتشر نشده، نه اینکه ما نخوانده‌ایم.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(audit!.by_flag).map(([flag, n]) => (
+              <span key={flag} className="text-[11px] px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
+                {FLAG_FA[flag] || flag}: <span className="font-mono">{fa(n)}</span>
+              </span>))}
+          </div>
+        </div>
+      )}
 
       {/* ── File import ───────────────────────────────────────────────────── */}
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">

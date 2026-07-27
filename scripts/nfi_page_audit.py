@@ -26,8 +26,6 @@ Safe to interrupt and re-run: finished ids are skipped unless --force.
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import os
 import sys
 import time
@@ -37,63 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.core.drug_catalog.nfi import (  # noqa: E402
     fetch_detail_raw, make_opener, parse_detail)
-
-OUT = Path("logs/nfi_audit")
-PAGES = OUT / "pages"
-INDEX = OUT / "index.jsonl"
-IRCMAP = OUT / "irc_page_map.csv"
-
-
-def page_flags(rec: dict, html: str) -> list[str]:
-    """Everything about this page worth a human look. Section presence is
-    recorded separately from field emptiness so we can tell "the page never
-    said it" from "we failed to read it" — the distinction that decides whether
-    re-crawling can help at all."""
-    f = []
-    if not rec:
-        return ["unparsable"]
-    if not rec.get("irc"):
-        f.append("no_irc")
-    if not rec.get("country"):
-        f.append("no_country")
-    if not (rec.get("announced_price") or rec.get("package_price")):
-        f.append("no_price")
-    if not rec.get("strength"):
-        f.append("no_strength")
-    if not rec.get("atc"):
-        f.append("no_atc")
-    if not rec.get("generic_name"):
-        f.append("no_generic")
-    if not rec.get("brands"):
-        f.append("no_brands_table")          # country lives here — key signal
-    if "محصولات مشابه" not in html:
-        f.append("section_similar_absent")
-    if "قیمت" not in html:
-        f.append("section_price_absent")
-    if rec.get("integrity", {}).get("spliced_page"):
-        f.append("spliced")
-    return f
-
-
-def load_done() -> set[int]:
-    """Ids that actually produced a page. A FAILED fetch is not 'done' — it is
-    the thing a re-run exists to retry. Counting failures here meant one bad
-    proxy run recorded 5,000 unreachable ids and then refused to scan them
-    again."""
-    done = set()
-    if INDEX.exists():
-        for line in INDEX.open(encoding="utf-8"):
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            if d.get("error") or d.get("http"):
-                continue                      # unreachable → retry next time
-            try:
-                done.add(int(d["page_id"]))
-            except Exception:
-                continue
-    return done
+# The flag rules, the index format and the "what counts as done" rule live in
+# ONE place — the GUI's audit mode runs the same code, so a page flagged here is
+# flagged there too.
+from services.core.drug_catalog import nfi_audit  # noqa: E402
+from services.core.drug_catalog.nfi_audit import (  # noqa: E402
+    INDEX, IRCMAP, PAGES, load_done)
 
 
 def preflight(opener, proxy: str | None) -> str | None:
@@ -138,8 +85,7 @@ def main() -> int:
             ap.error("give --end, --ids or --failed")
         ids = list(range(a.start, a.end + 1))
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    PAGES.mkdir(exist_ok=True)
+    nfi_audit.ensure_dirs()
     done = set() if a.force else load_done()
     todo = [i for i in ids if i not in done]
     print(f"pages to scan: {len(todo):,} (skipping {len(ids) - len(todo):,} already done)")
@@ -153,12 +99,6 @@ def main() -> int:
         return 2
     print("✓ اتصال آزمایشی موفق — شروع پویش")
 
-    idx = INDEX.open("a", encoding="utf-8")
-    mp = IRCMAP.open("a", newline="", encoding="utf-8")
-    wr = csv.writer(mp)
-    if IRCMAP.stat().st_size == 0:
-        wr.writerow(["irc", "page_id", "name_fa"])
-
     ok = flagged = failed = streak = 0
     t0 = time.time()
     for n, pid in enumerate(todo, 1):
@@ -169,42 +109,25 @@ def main() -> int:
         try:
             status, body, _hdrs = fetch_detail_raw(pid, opener)
         except Exception as e:
-            idx.write(json.dumps({"page_id": pid, "error": type(e).__name__}) + "\n")
+            nfi_audit.write_failure(pid, error=type(e).__name__)
             failed += 1; streak += 1
             continue
         html = body.decode("utf-8", "replace") if body else ""
         if status != 200 or not html:
-            idx.write(json.dumps({"page_id": pid, "http": status}) + "\n")
+            nfi_audit.write_failure(pid, http=status)
             failed += 1; streak += 1
             continue
         rec = parse_detail(html, pid) or {}
-        flags = page_flags(rec, html)
-        row = {
-            "page_id": pid,
-            "url": f"https://irc.fda.gov.ir/NFI/Detail/{pid}",
-            "irc": rec.get("irc"), "name_fa": rec.get("name_fa"),
-            "generic": rec.get("generic_name"), "manufacturer": rec.get("manufacturer"),
-            "country": rec.get("country"), "price": rec.get("announced_price"),
-            "strength": rec.get("strength"), "atc": rec.get("atc"),
-            "licence_until": rec.get("license_valid_until"),
-            "flags": flags, "html_bytes": len(html),
-        }
-        idx.write(json.dumps(row, ensure_ascii=False) + "\n")
-        if rec.get("irc"):
-            wr.writerow([rec["irc"], pid, rec.get("name_fa") or ""])
-        if flags or a.save_all:
-            (PAGES / f"{pid}.html").write_text(html, encoding="utf-8")
+        if nfi_audit.write_page(pid, rec, html, save_all=a.save_all):
             flagged += 1
         ok += 1; streak = 0
         if n % 200 == 0:
-            idx.flush(); mp.flush()
             el = time.time() - t0
             print(f"  {n:,}/{len(todo):,}  ok={ok:,} flagged={flagged:,} failed={failed:,} "
                   f"· {el/max(n,1):.2f}s/page · eta {(len(todo)-n)*el/max(n,1)/60:.0f}m")
         if a.delay:
             time.sleep(a.delay)
 
-    idx.close(); mp.close()
     print(f"\ndone: {ok:,} parsed · {flagged:,} flagged (HTML saved) · {failed:,} unreachable")
     print(f"index      {INDEX}")
     print(f"irc→page   {IRCMAP}")

@@ -236,6 +236,10 @@ class NfiHarvestRequest(BaseModel):
     end_id: int = 60000
     delay: float = 0.25
     proxy: str | None = None      # Iran proxy URL (else server HTTPS_PROXY is used)
+    # ingest → parse and upsert into the catalog (the normal harvest)
+    # audit   → touch NO catalog data; keep the raw SOURCE of every suspicious
+    #           page plus the irc→page-id map, for diagnosing WHY rows are bad
+    mode: str = "ingest"
 
 
 @router.post("/catalog/nfi/start")
@@ -244,9 +248,35 @@ async def nfi_harvest_start(body: NfiHarvestRequest,
     """Start a background NFI crawl → catalog. Requires an Iran-reachable proxy."""
     from services.core.drug_catalog import nfi_harvest_service as svc
     try:
-        return svc.start(body.start_id, body.end_id, delay=body.delay, proxy=body.proxy)
+        return svc.start(body.start_id, body.end_id, delay=body.delay,
+                         proxy=body.proxy, mode=body.mode)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+class NfiResumeRequest(BaseModel):
+    proxy: str | None = None
+    delay: float = 0.0
+
+
+@router.post("/catalog/nfi/resume")
+async def nfi_harvest_resume(body: NfiResumeRequest,
+                             staff: Staff = Depends(require_permission("inventory:write"))):
+    """Continue a manually-stopped run from where it left off. The position is
+    persisted to disk each 100 pages, so this survives a backend restart."""
+    from services.core.drug_catalog import nfi_harvest_service as svc
+    try:
+        return svc.resume(delay=body.delay, proxy=body.proxy)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/catalog/nfi/audit-summary")
+async def nfi_audit_summary(staff: Staff = Depends(require_permission("inventory:read"))):
+    """Flag histogram over every page audited so far — which deficiencies are
+    SOURCE gaps (section absent) versus parse gaps we can fix."""
+    from services.core.drug_catalog import nfi_audit
+    return nfi_audit.summary()
 
 
 @router.get("/catalog/nfi/status")

@@ -167,8 +167,12 @@ export const pricingApi = {
   catalogIntegrity: () => apiClient.get('/pricing/catalog/integrity'),
   catalogIntegrityApply: (ircs: string[]) =>
     apiClient.post('/pricing/catalog/integrity/apply', { ircs }),
-  nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string }) =>
+  nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string
+                     mode?: 'ingest' | 'audit' }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
+  nfiResume: (body: { proxy?: string; delay?: number }) =>
+    apiClient.post('/pricing/catalog/nfi/resume', body),
+  nfiAuditSummary: () => apiClient.get('/pricing/catalog/nfi/audit-summary'),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
   nfiFailures: () => apiClient.get('/pricing/catalog/nfi/failures'),
   countryProposals: (minConfidence = 0) =>

@@ -7,9 +7,12 @@ proxy — passed per-request from the GUI or taken from HTTPS_PROXY.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 
 from . import harvest_lock
 from .harvest_diagnostics import DiagnosticRecorder
@@ -28,6 +31,8 @@ class HarvestState:
     products: int = 0
     ingested: int = 0
     quarantined: int = 0         # spliced-page monographs stripped this run
+    flagged: int = 0             # audit mode: pages whose SOURCE was kept
+    mode: str = "ingest"         # ingest → catalog | audit → evidence only
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
@@ -37,7 +42,10 @@ class HarvestState:
     def snapshot(self) -> dict:
         d = asdict(self)
         total = max(1, self.end_id - self.start_id + 1)
-        d["progress_pct"] = round(100 * self.scanned / total, 1) if self.running or self.finished_at else 0.0
+        # covered ≥ scanned: an audit pass skips ids it already holds, and those
+        # still move the run forward even though nothing was fetched for them
+        covered = max(self.scanned, self.last_id - self.start_id + 1) if self.last_id else self.scanned
+        d["progress_pct"] = round(100 * min(covered, total) / total, 1) if self.running or self.finished_at else 0.0
         d["elapsed_sec"] = round((self.finished_at or time.time()) - self.started_at, 1) if self.started_at else 0.0
         if self.running and self.scanned and self.started_at:
             rate = self.scanned / max(1e-6, time.time() - self.started_at)
@@ -55,6 +63,8 @@ _TASK: asyncio.Task | None = None
 def status() -> dict:
     d = _STATE.snapshot()
     d["lock_holder"] = harvest_lock.holder()
+    # a stopped run leaves a resume point on disk, so it survives a restart
+    d["resume"] = None if _STATE.running else load_progress()
     return d
 
 
@@ -165,16 +175,63 @@ async def _flush(batch: list[dict], source: str) -> int:
         return await upsert_catalog(db, records, source=source, overrides=overrides)
 
 
+PROGRESS = Path("logs/harvest/nfi_progress.json")
+
+
+def save_progress(last_id: int, end_id: int, mode: str, source: str) -> None:
+    """Remember where a run got to, so a stop can be resumed later — including
+    after a backend restart, when in-memory state is gone."""
+    try:
+        PROGRESS.parent.mkdir(parents=True, exist_ok=True)
+        PROGRESS.write_text(json.dumps(
+            {"last_id": last_id, "end_id": end_id, "mode": mode, "source": source,
+             "saved_at": datetime.now(timezone.utc).isoformat()}),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_progress() -> dict | None:
+    """→ {resume_from, end_id, mode, source} when an interrupted run can be
+    continued, else None."""
+    try:
+        d = json.loads(PROGRESS.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    last, end = int(d.get("last_id", 0)), int(d.get("end_id", 0))
+    if not end or last >= end:
+        return None                       # finished — nothing to resume
+    return {"resume_from": last + 1, "end_id": end,
+            "mode": d.get("mode", "ingest"), "source": d.get("source", "nfi-harvest"),
+            "saved_at": d.get("saved_at")}
+
+
+def clear_progress() -> None:
+    try:
+        PROGRESS.unlink()
+    except Exception:
+        pass
+
+
 async def _run(start: int, end: int, delay: float, proxy: str | None, source: str,
-               page_ids: list[int] | None = None) -> None:
+               page_ids: list[int] | None = None, mode: str = "ingest") -> None:
     from .nfi import page_coherence, quarantine_monograph
     from .nfi_integrity import load_vocab
     from .harvest_diagnostics import classify
+    from . import nfi_audit
     opener = make_opener(proxy or os.getenv("HTTPS_PROXY"))
     recorder = DiagnosticRecorder("nfi", "nfi", mode="errors_only")
     batch: list[dict] = []
     failures: list[dict] = []       # pages this pass lost, for a targeted retry
     fetched_ok: list[int] = []      # pages that succeeded, to clear prior failures
+    # An audit pass never re-fetches a page it already holds the evidence for —
+    # re-walking thousands of saved ids through a slow proxy is the exact cost
+    # this mode exists to avoid. Ingest re-crawls freely: prices move.
+    already = nfi_audit.load_done() if mode == "audit" else set()
+    # A targeted retry has no meaningful resume point — its ids come from the
+    # failure registry, so relaunching the retry picks up what is still pending.
+    resumable = page_ids is None
+    seen = 0
     try:
         from services.platform.database import AsyncSessionLocal
         async with AsyncSessionLocal() as _vdb:
@@ -185,6 +242,12 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
             if _STATE.cancel:
                 _STATE.message = "cancelled"
                 break
+            seen += 1
+            if pid in already:
+                _STATE.last_id = pid
+                if resumable and seen % 100 == 0:
+                    save_progress(pid, end, mode, source)
+                continue
             status_code, html = await asyncio.to_thread(_fetch_and_record, pid, opener, recorder)
             _STATE.diagnostics = recorder.summary()
             _STATE.scanned += 1
@@ -213,19 +276,33 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
                         rec = quarantine_monograph(rec, reasons)
                         recorder.note("spliced_page", f"id {pid}: {'; '.join(reasons)}")
                         _STATE.quarantined += 1
-                    batch.append(rec)
+                    if mode == "audit":
+                        # evidence-gathering pass: keep the SOURCE of anything
+                        # suspicious and the irc→page link, touch no catalog data
+                        if nfi_audit.write_page(pid, rec, html):
+                            _STATE.flagged += 1
+                    else:
+                        batch.append(rec)
                     _STATE.products += 1
-            if len(batch) >= 100:
+            elif mode == "audit":
+                nfi_audit.write_failure(pid, http=status_code or None)
+            if mode != "audit" and len(batch) >= 100:
                 _STATE.ingested += await _flush(batch, source)
                 batch = []
+            if resumable and seen % 100 == 0:
+                save_progress(pid, end, mode, source)
             if delay:
                 await asyncio.sleep(delay)
         if batch:
             _STATE.ingested += await _flush(batch, source)
         await record_failures(failures)
         await resolve_failures(fetched_ok)
-        if not _STATE.cancel:
-            _STATE.message = "done"
+        if not resumable:
+            pass                      # retry passes are driven by the registry
+        elif _STATE.cancel:
+            save_progress(_STATE.last_id, end, mode, source)
+        else:
+            clear_progress()          # finished — nothing left to resume
     except Exception as e:  # pragma: no cover
         _STATE.error = f"{type(e).__name__}: {e}"
         _STATE.message = "failed"
@@ -240,9 +317,19 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
         _STATE.finished_at = time.time()
 
 
+def resume(*, delay: float = 0.0, proxy: str | None = None) -> dict:
+    """Continue an interrupted run from where it stopped. The position is on
+    disk, so this works even after the backend was restarted."""
+    p = load_progress()
+    if not p:
+        raise RuntimeError("اجرای ناتمامی برای ادامه وجود ندارد.")
+    return start(p["resume_from"], p["end_id"], delay=delay, proxy=proxy,
+                 source=p["source"], mode=p["mode"])
+
+
 def start(start_id: int, end_id: int, *, delay: float = 0.25,
           proxy: str | None = None, source: str = "nfi-harvest",
-          page_ids: list[int] | None = None) -> dict:
+          page_ids: list[int] | None = None, mode: str = "ingest") -> dict:
     """Kick off a background harvest. Raises if one is already running.
     `page_ids` runs a targeted RETRY over exactly those pages instead of a
     range — the whole point of the failure registry: recovering a few thousand
@@ -250,14 +337,18 @@ def start(start_id: int, end_id: int, *, delay: float = 0.25,
     global _TASK, _STATE
     if _STATE.running:
         raise RuntimeError("A harvest is already running.")
+    # validate BEFORE taking the lock — a rejected start that held it would
+    # wedge every later harvest until the process restarted
+    if mode not in ("ingest", "audit"):
+        raise RuntimeError(f"حالت ناشناخته: {mode}")
     if not harvest_lock.acquire("nfi"):
         raise RuntimeError(f"قفل برداشت در اختیار دیگری است: {harvest_lock.holder()}")
     if page_ids:
         start_id, end_id = min(page_ids), max(page_ids)
     _STATE = HarvestState(running=True, start_id=start_id, end_id=end_id,
-                          last_id=start_id - 1, started_at=time.time(),
+                          last_id=start_id - 1, started_at=time.time(), mode=mode,
                           message=f"retry {len(page_ids)} failed pages" if page_ids
-                                  else "running")
+                                  else ("audit" if mode == "audit" else "running"))
     _TASK = asyncio.create_task(_run(start_id, end_id, delay, proxy, source,
-                                     page_ids=page_ids))
+                                     page_ids=page_ids, mode=mode))
     return _STATE.snapshot()
