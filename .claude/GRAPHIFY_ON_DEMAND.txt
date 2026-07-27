@@ -1,0 +1,13 @@
+Only the Graphify skill is retained in this project.
+
+There is no project model, Fable/Opus router, custom agent, lifecycle hook,
+project memory layer, MCP server, CLAUDE.md, or always-on Graphify hook.
+
+Start Claude Code with:
+  claude
+
+Choose the model manually inside Claude Code:
+  /model
+
+Invoke Graphify manually when needed:
+  /graphify
