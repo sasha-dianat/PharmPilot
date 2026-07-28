@@ -165,6 +165,44 @@ incorrect one rather than silently rewriting history.
   questions (esp. whether customer face recognition is implemented at all);
   crawl ids 43,001-70,000 and the 625 pending retries remain outstanding on CL-001.
 
+### 2026-07-28 — Claude Code — face-identification defect fixes + design
+
+- Workstream: `CL-002` (biometric identity), new
+- Branch/commit: `master` at `eec4976` (fixes) + this doc commit
+- Changed: `services/biometric/identity_resolution/{engine.py,gallery.py,thresholds.py}`,
+  `routers/biometric.py`, `tests/unit/test_face_identity_engine.py` (17 tests).
+  Five defects fixed: probability-shaped thresholds on raw cosine; k=1 search
+  making the margin test impossible; identity map never persisted (matches
+  resolved to None after restart); no template removal path; liveness failing
+  OPEN (and scikit-image is absent, so it failed open on every call).
+- Interfaces/schema: no migration. `IdentityMatch` gained similarity/confidence
+  as separate fields plus margin, threshold_used, expected_false_matches,
+  explanation. Match levels are now auto/review/no_match/spoof_attempt —
+  "high"/"probable"/"possible" are gone; `routers/biometric.py` updated.
+- Verification: 17 new tests pass; suite 851 passed / 5 failed — the 5 are
+  pre-existing order-dependent event-loop pollution (test_researcher,
+  test_integrations_sandbox), identical without this change and green in
+  isolation.
+- Also added `docs/design/FACE_IDENTITY_PLATFORM.md` (proposal, not approved).
+
+- BLOCKING FINDING, verified directly, unrelated to biometrics:
+  `POST /pos/collect-payment` (services/platform/routers/pos.py:169) sets
+  `status='dispensed'` by raw SQL from ANY status except cancelled/voided —
+  including DUR_HOLD. It bypasses RxStateMachine, the state-event hash chain,
+  and the EPCS check. `PENDING_DUR -> PENDING_VERIFICATION`
+  (state_machine.py:30) is also unconditional. Collecting payment on a held
+  prescription dispenses it. This needs an owner decision and is independent of
+  the surveillance work.
+
+- Risks/blockers: the design's adversarial verification did NOT run (session
+  limit). Resume with
+  `Workflow({scriptPath: '.../pharmacy-face-id-design-wf_64a5cf50-f00.js',
+  resumeFromRunId: 'wf_75c19fb9-e0d'})` — the five completed dives replay from
+  cache, only the three critics re-run.
+- Next action/owner: owner to rule on the POS bypass; then Phase 0/1 of the
+  design (consent ledger, sever biometric->patient edge, remove
+  biometric_confidence from PatientResolver).
+
 ## Entry template
 
 ```markdown
