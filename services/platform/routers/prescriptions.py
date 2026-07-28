@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.platform.auth import get_current_staff, require_permission, require_pharmacist
+from services.platform.auth import get_current_staff, require_permission, require_pharmacist, require_ws_staff
 from services.platform.database import get_db
 from services.core.pharmacy_workflow.state_machine import (
     EPCSRequiredError, InvalidTransitionError, QueueOwnershipConflict, RxStateMachine
@@ -555,12 +555,17 @@ async def get_rx_fills(
 async def rx_queue_websocket(
     websocket: WebSocket,
     pharmacy_id: UUID,
+    staff: Staff | None = Depends(require_ws_staff),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Real-time Rx queue updates for pharmacist workstations.
     Broadcasts queue changes to all connected workstations.
     """
+    # require_ws_staff already closed the socket with 1008 on failure
+    if staff is None:
+        return
+
     await websocket.accept()
 
     async def send_snapshot() -> None:

@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.core.pharmacy_workflow.patient_context import load_active_medications_and_diagnoses
 from services.platform.config import settings
 from services.platform.database import get_db
+from services.platform.auth import require_permission
+from shared.models.auth import Staff
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,6 +36,7 @@ class RxReviewResponse(BaseModel):
 @router.post("/rx-review", response_model=RxReviewResponse)
 async def review_prescription(
     request: RxReviewRequest,
+    staff: Staff = Depends(require_permission("clinical:read")),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import select

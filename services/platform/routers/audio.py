@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.database import get_db
-from services.platform.auth import require_permission
+from services.platform.auth import require_pharmacist, require_permission
 from shared.models.auth import Staff
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ async def transcribe_recording(
     zone: str = Form(...),
     visit_id: Optional[UUID] = Form(None),
     patient_id: Optional[UUID] = Form(None),
+    staff: Staff = Depends(require_permission("clinical:write")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -224,14 +225,18 @@ async def get_patient_transcripts(
     patient_id: UUID,
     limit: int = 20,
     offset: int = 0,
+    staff: Staff = Depends(require_permission("clinical:read")),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import select, desc
     from shared.models.audio import AudioTranscript
 
+    # Scoped to the caller's pharmacy: authentication alone would still let a
+    # user at one pharmacy read another's conversations by guessing a patient id.
     result = await db.execute(
         select(AudioTranscript)
-        .where(AudioTranscript.patient_id == patient_id)
+        .where(AudioTranscript.patient_id == patient_id,
+               AudioTranscript.pharmacy_id == staff.pharmacy_id)
         .order_by(desc(AudioTranscript.recording_started_at))
         .limit(limit)
         .offset(offset)
@@ -244,7 +249,7 @@ async def get_patient_transcripts(
             "zone": t.audio_zone,
             "recorded_at": t.recording_started_at.isoformat(),
             "duration_seconds": t.duration_seconds,
-            "full_text": t.full_text,
+            "full_text": t.full_transcript,
             "action_items": t.clinical_action_items,
             "status": t.status,
         }
@@ -256,7 +261,7 @@ async def get_patient_transcripts(
 async def approve_enrichment_action(
     transcript_id: UUID,
     action_id: UUID,
-    pharmacist_id: UUID,
+    staff: Staff = Depends(require_pharmacist()),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -275,13 +280,16 @@ async def approve_enrichment_action(
         raise HTTPException(status_code=404, detail="Enrichment action not found")
 
     action.status = "approved"
-    action.reviewed_by_id = pharmacist_id
+    # The approver IS the audit record for this clinical write, so it is taken
+    # from the verified session — never from a caller-supplied field.
+    action.reviewed_by_id = staff.id
     action.reviewed_at = datetime.now(timezone.utc)
 
     # Apply the enrichment to the patient record
     await _apply_enrichment_to_patient(action, db)
 
-    return {"status": "approved", "action_id": str(action_id)}
+    return {"status": "approved", "action_id": str(action_id),
+            "approved_by": str(staff.id)}
 
 
 async def _apply_enrichment_to_patient(action, db: AsyncSession) -> None:

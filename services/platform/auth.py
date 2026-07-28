@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -197,6 +197,33 @@ async def get_current_staff_sse(
         )
 
     return await _resolve_staff_from_token(ticket, db, expected_type="sse")
+
+
+async def require_ws_staff(
+    websocket: WebSocket,
+    ticket: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[Staff]:
+    """Authenticate a WebSocket via a short-lived `?ticket=` (POST /auth/sse-ticket).
+
+    A browser cannot attach an Authorization header to a WebSocket handshake, so
+    the same ticket mechanism the SSE routes use applies here — and for the same
+    reason it must be a ticket and not the access token: the URL lands in server
+    logs, browser history and Referer headers.
+
+    Returns None after closing the socket with 1008 (policy violation) when the
+    ticket is missing or invalid. Handlers must return immediately on None —
+    `require_permission` cannot be used here because raising HTTPException in a
+    WebSocket scope produces a failed handshake with no usable status.
+    """
+    if not ticket:
+        await websocket.close(code=1008, reason="Not authenticated")
+        return None
+    try:
+        return await _resolve_staff_from_token(ticket, db, expected_type="sse")
+    except HTTPException:
+        await websocket.close(code=1008, reason="Invalid or expired ticket")
+        return None
 
 
 def require_permission(permission: str):

@@ -89,8 +89,24 @@ async def test_rx_queue_websocket_sends_queue_update_before_first_sleep(monkeypa
 
     monkeypatch.setattr(prescriptions.asyncio, "sleep", sleep_stub)
 
-    await prescriptions.rx_queue_websocket(websocket, pharmacy_id, db)
+    # the handler now authenticates; require_ws_staff supplies `staff`
+    await prescriptions.rx_queue_websocket(websocket, pharmacy_id, object(), db)
 
     assert websocket.sent[0]["event"] == "queue_update"
     assert websocket.sent[0]["count"] == 1
     assert events.index("send_json") < events.index("sleep:3")
+
+
+@pytest.mark.asyncio
+async def test_rx_queue_websocket_refuses_an_unauthenticated_socket():
+    """require_ws_staff returns None after closing the socket with 1008; the
+    handler must bail out rather than stream the queue to a closed peer."""
+    events = []
+    pharmacy_id = uuid4()
+    websocket = StubWebSocket(events)
+    db = StubDb([_rx(pharmacy_id)], events)
+
+    await prescriptions.rx_queue_websocket(websocket, pharmacy_id, None, db)
+
+    assert websocket.sent == []
+    assert "accept" not in events

@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.database import get_db
+from services.platform.auth import require_pharmacist, require_permission, require_ws_staff
+from shared.models.auth import Staff
 from services.biometric.identity_resolution.engine import IdentityResolutionEngine
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ async def identify_individual(
     pharmacy_id: UUID = None,
     has_depth_map: bool = False,
     depth_map: Optional[UploadFile] = File(None),
+    staff: Staff = Depends(require_permission("clinical:read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -111,6 +114,7 @@ async def identify_individual(
 async def enroll_individual(
     identity_id: UUID,
     face_images: list[UploadFile] = File(...),
+    staff: Staff = Depends(require_pharmacist()),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -156,12 +160,17 @@ async def biometric_stream(
     websocket: WebSocket,
     pharmacy_id: UUID,
     zone: str,
+    staff: Staff | None = Depends(require_ws_staff),
     db: AsyncSession = Depends(get_db),
 ):
     """
     WebSocket endpoint for real-time biometric event streaming to pharmacist UI.
     Edge node sends detection events; we resolve and push profile data back.
     """
+    # require_ws_staff already closed the socket with 1008 on failure
+    if staff is None:
+        return
+
     await websocket.accept()
     logger.info("Biometric stream connected: pharmacy=%s zone=%s", pharmacy_id, zone)
 

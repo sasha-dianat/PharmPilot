@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.platform.auth import get_current_staff, require_permission
+from services.platform.auth import get_current_staff, require_permission, require_ws_staff
 from services.platform.database import get_db
 from services.biometric.behavioral_analysis.detector import BehaviorDetection, BehaviorType, AlertSeverity
 from services.biometric.behavioral_analysis.duress_protocol import (
@@ -50,6 +50,7 @@ class BehaviorDetectionPayload(BaseModel):
 @router.post("/behavior-detection", status_code=202)
 async def ingest_behavior_detection(
     payload: BehaviorDetectionPayload,
+    staff: Staff = Depends(require_permission("clinical:write")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -298,12 +299,17 @@ async def analyze_rx_shopping_risk(
 async def security_event_stream(
     websocket: WebSocket,
     pharmacy_id: str,
+    staff: Staff | None = Depends(require_ws_staff),
     db: AsyncSession = Depends(get_db),
 ):
     """
     WebSocket endpoint for real-time security event streaming.
     Pharmacist workstation connects here to receive instant alerts.
     """
+    # require_ws_staff already closed the socket with 1008 on failure
+    if staff is None:
+        return
+
     await websocket.accept()
     pid = str(pharmacy_id)
     if pid not in _security_ws_connections:
