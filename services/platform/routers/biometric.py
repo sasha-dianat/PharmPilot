@@ -24,7 +24,16 @@ _resolution_engine = IdentityResolutionEngine()
 
 class IdentificationResponse(BaseModel):
     identity_id: Optional[UUID]
+    # similarity is the raw cosine; confidence is the calibrated probability that
+    # no enrolled impostor would score this high. They are NOT interchangeable —
+    # conflating them is what let a cosine be read as a percentage.
+    similarity: float
     confidence: float
+    margin: float
+    threshold_used: Optional[float] = None
+    expected_false_matches: Optional[float] = None
+    requires_review: bool = True
+    explanation: str = ""
     match_level: str
     identity_class: str
     patient_id: Optional[UUID] = None
@@ -69,15 +78,23 @@ async def identify_individual(
 
     response = IdentificationResponse(
         identity_id=match.identity_id,
+        similarity=match.similarity,
         confidence=match.confidence,
+        margin=match.margin,
+        threshold_used=match.threshold_used,
+        expected_false_matches=match.expected_false_matches,
+        requires_review=match.requires_review,
+        explanation=match.explanation,
         match_level=match.match_level,
         identity_class=match.identity_class,
         patient_id=match.patient_id,
         is_new_identity=match.is_new_identity,
     )
 
-    # If high-confidence patient match, pre-load profile
-    if match.match_level == "high" and match.patient_id:
+    # Pre-loading a profile is a convenience, not an identity assertion: it puts
+    # a candidate on screen for the pharmacist to accept or reject. Only an
+    # auto-level match pre-loads; anything under review stays unopened.
+    if match.match_level == "auto" and match.patient_id:
         try:
             profile_data = await _preload_patient_profile(match.patient_id, db)
             response.patient_profile_preloaded = True
@@ -109,22 +126,27 @@ async def enroll_individual(
             detail="Minimum 3 face images required for enrollment",
         )
 
-    enrolled_count = 0
+    vector_ids: list[int] = []
     for img_file in face_images:
         img_bytes = await img_file.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is not None:
-            success = _resolution_engine.enroll(identity_id, img)
-            if success:
-                enrolled_count += 1
+            vid = _resolution_engine.enroll(identity_id, img)
+            if vid is not None:
+                vector_ids.append(vid)
 
-    if enrolled_count == 0:
+    if not vector_ids:
         raise HTTPException(status_code=422, detail="No valid face images could be enrolled")
 
+    # The caller must persist these against the identity row: the gallery's
+    # in-memory map is a cache, and the database is what lets it be rebuilt
+    # after a restart. Returning them is the seam; the write path is still to
+    # be built (see the identity-lifecycle design).
     return {
         "identity_id": identity_id,
-        "enrolled_images": enrolled_count,
+        "enrolled_images": len(vector_ids),
+        "vector_ids": vector_ids,
         "status": "enrolled",
     }
 
