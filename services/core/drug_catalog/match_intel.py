@@ -336,6 +336,33 @@ async def fit_from_db(db, mode: str = "decisions") -> dict:
             if decoy.irc != r.irc:
                 pairs.append((extract_features(row_text, decoy), False))
 
+    # ── owner rulings from the decision crosswalk ────────────────────────────
+    # The review payload of a run is a snapshot of one import; the crosswalk is
+    # the standing record, and it is what the revision panel writes to. Training
+    # on it is what makes «بازبینی تصمیم‌ها» actually correct the engine rather
+    # than just tidy a table. Auto-recorded beliefs are excluded on purpose —
+    # learning from the engine's own output would only reinforce its mistakes.
+    from shared.models.crosswalk import CrosswalkEntry
+    cw = (await db.execute(select(CrosswalkEntry).where(
+        CrosswalkEntry.origin == "owner"))).scalars().all()
+    owner_labels = 0
+    for e in cw:
+        rec = by_irc.get(e.irc) if e.irc else None
+        if not e.raw_name or rec is None:
+            continue
+        feats = extract_features(e.raw_name, rec)
+        positive = e.status == "confirmed"
+        pairs.append((feats, positive))
+        if e.revised_at:
+            # a pair the owner came back to and settled deliberately — the most
+            # informative label there is, so it counts twice
+            pairs.append((feats, positive))
+        owner_labels += 1
+        if rec_list:
+            decoy = rec_list[(owner_labels * 5417) % len(rec_list)]
+            if decoy.irc != rec.irc:
+                pairs.append((extract_features(e.raw_name, decoy), False))
+
     price_ratios: dict[str, list[float]] = {}
     for r in recs:
         cov = r.coverage if isinstance(r.coverage, dict) else {}
@@ -350,5 +377,6 @@ async def fit_from_db(db, mode: str = "decisions") -> dict:
     model = fit(pairs, price_ratios)
     if reason_counts:
         model["counts"]["reasons"] = reason_counts
+    model["counts"]["owner_decisions"] = owner_labels
     save_model(model)
     return model

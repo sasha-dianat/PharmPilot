@@ -240,6 +240,9 @@ class NfiHarvestRequest(BaseModel):
     # audit   → touch NO catalog data; keep the raw SOURCE of every suspicious
     #           page plus the irc→page-id map, for diagnosing WHY rows are bad
     mode: str = "ingest"
+    # audit only: re-observe pages already audited. A page whose IRC changed
+    # since the last pass is the sole evidence a re-registration ever happened.
+    force: bool = False
 
 
 @router.post("/catalog/nfi/start")
@@ -249,7 +252,7 @@ async def nfi_harvest_start(body: NfiHarvestRequest,
     from services.core.drug_catalog import nfi_harvest_service as svc
     try:
         return svc.start(body.start_id, body.end_id, delay=body.delay,
-                         proxy=body.proxy, mode=body.mode)
+                         proxy=body.proxy, mode=body.mode, force=body.force)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
@@ -1278,6 +1281,134 @@ async def match_intel_retrain(body: RetrainRequest,
     return {"mode": body.mode, "fitted_at": m["fitted_at"], "pairs": m["counts"],
             "fs_armed": m.get("fs_armed", False),
             "price_bands": {k: v.get("n") for k, v in (m.get("price_bands") or {}).items()}}
+
+
+# ── بازبینی تصمیم‌ها — revise past decisions, and retrain on the result ──────
+class RescoreRequest(BaseModel):
+    insurer: str | None = None
+    limit: int | None = None
+
+
+class ReviseRequest(BaseModel):
+    ids: list[str]
+    action: str                   # keep | accept_engine | reject | reopen
+    retrain: bool = False         # refit هوش تطبیق on the revised labels
+
+
+@router.get("/decisions/board")
+async def decisions_board(staff: Staff = Depends(require_permission("inventory:read")),
+                          db: AsyncSession = Depends(get_db)):
+    """Counts per insurer/origin/status plus the summary of the last re-scoring
+    pass — cheap enough to poll."""
+    from services.core.drug_catalog.decision_review import board
+    return await board(db)
+
+
+@router.get("/decisions/items")
+async def decisions_items(verdict: str | None = None, limit: int = 100, offset: int = 0,
+                          staff: Staff = Depends(require_permission("inventory:read"))):
+    """Page through the last pass. Empty until a re-scoring has been run."""
+    from services.core.drug_catalog.decision_review import last
+    return last(verdict=verdict, limit=min(limit, 500), offset=offset)
+
+
+@router.post("/decisions/rescore")
+async def decisions_rescore(body: RescoreRequest,
+                            staff: Staff = Depends(require_permission("inventory:write")),
+                            db: AsyncSession = Depends(get_db)):
+    """Re-derive every stored decision with today's engine and report where it
+    now disagrees. Reads only — nothing is changed until the owner revises."""
+    from services.core.drug_catalog.decision_review import rescore
+    res = await rescore(db, insurer=body.insurer, limit=body.limit)
+    return {"summary": res["summary"]}
+
+
+@router.post("/decisions/revise")
+async def decisions_revise(body: ReviseRequest,
+                           staff: Staff = Depends(require_permission("inventory:write")),
+                           db: AsyncSession = Depends(get_db)):
+    """Apply a revision to a set of decisions, optionally refitting the model on
+    the corrected labels straight away."""
+    from services.core.drug_catalog.decision_review import revise
+    try:
+        out = await revise(db, body.ids, body.action, staff_id=staff.id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if body.retrain:
+        from services.core.drug_catalog.match_intel import fit_from_db
+        m = await fit_from_db(db, mode="decisions")
+        out["retrained"] = {"fitted_at": m["fitted_at"], "counts": m["counts"]}
+    return out
+
+
+@router.post("/decisions/backfill")
+async def decisions_backfill(body: RescoreRequest,
+                             staff: Staff = Depends(require_permission("inventory:write")),
+                             db: AsyncSession = Depends(get_db)):
+    """Record the engine's already-applied links as auto decisions, so the board
+    starts from what is actually live instead of from the reviewed remnant."""
+    from services.core.drug_catalog.decision_review import backfill_auto
+    return await backfill_auto(db, insurer=body.insurer)
+
+
+# ── جانشینی IRC — a re-registered product keeps its decisions ────────────────
+class SuccessionRequest(BaseModel):
+    ids: list[str] = []
+    old_irc: str | None = None
+    new_irc: str | None = None
+
+
+@router.get("/catalog/succession")
+async def succession_list(staff: Staff = Depends(require_permission("inventory:read")),
+                          db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog.succession import pending
+    return {"pending": await pending(db)}
+
+
+@router.post("/catalog/succession/scan")
+async def succession_scan(staff: Staff = Depends(require_permission("inventory:write")),
+                          db: AsyncSession = Depends(get_db)):
+    """Look for pages whose IRC changed between audit passes. Returns zero while
+    only one pass exists — that is the honest answer, not a failure."""
+    from services.core.drug_catalog.succession import sync_proposals
+    return await sync_proposals(db)
+
+
+@router.post("/catalog/succession/manual")
+async def succession_manual(body: SuccessionRequest,
+                            staff: Staff = Depends(require_permission("inventory:write")),
+                            db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog.succession import propose_manual
+    try:
+        return await propose_manual(db, body.old_irc or "", body.new_irc or "",
+                                    staff_id=staff.id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/catalog/succession/apply")
+async def succession_apply(body: SuccessionRequest,
+                           staff: Staff = Depends(require_permission("inventory:write")),
+                           db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog.succession import apply as apply_succession
+    return await apply_succession(db, body.ids, staff_id=staff.id)
+
+
+@router.post("/catalog/succession/dismiss")
+async def succession_dismiss(body: SuccessionRequest,
+                             staff: Staff = Depends(require_permission("inventory:write")),
+                             db: AsyncSession = Depends(get_db)):
+    from services.core.drug_catalog.succession import dismiss
+    return await dismiss(db, body.ids, staff_id=staff.id)
+
+
+@router.post("/catalog/nfi/backfill-page-ids")
+async def nfi_backfill_page_ids(staff: Staff = Depends(require_permission("inventory:write")),
+                                db: AsyncSession = Depends(get_db)):
+    """Stamp monograph.nfi_id from the audit's irc→page map, so every catalog
+    row can be taken back to the page it came from."""
+    from services.core.drug_catalog.succession import backfill_nfi_id
+    return await backfill_nfi_id(db)
 
 
 @router.get("/match-intel/status")

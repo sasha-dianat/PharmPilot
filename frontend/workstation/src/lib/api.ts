@@ -168,11 +168,26 @@ export const pricingApi = {
   catalogIntegrityApply: (ircs: string[]) =>
     apiClient.post('/pricing/catalog/integrity/apply', { ircs }),
   nfiStart: (body: { start_id: number; end_id: number; delay: number; proxy?: string
-                     mode?: 'ingest' | 'audit' }) =>
+                     mode?: 'ingest' | 'audit'; force?: boolean }) =>
     apiClient.post('/pricing/catalog/nfi/start', body),
   nfiResume: (body: { proxy?: string; delay?: number }) =>
     apiClient.post('/pricing/catalog/nfi/resume', body),
   nfiAuditSummary: () => apiClient.get('/pricing/catalog/nfi/audit-summary'),
+  nfiBackfillPageIds: () => apiClient.post('/pricing/catalog/nfi/backfill-page-ids', {}),
+  // بازبینی تصمیم‌ها — re-run today's engine over every past decision
+  decisionsBoard: () => apiClient.get('/pricing/decisions/board'),
+  decisionsItems: (params: { verdict?: string; limit?: number; offset?: number }) =>
+    apiClient.get('/pricing/decisions/items', { params }),
+  decisionsRescore: (body: { insurer?: string; limit?: number }) =>
+    apiClient.post('/pricing/decisions/rescore', body),
+  decisionsRevise: (body: { ids: string[]; action: string; retrain?: boolean }) =>
+    apiClient.post('/pricing/decisions/revise', body),
+  decisionsBackfill: (body: { insurer?: string }) =>
+    apiClient.post('/pricing/decisions/backfill', body),
+  successionList: () => apiClient.get('/pricing/catalog/succession'),
+  successionScan: () => apiClient.post('/pricing/catalog/succession/scan', {}),
+  successionApply: (ids: string[]) => apiClient.post('/pricing/catalog/succession/apply', { ids }),
+  successionDismiss: (ids: string[]) => apiClient.post('/pricing/catalog/succession/dismiss', { ids }),
   nfiStatus: () => apiClient.get('/pricing/catalog/nfi/status'),
   nfiFailures: () => apiClient.get('/pricing/catalog/nfi/failures'),
   countryProposals: (minConfidence = 0) =>

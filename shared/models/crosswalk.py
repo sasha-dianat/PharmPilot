@@ -8,7 +8,7 @@ re-applies after every crawl instead of being erased by the source.
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, Float, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,14 @@ class CrosswalkEntry(TimestampedBase):
     irc: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
     status: Mapped[str] = mapped_column(String(12), nullable=False)   # confirmed|rejected
     reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # "owner" = a person ruled on this pair; "auto" = the engine's own belief,
+    # recorded so the next import reuses THIS answer instead of re-deriving one.
+    # An auto row may be replaced by a better engine; an owner row never is.
+    origin: Mapped[str] = mapped_column(String(8), default="owner", nullable=False, index=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    revised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revised_from_irc: Mapped[str | None] = mapped_column(String(32), nullable=True)
     decided_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

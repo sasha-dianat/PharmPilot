@@ -423,10 +423,30 @@ def stage_run_payload(rows: list[dict], catalog: list, *, insurer: str,
         # X4: the FULL normalized row set for the observed-layer snapshot —
         # popped by the caller before the payload is stored on the run.
         "_normalized_rows": normalized,
+        # X5: what the engine concluded per row. Stamped onto the snapshot so a
+        # past run's behaviour stays comparable with today's, and turned into
+        # origin='auto' decisions at apply time.
+        "_verdicts": link_verdicts(links),
     }
 
 
-async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> int:
+def link_verdicts(links) -> list[dict]:
+    """[{code, name, irc, confidence, method}] — one per linked row, matched or
+    not. Pure; the row itself carries the insurer's own code."""
+    from .crosswalk import row_source_code
+    out = []
+    for l in links:
+        name = (l.row or {}).get("drug_name")
+        if not name:
+            continue
+        out.append({"code": row_source_code(l.row), "name": str(name),
+                    "irc": l.record.irc if l.record is not None else None,
+                    "confidence": l.confidence, "method": l.method})
+    return out
+
+
+async def save_snapshots(db, run_id, insurer: str, normalized: list[dict],
+                         verdicts: list[dict] | None = None) -> int:
     """Observed layer (X4): keep every row of this import, uncapped, with the
     insurer's own code and the raw mapped row — so any publication can later be
     replayed/diffed against the decided layer. Append-only."""
@@ -438,10 +458,16 @@ async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> in
     # (tamin "70%\r90%") is captured as 70, not dropped to None
     from .coverage_import import _num
 
+    # verdict per row, keyed the same way the linker sees the row
+    by_row: dict[tuple, dict] = {}
+    for v in verdicts or []:
+        by_row[(v.get("code"), v.get("name"))] = v
+
     n = 0
     for r in normalized or []:
         if not isinstance(r, dict) or not r.get("drug_name"):
             continue
+        v = by_row.get((row_source_code(r), str(r.get("drug_name")))) or {}
         rp = _num(r.get("reference_price"))
         # the شرایط تعهد text is authoritative for both flags: it is where a row
         # is declared غیر بیمه‌ای, and where the real organization share appears
@@ -462,7 +488,10 @@ async def save_snapshots(db, run_id, insurer: str, normalized: list[dict]) -> in
             reference_price=int(rp) if rp is not None else None,
             share_pct=share,
             covered=covered,
-            row=r))
+            row=r,
+            matched_irc=v.get("irc"),
+            match_confidence=v.get("confidence"),
+            match_method=(str(v.get("method"))[:32] if v.get("method") else None)))
         n += 1
     return n
 
@@ -579,7 +608,8 @@ async def _run(source_id) -> None:
             _STATE.phase = "saving"
             # X4: persist the observed layer before the payload is stored
             snap_rows = payload.pop("_normalized_rows", None)
-            snapped = await save_snapshots(db, run.id, src.insurer, snap_rows)
+            verdicts = payload.pop("_verdicts", None)
+            snapped = await save_snapshots(db, run.id, src.insurer, snap_rows, verdicts)
             payload["stats"]["snapshot_rows"] = snapped
             run.status = "parsed"
             run.finished_at = datetime.now(timezone.utc)
@@ -786,14 +816,35 @@ async def apply_run(db, run_id, *, remove_missing: bool = False,
     run.review = stamp_reject_reasons(run.review, accepted, reject_reasons)
     # X1: the owner's verdicts become DURABLE decisions — the next import of the
     # same rows resolves from the crosswalk instead of re-running the matcher.
-    from .crosswalk import record_run_decisions
+    from .crosswalk import record_auto_decisions, record_run_decisions
     cw = await record_run_decisions(db, run, accepted, staff_id=staff_id)
+    # X5: and so do the engine's OWN accepted links. Before this, only reviewed
+    # rows left a trace, so ~38,000 auto-applied links were re-derived on every
+    # import and could move without anyone seeing it.
+    auto = await record_auto_decisions(db, insurer=run.insurer,
+                                       verdicts=await run_verdicts(db, run.id))
     run.status = "approved"
     run.applied_by = staff_id
     run.applied_at = datetime.now(timezone.utc)
     await db.commit()
     return {"products_updated": updated, "review_applied": review_applied,
-            "removed_cleared": removed_cleared, **cw}
+            "removed_cleared": removed_cleared, **cw, **auto}
+
+
+async def run_verdicts(db, run_id) -> list[dict]:
+    """The engine's per-row conclusions for one run, read back from the observed
+    layer. Runs staged before the snapshot carried a verdict simply yield
+    nothing — the backfill covers those."""
+    from sqlalchemy import select
+    from shared.models.formulary_snapshot import FormularySnapshot
+    rows = (await db.execute(
+        select(FormularySnapshot.source_code, FormularySnapshot.raw_name,
+               FormularySnapshot.matched_irc, FormularySnapshot.match_confidence,
+               FormularySnapshot.match_method)
+        .where(FormularySnapshot.run_id == run_id,
+               FormularySnapshot.matched_irc.isnot(None)))).all()
+    return [{"code": c, "name": n, "irc": irc, "confidence": conf, "method": m}
+            for c, n, irc, conf, m in rows]
 
 
 async def reject_run(db, run_id) -> None:

@@ -42,15 +42,23 @@ def lookup_key(insurer: str, source_code: str | None, raw_key: str | None) -> li
     return keys
 
 
-async def load_crosswalk(db, insurer: str | None = None) -> dict[str, dict]:
+async def load_crosswalk(db, insurer: str | None = None,
+                         origin: str | None = "owner") -> dict[str, dict]:
     """Confirmed + rejected decisions as a lookup dict for the linker.
-    → {"<insurer>|code:<x>": {"irc":…, "status":…}, "<insurer>|name:<k>": {...}}"""
+    → {"<insurer>|code:<x>": {"irc":…, "status":…}, "<insurer>|name:<k>": {...}}
+
+    Defaults to OWNER rulings only. Auto-recorded beliefs are deliberately not
+    consulted here: short-circuiting on them would freeze a 0.76 guess as a 1.0
+    certainty and stop every future improvement to the matcher from ever being
+    seen. They exist to be compared against — pass origin=None to read them."""
     from sqlalchemy import select
     from shared.models.crosswalk import CrosswalkEntry
 
     q = select(CrosswalkEntry)
     if insurer:
         q = q.where(CrosswalkEntry.insurer == insurer)
+    if origin:
+        q = q.where(CrosswalkEntry.origin == origin)
     out: dict[str, dict] = {}
     for e in (await db.execute(q)).scalars().all():
         payload = {"irc": e.irc, "status": e.status, "reason": e.reason}
@@ -63,9 +71,17 @@ async def load_crosswalk(db, insurer: str | None = None) -> dict[str, dict]:
 
 async def record_decision(db, *, insurer: str, raw_name: str, irc: str | None,
                           status: str, source_code: str | None = None,
-                          reason: str | None = None, staff_id=None) -> str:
-    """Upsert one decision. Returns 'created' | 'updated'. The raw_key is the
-    spelling-proof key so re-spellings of the same name resolve identically."""
+                          reason: str | None = None, staff_id=None,
+                          origin: str = "owner", confidence: float | None = None,
+                          method: str | None = None) -> str:
+    """Upsert one decision. Returns 'created' | 'updated' | 'skipped'. The
+    raw_key is the spelling-proof key so re-spellings of the same name resolve
+    identically.
+
+    `origin='auto'` records what the engine concluded, so the next import reuses
+    THIS answer instead of re-deriving one from a matcher that may have changed
+    in between. An auto row never overwrites an owner ruling — that asymmetry is
+    the whole point: the machine may propose, only the owner decides."""
     from sqlalchemy import select
     from shared.models.crosswalk import CrosswalkEntry
     from .enrichment import enrich_key
@@ -85,13 +101,68 @@ async def record_decision(db, *, insurer: str, raw_name: str, irc: str | None,
     if row is None:
         db.add(CrosswalkEntry(insurer=insurer, source_code=source_code, raw_key=raw_key,
                               raw_name=str(raw_name)[:300], irc=irc, status=status,
-                              reason=reason, decided_by=staff_id, decided_at=now))
+                              reason=reason, origin=origin, confidence=confidence,
+                              method=method, decided_by=staff_id, decided_at=now))
         return "created"
+    if origin == "auto" and (row.origin or "owner") == "owner":
+        return "skipped"                  # the owner has spoken; do not touch it
     row.irc, row.status, row.reason = irc, status, reason
+    row.origin, row.confidence, row.method = origin, confidence, method
     row.decided_by, row.decided_at = staff_id, now
     if source_code:
         row.source_code = source_code
     return "updated"
+
+
+async def record_auto_decisions(db, *, insurer: str, verdicts: list[dict],
+                                min_confidence: float = 0.75) -> dict:
+    """Persist the engine's own accepted links as origin='auto' decisions.
+
+    Gap this closes: only rows that reached the review queue ever became
+    decisions. Everything auto-applied above the threshold was re-derived from
+    scratch on every import, so a change to the matcher could silently move a
+    link with nothing to compare against. Recording the belief makes the next
+    import reuse it — and makes any disagreement a visible diff instead.
+
+    verdicts: [{code, name, irc, confidence, method}] — one per linked row.
+    Returns counts plus `moved`: rows the engine now sends somewhere else than
+    it did last time. That list is the drift report — the thing that used to be
+    invisible.
+    """
+    from .enrichment import enrich_key
+
+    prior = await load_crosswalk(db, insurer, origin="auto")
+    created = updated = skipped = 0
+    moved: list[dict] = []
+    for v in verdicts or []:
+        name, irc = v.get("name"), v.get("irc")
+        conf = float(v.get("confidence") or 0)
+        if not name or not irc or conf < min_confidence:
+            skipped += 1
+            continue
+        code = v.get("code") or None
+        before = None
+        for k in lookup_key(insurer, code, enrich_key(name)):
+            if k in prior:
+                before = prior[k]
+                break
+        if before and before.get("irc") and before["irc"] != irc:
+            moved.append({"name": name, "code": code,
+                          "from_irc": before["irc"], "to_irc": irc,
+                          "confidence": round(conf, 3)})
+        res = await record_decision(
+            db, insurer=insurer, raw_name=name, irc=irc, status="confirmed",
+            source_code=code, origin="auto",
+            confidence=round(conf, 3), method=str(v.get("method") or "")[:32] or None)
+        if res == "created":
+            created += 1
+        elif res == "updated":
+            updated += 1
+        else:
+            skipped += 1
+    return {"auto_created": created, "auto_updated": updated,
+            "auto_skipped": skipped, "auto_moved": moved[:200],
+            "auto_moved_total": len(moved)}
 
 
 async def record_run_decisions(db, run, accepted: set, *, staff_id=None) -> dict:

@@ -46,6 +46,7 @@ export default function DrugCatalogAdmin() {
   const [endId, setEndId] = useState(60000)
   const [delay, setDelay] = useState(0.25)
   const [mode, setMode] = useState<'ingest' | 'audit'>('ingest')
+  const [force, setForce] = useState(false)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -65,7 +66,7 @@ export default function DrugCatalogAdmin() {
     setBusy(true); setMsg(null)
     try {
       await pricingApi.nfiStart({ start_id: startId, end_id: endId, delay,
-                                 proxy: proxy || undefined, mode })
+                                 proxy: proxy || undefined, mode, force })
       qc.invalidateQueries({ queryKey: ['nfi-status'] })
     } catch (e: unknown) {
       setMsg({ kind: 'err', text: apiErrorText(e, 'شروع برداشت ناموفق بود.') })
@@ -156,6 +157,13 @@ export default function DrugCatalogAdmin() {
                            : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}`}>
               {label}
             </button>))}
+          {mode === 'audit' && (
+            <label className="flex items-center gap-1 text-[11px] text-slate-400"
+              title="صفحات پویش‌شده را دوباره می‌خواند. تنها راه دیدن اینکه IRC یک صفحه عوض شده — یعنی همان شواهدِ جانشینی">
+              <input type="checkbox" checked={force} disabled={running}
+                onChange={e => setForce(e.target.checked)} />
+              پویش دوباره (صرف‌نظر از صفحات پویش‌شده)
+            </label>)}
           <span className="text-[11px] text-slate-500">
             {mode === 'audit'
               ? 'فقط بررسی — منبع خام صفحات پرچم‌خورده در logs/nfi_audit ذخیره می‌شود'
@@ -233,6 +241,20 @@ export default function DrugCatalogAdmin() {
               صفحات: {fa(audit!.pages)} · پرچم‌خورده: {fa(audit!.flagged)} · ناموفق: {fa(audit!.failed)}
             </span>
           </div>
+          <button onClick={async () => {
+            setBusy(true); setMsg(null)
+            try {
+              const { data } = await pricingApi.nfiBackfillPageIds()
+              setMsg({ kind: 'ok', text: `شناسهٔ صفحه روی ${fa(data.updated)} قلم کاتالوگ ثبت شد `
+                + `(${fa(data.mapped)} نگاشت، ${fa(data.missing)} بدون قلم متناظر).` })
+            } catch (e: unknown) {
+              setMsg({ kind: 'err', text: apiErrorText(e, 'ثبت شناسهٔ صفحه ناموفق بود.') })
+            } finally { setBusy(false) }
+          }} disabled={busy}
+            title="هر قلم کاتالوگ را به صفحهٔ مبدأ خودش وصل می‌کند — بدون آن هیچ ردیف مشکوکی قابل ردیابی نیست"
+            className="px-3 py-1 text-[12px] rounded bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50">
+            ثبت شناسهٔ صفحه روی اقلام کاتالوگ
+          </button>
           <p className="text-[11px] text-slate-500">
             منبع خام صفحات پرچم‌خورده در <code className="font-mono">{audit!.index.replace('index.jsonl', 'pages/')}</code> ذخیره شده است —
             نبودِ یک بخش در منبع یعنی داده اصلاً منتشر نشده، نه اینکه ما نخوانده‌ایم.

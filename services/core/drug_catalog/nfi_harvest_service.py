@@ -214,7 +214,8 @@ def clear_progress() -> None:
 
 
 async def _run(start: int, end: int, delay: float, proxy: str | None, source: str,
-               page_ids: list[int] | None = None, mode: str = "ingest") -> None:
+               page_ids: list[int] | None = None, mode: str = "ingest",
+               force: bool = False) -> None:
     from .nfi import page_coherence, quarantine_monograph
     from .nfi_integrity import load_vocab
     from .harvest_diagnostics import classify
@@ -227,7 +228,9 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
     # An audit pass never re-fetches a page it already holds the evidence for —
     # re-walking thousands of saved ids through a slow proxy is the exact cost
     # this mode exists to avoid. Ingest re-crawls freely: prices move.
-    already = nfi_audit.load_done() if mode == "audit" else set()
+    # `force` re-observes ground already covered — the only way a page's IRC can
+    # be seen to CHANGE, which is what a succession proposal is built from
+    already = nfi_audit.load_done() if (mode == "audit" and not force) else set()
     # A targeted retry has no meaningful resume point — its ids come from the
     # failure registry, so relaunching the retry picks up what is still pending.
     resumable = page_ids is None
@@ -317,19 +320,21 @@ async def _run(start: int, end: int, delay: float, proxy: str | None, source: st
         _STATE.finished_at = time.time()
 
 
-def resume(*, delay: float = 0.0, proxy: str | None = None) -> dict:
+def resume(*, delay: float = 0.0, proxy: str | None = None,
+           force: bool = False) -> dict:
     """Continue an interrupted run from where it stopped. The position is on
     disk, so this works even after the backend was restarted."""
     p = load_progress()
     if not p:
         raise RuntimeError("اجرای ناتمامی برای ادامه وجود ندارد.")
     return start(p["resume_from"], p["end_id"], delay=delay, proxy=proxy,
-                 source=p["source"], mode=p["mode"])
+                 source=p["source"], mode=p["mode"], force=force)
 
 
 def start(start_id: int, end_id: int, *, delay: float = 0.25,
           proxy: str | None = None, source: str = "nfi-harvest",
-          page_ids: list[int] | None = None, mode: str = "ingest") -> dict:
+          page_ids: list[int] | None = None, mode: str = "ingest",
+          force: bool = False) -> dict:
     """Kick off a background harvest. Raises if one is already running.
     `page_ids` runs a targeted RETRY over exactly those pages instead of a
     range — the whole point of the failure registry: recovering a few thousand
@@ -350,5 +355,5 @@ def start(start_id: int, end_id: int, *, delay: float = 0.25,
                           message=f"retry {len(page_ids)} failed pages" if page_ids
                                   else ("audit" if mode == "audit" else "running"))
     _TASK = asyncio.create_task(_run(start_id, end_id, delay, proxy, source,
-                                     page_ids=page_ids, mode=mode))
+                                     page_ids=page_ids, mode=mode, force=force))
     return _STATE.snapshot()

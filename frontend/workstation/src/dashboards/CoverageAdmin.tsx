@@ -1958,6 +1958,8 @@ function DecisionsPanel({ onMsg, onError }: {
 
   return (
     <div className="space-y-4" dir="rtl">
+      <RevisionPanel onMsg={onMsg} onError={onError} />
+      <SuccessionPanel onMsg={onMsg} onError={onError} />
       {/* crosswalk: insurer row ↔ our product, decided once */}
       <div className="bg-slate-800/50 border border-teal-500/30 rounded-lg p-4 space-y-3">
         <div className="flex items-baseline gap-2 flex-wrap">
@@ -2312,6 +2314,330 @@ function PriceHistoryPanel({ onMsg, onError }: {
               </div>}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── بازبینی تصمیم‌ها ────────────────────────────────────────────────────────
+// The engine that made a decision months ago no longer exists: the ingredient
+// floor moved, structural matching arrived, price began picking the form, the FS
+// model was refitted. This panel asks today's engine the same questions and
+// shows only where it now disagrees — and every ruling here is a training label,
+// so revising is how the owner corrects the engine rather than just the table.
+interface DecisionSide {
+  irc: string | null; name_fa?: string | null; generic?: string | null
+  strength?: string | null; dosage_form?: string | null; price?: number | null
+  confidence?: number | null; method?: string | null; fs?: number | null; exists: boolean
+}
+interface DecisionItem {
+  id: string; insurer: string; verdict: string; raw_name: string | null
+  code: string | null; status: string; origin: string
+  stored: DecisionSide; engine: DecisionSide
+}
+interface DecisionBoard {
+  total: number; revised: number
+  by_insurer: Record<string, number>; by_origin: Record<string, number>
+  by_status: Record<string, number>
+  last_pass?: Record<string, number | string> | null
+}
+const VERDICT_FA: Record<string, string> = {
+  agree: 'هم‌نظر', moved: 'جابه‌جا شده', lost: 'بی‌نتیجه',
+  stale_target: 'مقصد حذف شده', revived: 'رد قابل بازنگری',
+}
+const VERDICT_TONE: Record<string, string> = {
+  agree: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300',
+  moved: 'bg-amber-500/10 border-amber-500/40 text-amber-300',
+  lost: 'bg-slate-700 border-slate-600 text-slate-300',
+  stale_target: 'bg-red-500/10 border-red-500/40 text-red-300',
+  revived: 'bg-indigo-500/10 border-indigo-500/40 text-indigo-300',
+}
+
+function RevisionPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [verdict, setVerdict] = useState('moved')
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  const [retrain, setRetrain] = useState(true)
+
+  const { data: board } = useQuery<DecisionBoard>({
+    queryKey: ['decisions-board'],
+    queryFn: () => pricingApi.decisionsBoard().then(r => r.data),
+    refetchInterval: 30_000,
+  })
+  const { data: page } = useQuery<{ summary: Record<string, number | string>
+                                    total: number; items: DecisionItem[] }>({
+    queryKey: ['decisions-items', verdict],
+    queryFn: () => pricingApi.decisionsItems({ verdict, limit: 200 }).then(r => r.data),
+  })
+
+  const toggle = (id: string) =>
+    setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+
+  const rescore = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.decisionsRescore({})
+      const s = data.summary || {}
+      onMsg({ kind: 'ok', text: s.total
+        ? `${fa(s.total)} تصمیم دوباره سنجیده شد — ${fa(s.disagreements)} اختلاف: `
+          + `${fa(s.moved)} جابه‌جا، ${fa(s.lost)} بی‌نتیجه، ${fa(s.stale_target)} مقصد حذف‌شده، ${fa(s.revived)} رد قابل بازنگری.`
+        : 'تصمیمی برای سنجش وجود ندارد.' })
+      qc.invalidateQueries({ queryKey: ['decisions-items'] })
+      qc.invalidateQueries({ queryKey: ['decisions-board'] })
+    } catch (e) { onError(e, 'بازبینی ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  const backfill = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.decisionsBackfill({})
+      const n = Object.values(data.from_snapshots || {})
+        .concat(Object.values(data.derived || {}))
+        .reduce((a: number, r: any) => a + (r?.auto_created || 0), 0)
+      onMsg({ kind: 'ok', text: `${fa(n)} پیوند خودکار موتور ثبت شد — از این پس هر تغییرشان دیده می‌شود.` })
+      qc.invalidateQueries({ queryKey: ['decisions-board'] })
+    } catch (e) { onError(e, 'ثبت پیوندهای خودکار ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  const act = async (action: string, ids?: string[]) => {
+    const target = ids || [...sel]
+    if (!target.length) return
+    if (action === 'reopen' && !window.confirm(
+      `${fa(target.length)} تصمیم حذف و به صف بازبینی برگردانده شود؟`)) return
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.decisionsRevise({ ids: target, action, retrain })
+      const trained = data.retrained
+        ? ` · مدل با ${fa(data.retrained.counts?.owner_decisions ?? 0)} رأی مالک بازآموزی شد`
+        : ''
+      onMsg({ kind: 'ok', text: `${fa(data.changed)} تصمیم به‌روزرسانی شد${trained}` })
+      setSel(new Set())
+      qc.invalidateQueries({ queryKey: ['decisions-items'] })
+      qc.invalidateQueries({ queryKey: ['decisions-board'] })
+    } catch (e) { onError(e, 'اعمال بازبینی ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  const items = page?.items || []
+  return (
+    <div className="bg-slate-800/50 border border-fuchsia-500/30 rounded-lg p-4 space-y-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="font-bold text-fuchsia-200">🔄 بازبینی تصمیم‌ها</h3>
+        <span className="text-[12px] text-slate-400">
+          موتور امروز همان پرسش‌های گذشته را دوباره پاسخ می‌دهد؛ فقط جاهایی که نظرش عوض شده نمایش داده می‌شود.
+        </span>
+        <span className="mr-auto flex flex-wrap gap-2">
+          <button onClick={rescore} disabled={busy}
+            title="هیچ چیز تغییر نمی‌کند — فقط سنجیده می‌شود"
+            className="px-3 py-1 text-[12px] rounded bg-fuchsia-700 hover:bg-fuchsia-600 disabled:opacity-40">
+            🔄 بازبینی همهٔ تصمیم‌ها
+          </button>
+          <button onClick={backfill} disabled={busy}
+            title="پیوندهایی که موتور خودش اعمال کرده هنوز ثبت نشده‌اند؛ بدون آن‌ها تابلو تقریباً خالی است"
+            className="px-3 py-1 text-[12px] rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">
+            ثبت پیوندهای خودکار موجود
+          </button>
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        <Chip label="کل تصمیم‌ها" value={fa(board?.total ?? 0)} />
+        <Chip label="رأی مالک" value={fa(board?.by_origin?.owner ?? 0)} />
+        <Chip label="باور موتور" value={fa(board?.by_origin?.auto ?? 0)} />
+        <Chip label="بازبینی‌شده" value={fa(board?.revised ?? 0)} />
+        {board?.last_pass && <Chip label="اختلاف در آخرین سنجش"
+          value={fa(Number(board.last_pass.disagreements ?? 0))} />}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        {Object.keys(VERDICT_FA).map(v => (
+          <button key={v} onClick={() => { setVerdict(v); setSel(new Set()) }}
+            className={`px-2 py-0.5 rounded border ${verdict === v
+              ? VERDICT_TONE[v] : 'bg-slate-900 border-slate-700 text-slate-400'}`}>
+            {VERDICT_FA[v]}
+            {board?.last_pass ? ` (${fa(Number(board.last_pass[v] ?? 0))})` : ''}
+          </button>))}
+        <label className="flex items-center gap-1 text-slate-400 mr-auto">
+          <input type="checkbox" checked={retrain} onChange={e => setRetrain(e.target.checked)} />
+          بازآموزی مدل پس از هر رأی
+        </label>
+      </div>
+
+      {items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          <button onClick={() => setSel(new Set(items.map(i => i.id)))}
+            className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600">انتخاب همه</button>
+          <span className="text-slate-400">{fa(sel.size)} انتخاب‌شده از {fa(page?.total ?? 0)}</span>
+          <button onClick={() => act('keep')} disabled={busy || !sel.size}
+            title="تصمیم ثبت‌شده درست است — رأی شما به‌عنوان برچسب آموزشی ثبت می‌شود"
+            className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40">
+            تأیید تصمیم قبلی</button>
+          <button onClick={() => act('accept_engine')} disabled={busy || !sel.size}
+            className="px-2 py-0.5 rounded bg-amber-700 hover:bg-amber-600 disabled:opacity-40">
+            پذیرش نظر موتور</button>
+          <button onClick={() => act('reject')} disabled={busy || !sel.size}
+            className="px-2 py-0.5 rounded bg-red-800 hover:bg-red-700 disabled:opacity-40">
+            رد این تطبیق</button>
+          <button onClick={() => act('reopen')} disabled={busy || !sel.size}
+            className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">
+            بازگشت به صف بازبینی</button>
+        </div>
+      )}
+
+      {items.length === 0
+        ? <Empty text={board?.last_pass
+            ? 'در این دسته اختلافی نیست.'
+            : 'ابتدا «بازبینی همهٔ تصمیم‌ها» را بزنید تا موتور دوباره بسنجد.'} />
+        : <div className="space-y-1.5">
+            {items.map(it => (
+              <div key={it.id} className="flex flex-wrap items-start gap-x-3 gap-y-1 text-[12px] border border-slate-700/60 rounded-md p-2">
+                <input type="checkbox" checked={sel.has(it.id)} onChange={() => toggle(it.id)} className="mt-1" />
+                <div className="flex-1 min-w-[16rem] space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-slate-100">{it.raw_name}</span>
+                    {it.code && <span className="font-mono text-[11px] text-slate-500">کد {it.code}</span>}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
+                      {INSURER_FA[it.insurer] || it.insurer}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${VERDICT_TONE[it.verdict]}`}>
+                      {VERDICT_FA[it.verdict] || it.verdict}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-400">
+                      {it.origin === 'owner' ? 'رأی مالک' : 'باور موتور'}</span>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-2">
+                    <SideCard title="تصمیم ثبت‌شده" tone="amber" side={it.stored} />
+                    <SideCard title="نظر موتور امروز" tone="sky" side={it.engine} />
+                  </div>
+                </div>
+              </div>))}
+          </div>}
+    </div>
+  )
+}
+
+function SideCard({ title, tone, side }: { title: string; tone: 'amber' | 'sky'; side: DecisionSide }) {
+  const border = tone === 'amber' ? 'border-amber-500/30 bg-amber-500/5' : 'border-sky-500/30 bg-sky-500/5'
+  const label = tone === 'amber' ? 'text-amber-300/80' : 'text-sky-300/80'
+  return (
+    <div className={`rounded border p-2 space-y-0.5 ${border}`}>
+      <p className={`text-[10px] ${label}`}>{title}</p>
+      {!side.irc
+        ? <p className="text-[11px] text-slate-600">—</p>
+        : <>
+            <p className="text-[11px] text-slate-200">
+              {side.name_fa || side.generic || side.irc}
+              {!side.exists && <span className="mr-2 text-red-400">(در کاتالوگ نیست)</span>}
+            </p>
+            <div className="flex flex-wrap gap-x-2 text-[11px] text-slate-500 tabular-nums">
+              <span className="font-mono">{side.irc}</span>
+              {side.strength && <span>{side.strength}</span>}
+              {side.dosage_form && <span>{side.dosage_form}</span>}
+              {side.price != null && <span>{fa(side.price)} ﷼</span>}
+              {side.confidence != null && <span>اطمینان {side.confidence}</span>}
+              {side.method && <span className="text-slate-600">{side.method}</span>}
+              {side.fs != null && <span className={side.fs < 0 ? 'text-red-400' : 'text-emerald-400'}>FS {side.fs}</span>}
+            </div>
+          </>}
+    </div>
+  )
+}
+
+function Chip({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
+      {label}: <span className="font-mono">{value}</span>
+    </span>
+  )
+}
+
+// ── جانشینی IRC ─────────────────────────────────────────────────────────────
+// A product re-registered under a new IRC arrives empty while the old row keeps
+// every decision. Evidence is the /NFI/Detail page id: one page = one
+// registration, so the same page serving a different IRC on a later audit pass
+// is a re-registration and nothing else.
+interface SuccessionRow {
+  id: string; page_id: number | null; confidence: number | null
+  evidence?: { url?: string; source?: string }
+  old: { irc: string; exists: boolean; name_fa?: string | null; coverage: string[] }
+  new: { irc: string; exists: boolean; name_fa?: string | null; coverage: string[] }
+}
+
+function SuccessionPanel({ onMsg, onError }: {
+  onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void
+  onError: (e: unknown, fallback: string) => void
+}) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const { data } = useQuery<{ pending: SuccessionRow[] }>({
+    queryKey: ['succession'],
+    queryFn: () => pricingApi.successionList().then(r => r.data),
+  })
+  const rows = data?.pending || []
+
+  const scan = async () => {
+    setBusy(true)
+    try {
+      const { data } = await pricingApi.successionScan()
+      onMsg({ kind: 'ok', text: data.detected
+        ? `${fa(data.detected)} جانشینی یافت شد (${fa(data.created)} تازه).`
+        : 'شواهدی از تغییر ثبت یافت نشد — برای این کار باید صفحه‌ای دوباره پویش شود (پویش ممیزی با گزینهٔ «پویش دوباره»).' })
+      qc.invalidateQueries({ queryKey: ['succession'] })
+    } catch (e) { onError(e, 'پویش جانشینی ناموفق بود.') } finally { setBusy(false) }
+  }
+  const decide = async (id: string, apply: boolean) => {
+    setBusy(true)
+    try {
+      if (apply) {
+        const { data } = await pricingApi.successionApply([id])
+        onMsg({ kind: 'ok', text: `${fa(data.applied)} جانشینی اعمال شد — پوشش، اصلاح‌ها و نگاشت‌ها منتقل شدند.` })
+      } else {
+        await pricingApi.successionDismiss([id])
+        onMsg({ kind: 'ok', text: 'پیشنهاد کنار گذاشته شد.' })
+      }
+      qc.invalidateQueries({ queryKey: ['succession'] })
+    } catch (e) { onError(e, 'اعمال ناموفق بود.') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-slate-800/50 border border-cyan-500/30 rounded-lg p-4 space-y-2">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="font-bold text-cyan-200">🧬 جانشینی IRC</h3>
+        <span className="text-[12px] text-slate-400">
+          وقتی محصولی با IRC تازه ثبت می‌شود، پوشش بیمه و اصلاح‌های شما باید همراهش بروند.
+        </span>
+        <button onClick={scan} disabled={busy}
+          className="mr-auto px-3 py-1 text-[12px] rounded bg-cyan-800 hover:bg-cyan-700 disabled:opacity-40">
+          پویش شواهد
+        </button>
+      </div>
+      {rows.length === 0
+        ? <Empty text="پیشنهادی نیست. شواهد از مقایسهٔ دو پویش ممیزی از یک صفحه به دست می‌آید." />
+        : <div className="space-y-1.5">
+            {rows.map(r => (
+              <div key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] border border-slate-700/60 rounded-md p-2">
+                <div className="flex-1 min-w-[18rem]">
+                  <div className="text-slate-200">
+                    <span className="font-mono">{r.old.irc}</span>
+                    {r.old.name_fa && <span className="text-slate-500"> ({r.old.name_fa})</span>}
+                    <span className="mx-2 text-cyan-300">←</span>
+                    <span className="font-mono">{r.new.irc}</span>
+                    {r.new.name_fa && <span className="text-slate-500"> ({r.new.name_fa})</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 text-[11px] text-slate-500">
+                    {r.page_id != null && r.evidence?.url && (
+                      <a href={r.evidence.url} target="_blank" rel="noreferrer"
+                        className="text-indigo-300 hover:underline">صفحهٔ {fa(r.page_id)}↗</a>)}
+                    {r.old.coverage.length > 0 && <span>پوشش قابل انتقال: {r.old.coverage.join('، ')}</span>}
+                    {!r.new.exists && <span className="text-red-400">جانشین در کاتالوگ نیست</span>}
+                  </div>
+                </div>
+                <button onClick={() => decide(r.id, true)} disabled={busy || !r.new.exists}
+                  className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40">انتقال</button>
+                <button onClick={() => decide(r.id, false)} disabled={busy}
+                  className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40">نادیده</button>
+              </div>))}
+          </div>}
     </div>
   )
 }
