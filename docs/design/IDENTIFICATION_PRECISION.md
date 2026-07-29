@@ -31,9 +31,13 @@ puts a *verifier* at the top rather than a better identifier.
 ```
 Face (1:N over Tier-A "expected today", N≈400)   →  proposes 1-3 candidates
         ↓
-Palm vein or 4-digit code (1:1 against the proposal)  →  verifies
+Voice on the spoken national code (1:1, text-dependent)  →  verifies
         ↓
 Insurance eligibility + pharmacist confirm (Rx desk)  →  IAL3
+
+The verifier is deliberately something the customer ALREADY does. See §2's
+adoption principle: a modality that requires a new ritual does not take root,
+however accurate it is.
 ```
 
 Face never has to be accurate enough to be right alone, because it is never
@@ -43,7 +47,34 @@ asked to be. That is what makes the precision achievable rather than aspirationa
 
 ## 2. Modality verdicts
 
-### ✅ Contactless palm vein — the strongest addition available
+### ⚠️ Contactless palm vein — technically excellent, WITHDRAWN as a recommendation
+
+**Owner judgement, which I now agree with: impractical in a pharmacy setting.**
+The figures below stand; the recommendation does not. Reasons it fails here,
+none of which appear in a FAR number:
+
+- **It solves a bottleneck that is not binding.** The Rx desk already has a
+  deterministic authority (insurance + national ID); the OTC desk has an
+  accepted risk tolerance. Palm vein's best case is a desk that already has an
+  authority or one that does not need it.
+- **The Amazon One precedent does not transfer.** That works on an immediate
+  physical payoff (skip payment), a self-selecting customer base, and an
+  established habit of enrolling payment credentials. "We will know your
+  medication history faster" is abstract to a customer who assumes the
+  pharmacist already knows them.
+- **Enrolment friction lands hardest on the people who need identification
+  most** — elderly, polypharmacy, chronic patients, who are also the most
+  resistant to a scanning ritual and most likely to have dry skin, tremor, or a
+  hand occupied by a mobility aid.
+- **Payback arithmetic fails**: ~60 s enrolment plus social cost to save ~20 s
+  on a monthly visit.
+- **Deliberate physical interaction carries social weight** in this setting in a
+  way a Western retail analogue does not capture.
+
+Replaced by counter voice — see the next section.
+
+Original evidence, retained because the measurements are sound and the
+modality may suit a different setting:
 
 | | |
 |---|---|
@@ -52,27 +83,67 @@ asked to be. That is what makes the precision achievable rather than aspirationa
 | **Deployment** | Amazon One: 500+ locations as of 2026 (palm vein + palm surface, NIR) |
 | **Source type** | **Vendor-published.** Treat as an upper bound, not an independent evaluation |
 
-Why it fits this deployment better than anything else:
+Its genuine technical merits, which voice does not fully match:
 
-- **Completely unaffected by hijab, chador or mask.** A hand is presentable
-  without any change to dress. This is the only strong modality with that
-  property, and it directly addresses the population constraint that damages
-  face worst.
-- **Contactless** — the hygiene objection that kills fingerprint in a pharmacy
-  does not apply.
-- **Spoof-resistant by construction** — the pattern is subsurface and requires
-  blood presence, so a photograph or lifted print has nothing to copy. PAD comes
-  free rather than as a bolted-on classifier.
-- **Henna and nail polish are surface phenomena**; NIR images subsurface
-  vasculature. (I found no study measuring henna specifically — flagged as an
-  evidence gap to test locally before committing.)
+- Unaffected by hijab, chador or mask — a hand is presentable without any change
+  to dress.
+- Contactless, so the hygiene objection that rules out fingerprint here does not
+  apply.
+- Spoof-resistant by construction: the pattern is subsurface and requires blood
+  presence, so PAD comes free rather than as a bolted-on classifier.
 
-At FAR 8×10⁻⁷ used for **1:1 verification** against a face-proposed candidate,
-the combined false-accept probability collapses to the product of the two —
-which is what makes the wrong-chart-load target of zero credible.
+And the honest limit even on its own terms: 8×10⁻⁷ against a 20,000 gallery
+still gives FPIR ≈ 0.016 if used for 1:N. It was only ever a *verifier*.
 
-Note honestly: 8×10⁻⁷ against a 20,000 gallery would still give FPIR ≈ 0.016 if
-used for 1:N. It is a *verifier*, not an identifier. Use it as one.
+**Why it still loses to voice here:** both are verifiers, both survive chador and
+mask, but one costs an enrolment ritual and a behaviour change and the other
+costs a microphone. Accuracy that is never enrolled is worth nothing.
+
+### ✅✅ Voice at the counter — the replacement, and the better fit
+
+**Voice is the palm vein of a pharmacy**: it delivers the same property that made
+palm vein attractive — a strong second factor *uncorrelated with face failure
+under chador and mask* — at zero adoption cost, because the customer is already
+speaking.
+
+The decisive detail: **at the Rx desk the customer already says a fixed phrase**
+— their national code, for the insurance lookup. That makes this
+**text-dependent** speaker verification, materially more accurate than
+text-independent, on an utterance they were producing anyway. One action serves
+three purposes simultaneously:
+
+1. satisfies the insurance identity lookup (the IAL3 authority),
+2. supplies the independent non-biometric factor for IAL2,
+3. yields a voice sample for verification.
+
+Nothing has to be adopted. The problem reduces to **capture quality** — a
+directional or boundary microphone per counter position, close-talk under 0.5 m
+where measured EER is 2.33%, rather than the waiting-area far-field case at
+~14.66%. That is a hardware problem, which is the easy kind.
+
+### The adoption principle
+
+**The biometric that takes root is the one the customer already performs for
+another reason.** Adoption fails when a ritual is added; it succeeds when
+recognition attaches to an action already in the flow.
+
+| Tier | Customer action | Adoption cost |
+|---|---|---|
+| **Passive** | face — happens regardless of cooperation | ~zero |
+| **Incidental** | speaking, stating national code, phone number, handing over the Rx | ~zero |
+| **Deliberate** | palm, fingerprint, iris — a new ritual with no other purpose | steep |
+
+Cost rises sharply at the last step and the value must exceed it. In a pharmacy
+it rarely does.
+
+**If a deliberate-ritual credential is ever adopted**, the payback closes only
+for high-frequency chronic patients — ~15-20% of the roster, the majority of
+visits, and the same cohort as the Tier-A gallery. Rules that make it stick:
+enrol at the moment of benefit (refill-reminder setup, not cold at the counter);
+make the payoff visible on the second visit ("your prescription is ready");
+never make it a gate — a fast lane, never a toll booth; enrol the collector
+rather than the patient, since `person_links` already models households; and
+invest in the staff script, not the signage.
 
 ### ✅ Gallery tiering — free, already designed
 
@@ -218,13 +289,14 @@ This strengthens the existing architecture rather than changing it.
 | # | Action | Cost | Precision gain |
 |---|---|---|---|
 | 1 | Tier-A gallery (expected today) | None — data you hold | ~50× FMR budget |
-| 2 | Contactless palm vein at both desks | Hardware + integration | Converts 1:N to 1:1; largest single gain |
+| 2 | Directional counter microphones + text-dependent voice on the spoken national code | Hardware only, zero customer adoption | Converts 1:N to 1:1 on an utterance already produced |
 | 3 | Occlusion-stratified calibration | Measurement effort | Fixes silently-wrong thresholds for veiled customers |
-| 4 | Counter microphones into fusion | Low | Uncorrelated with face failure |
+| 4 | Phone-number / 4-digit spoken code as the fallback second factor | ~none | Revocable, stores no new biometric |
 | 5 | Face model on largest training corpus + site fine-tune | Moderate | ~40% relative error cut |
 | 6 | ISO 24745 protected templates in Tier 1 | Moderate | Breach becomes recoverable |
 | 7 | Waiting-area mic → security signals only | Low | Serves the attack-on-personnel spec |
 | — | Gait into identification | — | **Not recommended — unmeasured on this population** |
+| — | Palm vein / fingerprint / iris | — | **Not recommended — adoption cost exceeds value in this setting** |
 
 ---
 
@@ -233,7 +305,7 @@ This strengthens the existing architecture rather than changing it.
 Published literature does not answer these, and they are all cheap to measure
 on site once capture exists:
 
-1. Palm vein accuracy with henna-stained hands.
+1. ~~Palm vein accuracy with henna-stained hands~~ — moot; modality withdrawn.
 2. Face recognition under chador specifically (as distinct from hijab).
 3. Gait under chador — no published evaluation found at all.
 4. Persian ASR WER at your actual counter and waiting-area SNR/RT60.
