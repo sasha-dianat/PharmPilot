@@ -4,6 +4,18 @@ Architecture design. Status: **proposal, not approved.** Owner: pending.
 Scope: physical-security and operations analytics for one pharmacy site and one
 warehouse/depot site, integrated with the existing PharmPilot platform.
 
+> **PARTIALLY SUPERSEDED.** Sections 0 (thesis point 2), 1.3 (R-1, R-2, R-3,
+> R-7) and invariant I-8 were written before the owner confirmed the standing
+> project specification: **every visitor is identified by face**, provisional
+> UUIDs are minted for unknown persons, and all biometric vectors plus raw
+> source media are retained and admin-accessible for intrusion, theft and
+> attack-on-personnel investigations via `BiometricEvidenceVault`. Where this
+> document conflicts with that spec, the spec wins and
+> [FACE_IDENTITY_PLATFORM.md](FACE_IDENTITY_PLATFORM.md) plus
+> [IDENTIFICATION_PRECISION.md](IDENTIFICATION_PRECISION.md) are authoritative.
+> The zone, camera, warehouse, replenishment, retention and cybersecurity
+> sections are unaffected.
+
 ---
 
 ## 0. Thesis
@@ -17,12 +29,14 @@ Three claims drive every decision below.
    a named human who accepts it. This is the same Observed/Decided split the
    pricing and coverage subsystems already enforce, applied to pixels.
 
-2. **Identity comes from credentials, not from faces.** Faces are the least
-   reliable and most legally hazardous identity signal available in this
-   building, and they are also unnecessary: the badge reader knows who the staff
-   are, and the counter already verifies who the patient is. Face recognition
-   buys convenience and costs a category of legal exposure that no pharmacy
-   should accept.
+2. **REVISED — identity is layered, and face is the first layer.** Face
+   identifies every visitor (owner spec) and *proposes* a candidate; a second,
+   independent factor *verifies* it before any clinical consequence. The
+   original text here argued against customer face recognition altogether; that
+   was overridden by the standing specification. What survives is the weaker and
+   still-correct claim: a similarity score alone never establishes identity, so
+   the architecture converts 1:N retrieval into 1:1 verification rather than
+   trusting a threshold. See IDENTIFICATION_PRECISION.md §1.
 
 3. **The most valuable requirement on the list barely needs cameras.**
    Requirement 7 (morning replenishment) is a demand-forecasting problem solved
@@ -81,10 +95,17 @@ biometric_confidence < 0.80`. Above the threshold the row becomes permanent —
 a durable, re-identifiable biometric record of a member of the public, created
 by a similarity score.
 
-**F-4 — Dormant watchlist capability.** `BiometricIdentity.is_watchlist_match`
-and `watchlist_source` exist; no code reads them. An unused watchlist field is
-a loaded gun in the schema: it invites a future "just populate it" change with
-none of the process that decision deserves.
+**F-4 — RETRACTED.** I originally called the dormant watchlist fields
+(`BiometricIdentity.is_watchlist_match`, `watchlist_source`) "a loaded gun in
+the schema" and recommended dropping them. That was wrong. They implement a
+deliberate part of the original project specification, whose `IdentityClass`
+enum defines a full security vocabulary — `WATCHLIST_MATCH`, `BEHAVIORAL_ALERT`,
+`REPEAT_UNKNOWN`, `MINOR_UNACCOMPANIED` — for intrusion, theft and
+attack-on-personnel handling, backed by `BiometricEvidenceVault` with documented
+`legal_reason`, append-only chain of custody, legal hold and
+`export_for_authority()`. The fields are unimplemented, not ill-conceived. The
+correct action is to IMPLEMENT them under the controls the spec already
+defines, not to delete them.
 
 Two smaller notes: `LivenessDetector._texture_based_liveness` returns
 `(True, 0.5)` on exception (`engine.py:146`) — it **fails open**, so an
@@ -96,13 +117,13 @@ containment already present — the risk is in its callers, not in it.
 
 | # | Action | Rationale |
 |---|---|---|
-| R-1 | Restrict 1:N identification to the **staff gallery only**. Customers are never enrolled and never searched. | Req 2, 3 |
-| R-2 | Delete `biometric_confidence` as an input to `PatientResolver`. Patient identity comes from ID document, insurance card, Rx barcode, or declared name+DOB. | Req 3, F-2 |
-| R-3 | Force `auto_loaded=False` and `requires_pharmacist_action=True` for **every** tier that used a biometric signal; keep auto-load only for barcode/national-ID exact match. | F-2 |
+| R-1 | ~~Staff-gallery only~~ **SUPERSEDED by owner spec.** All visitors are enrolled and searched. The precision requirement is met by gallery TIERING (Tier-A "expected today", N≈400) plus 1:1 verification, not by shrinking who is enrolled. | spec |
+| R-2 | **STANDS, narrowed.** Face may *rank and propose* candidates in `PatientResolver`; it may not contribute to a blended confidence that authorises auto-load. A cosine is not a probability and must not enter `1-(1-c1)(1-c2)`. | F-2 |
+| R-3 | **STANDS.** Auto-load requires a non-biometric corroborating factor (IAL2+). Face alone proposes; it never opens a chart unattended. | F-2 |
 | R-4 | Enforce consent at the enrolment API and at every read of a template; deny by default. Add a coverage test asserting a non-consented identity cannot be enrolled or matched. | F-1 |
-| R-5 | Drop `is_watchlist_match` / `watchlist_source`, or gate them behind an explicit, separately-approved feature flag defaulted off. | F-4 |
+| R-5 | ~~Drop the watchlist fields~~ **WITHDRAWN.** Implement them per the original spec, writing every match through the evidence vault's documented-reason + chain-of-custody path. | F-4 |
 | R-6 | `LivenessDetector` fails **closed**: exception ⇒ `(False, 0.0)`. | Spoofing |
-| R-7 | Purge any `BiometricIdentity` rows with `identity_class` other than staff, and any template lacking a recorded consent. | F-1, F-3 |
+| R-7 | ~~Purge non-staff identities~~ **WITHDRAWN — contradicts the retention spec.** Visitor identities and their vault media are retained for investigations. What stands from F-1 is that the consent LEDGER must gate the *clinical-personalisation* branch; the security branch runs on the owner's legitimate-interest basis. | F-1 |
 
 R-1…R-7 are Phase 0 work. Nothing in Phases 1–5 should be built on the current
 behaviour.
@@ -122,7 +143,7 @@ These are enforced in code and tested, not merely documented.
 | **I-5** | Every consequential action (link, merge, unblur, export, investigation) writes an append-only, hash-chained audit row. | Audit middleware |
 | **I-6** | Any operation reachable by staff monitoring is reversible; reversal is a new event, never a delete. | Soft-correction model |
 | **I-7** | ReID embeddings expire ≤ 48 h. Cross-day re-identification is not supported. | TTL on vector store + purge job |
-| **I-8** | No audio is captured anywhere. | Microphones disabled in camera firmware; verified in the commissioning checklist |
+| **I-8** | ~~No audio is captured anywhere.~~ **SUPERSEDED** — the owner has placed counter and waiting-area microphones in scope. Replaced by: audio is captured only in declared zones; the waiting-area channel feeds security signals (raised voice, distress, aggression) and NEVER identification, because far-field speaker EER (~15% at 5 m / RT60 1.5 s) is well below any usable identification floor. | Zone-scoped capture config; waiting-area stream excluded from the identification fusion in code |
 | **I-9** | No demographic attribute (age, gender, ethnicity) is inferred, stored, or used as a feature. | Model registry purpose declaration; code review gate |
 | **I-10** | Fire and water detection by video is **supplementary**; certified physical detectors remain the primary and code-compliant means. | Documented; alarm panel independent of this system |
 

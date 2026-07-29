@@ -258,10 +258,17 @@ are separable and hard-enforced.
   frame is dropped before an embedding is ever computed.
 - **Hard age floor: no face under 18 is embedded.** Guardian consent covers the
   child's clinical record as normal, but cannot authorise biometric enrolment.
-- **Template compromise is a key-custody problem, not a revocation problem** —
-  templates cannot be reissued. The only real remediation is model rotation:
-  re-embed the whole gallery under a different model/seed so stolen vectors no
-  longer match. Say this to the owner in writing, in advance.
+- **CORRECTED — template compromise is recoverable if templates are protected.**
+  I originally wrote that templates cannot be reissued and that model rotation
+  was the only remedy. That holds for the **raw embeddings** Tier 1 stores today,
+  but not in general: **ISO/IEC 24745:2022** makes *renewability* a mandatory
+  property of a protected biometric reference, alongside irreversibility and
+  unlinkability — a protected template can be revoked and re-derived **without
+  recapturing the biometric**. Storing ISO 24745-conformant protected references
+  in Tier 1 turns a breach from "re-enrol every patient" into "revoke and
+  re-derive". Tier 2 keeps the raw media under the VMK unchanged, because
+  investigations need the original evidence. See
+  [IDENTIFICATION_PRECISION.md](IDENTIFICATION_PRECISION.md) §4.
 - ◇ Iranian position: no comprehensive in-force data protection statute and no
   authority to register with; the most directly on-point instrument is the
   professional-secrecy offence in the Islamic Penal Code (Ta'zirat). Verify with
