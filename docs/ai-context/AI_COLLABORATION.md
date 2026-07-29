@@ -69,14 +69,15 @@ At the end of every session:
 
 | ID | Owner | Status | Branch / PR | Owned scope | Next gate |
 |---|---|---|---|---|---|
-| CL-001 | Claude Code | ACTIVE | `feat/darunameh-crawler` / PR [#22](https://github.com/sasha-dianat/PharmPilot/pull/22) | Every file currently changed by PR #22, primarily drug catalog, coverage harvest/import, enrichment, catalog/coverage models and migrations, related workstation administration, and their tests | Freeze scope, refresh the PR description to the actual head, run evidenced release gates, then independent review |
+| CL-001 | Claude Code | ACTIVE | `master` (the `feat/darunameh-crawler` branch does NOT exist in this repo — 2026-07-29 verification; PR [#22](https://github.com/sasha-dianat/PharmPilot/pull/22) predates the current head) | Every file currently changed by PR #22, primarily drug catalog, coverage harvest/import, enrichment, catalog/coverage models and migrations, related workstation administration, and their tests | Freeze scope, refresh the PR description to the actual head, run evidenced release gates, then independent review |
 | CX-001 | Codex | READY_FOR_REVIEW | `agent/ai-collaboration-protocol` (stacked on CL-001) | `AGENTS.md`, `CLAUDE.md`, and `docs/ai-context/AI_COLLABORATION.md` only | Review and merge the coordination protocol into `feat/darunameh-crawler` |
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
-The PR file list is authoritative for CL-001 ownership while PR #22 remains
-active. A path leaves that boundary only through a handoff entry below.
+CL-001 ownership is the drug-catalog / coverage / enrichment / decision paths
+listed above; the PR #22 file list is a historical approximation only, since the
+work now lands directly on `master`. A path leaves that boundary only through a handoff entry below.
 
 ## Merge and conflict gates
 
@@ -202,6 +203,64 @@ incorrect one rather than silently rewriting history.
 - Next action/owner: owner to rule on the POS bypass; then Phase 0/1 of the
   design (consent ledger, sever biometric->patient edge, remove
   biometric_confidence from PatientResolver).
+
+### 2026-07-29 — Fable 5 → Opus 5 — data audit closed: reconciliation green
+
+- Workstream: `CL-001`
+- Branch/commit: `master`; this session's chain `95fe638` → `7583dc0` →
+  `693a524` → (this commit). **HANDOFF from Fable 5 to Opus 5** occurred
+  mid-task, after the price-gap refresh and before the rulings were persisted;
+  Opus 5 accepted, found the uncommitted-ruling defect below, and completed it.
+- Changed:
+  - `shared/models/drug_catalog.py` — `coverage`/`monograph` now
+    `JSONB(none_as_null=True)`. ROOT CAUSE of the JSON-null pollution: assigning
+    Python `None` wrote a jsonb `'null'`, which is not SQL NULL, so
+    `coverage IS NOT NULL` counted empty rows (6,771 at audit, 129 more within
+    hours of the first cleanup). No migration — serialization behaviour only.
+  - `services/core/drug_catalog/data_quality.py` — two new checks
+    (`price_refreshed_without_history`, `price_gap_extreme_strong_identity`);
+    the spliced check now uses the issue-registry predicate AND honours
+    `issue_dispositions`, so a ruled item stops firing.
+  - Data (no code): 204 spliced monographs repaired to a fixed point; 2,339
+    stale prices refreshed from insurer reference; 5 rulings recorded.
+- Interfaces/schema/data: no migration (head stays `0029`). Data effects —
+  `drug_catalog.announced_price` moved on 2,339 rows, each with
+  `monograph.price_provenance` and a `price_history` SCD-2 row;
+  `monograph.integrity.repaired` set on 192 rows; `issue_dispositions` 8 → 13.
+- Verification:
+  - `pytest tests/unit -q` → **900 passed, 1 failed** (`test_integrations_sandbox`
+    caplog ordering — pre-existing, passes in isolation, unrelated).
+  - `npx tsc --noEmit` → clean (run before the ruling batch; no TS changed since).
+  - `data_quality.report()` in a FRESH session → `healthy=true, firing=0`;
+    only info lines remain (1,139 insurer-priced/NFI-unpriced, 631 harvest
+    failures, 3 stale parsed runs).
+  - `nfi_integrity.audit()` → `suspect: 0`.
+  - Price-history parity: 2,339 refreshed rows / 2,339 matching open SCD-2 rows.
+- Risks/blockers:
+  - **499 products carry an extreme price gap on a WEAK match** (conf < 0.90 and
+    method not in code/crosswalk/irc). Their prices were deliberately NOT
+    refreshed — the gap is evidence the MATCH is wrong, not the number. Ruled
+    `deferred`; they need «بازبینی تصمیم‌ها», not a price edit. Refreshing them
+    would bake a wrong price into a wrong product.
+  - 26 products where the insurer reference is a PACK price and ours is per-unit
+    (ratio ≈ package_count). Ruled `accepted`; **never** refresh these.
+  - 2 aluminium-hydroxide rows are genuine splices with no donor (chewable tablet
+    served a suspension monograph). Ruled `accepted`; quarantine stands.
+  - Iran proxy still down: NFI ids 43,001–70,000 uncrawled, 631 retryable
+    failures pending, succession detector cannot arm (needs a second audit pass).
+  - **Process defect found and corrected:** two ad-hoc ruling scripts called
+    `set_disposition` without `await db.commit()` and silently rolled back —
+    the printed "created" was a lie. The production endpoint
+    (`POST /pricing/issues/ruling`) commits correctly; the rulings were redone
+    through it. LESSON: record rulings via the API, never a bare script, and
+    always re-read from a FRESH session before believing a count.
+- Next action/owner:
+  - Owner: review the 499 weak-match products in «بازبینی تصمیم‌ها».
+  - Owner: supply the Iran proxy → resume crawl, retry 631, run the second audit
+    pass (`پویش دوباره`) to arm succession detection.
+  - Claude: quote-path regression harness (pricing conservation vs golden
+    quotes) and auto-running reconciliation after every apply/ingest — P3/P4 in
+    `docs/data-architecture.md`.
 
 ## Entry template
 

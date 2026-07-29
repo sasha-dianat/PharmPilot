@@ -44,8 +44,16 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
     ("catalog_spliced_unrepaired", "warn",
      "a quarantined monograph is a page that contradicted itself; its clinical "
      "text is withheld until repaired",
-     "review in «مغایرت داخلی NFI» and apply repairs",
-     "SELECT count(*) FROM drug_catalog WHERE monograph->'integrity'->>'spliced_page' IS NOT NULL"),
+     "review in «مغایرت داخلی NFI» and apply repairs; a genuine splice with no "
+     "donor is ruled 'accepted' there and stops counting here",
+     # A ruled item must stop firing, or the operator learns to ignore the
+     # report. The ruling itself stays auditable in issue_dispositions.
+     "SELECT count(*) FROM drug_catalog dc "
+     "WHERE dc.monograph->'integrity'->>'spliced_page'='true' "
+     "AND coalesce(dc.monograph->'integrity'->>'repaired','')<>'true' "
+     "AND NOT EXISTS (SELECT 1 FROM issue_dispositions d "
+     "  WHERE d.issue_type='nfi_spliced' AND d.subject_key=dc.irc "
+     "  AND d.disposition IN ('accepted','wont_fix'))"),
 
     # ── decided layer ───────────────────────────────────────────────────────
     ("crosswalk_confirmed_without_irc", "critical",
@@ -101,6 +109,30 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
      "trace the run that wrote it; the multi-tier cell parser guards this",
      "SELECT count(*) FROM drug_catalog d, jsonb_each(d.coverage) e "
      "WHERE jsonb_typeof(d.coverage)='object' AND coalesce((e.value->>'share_pct')::numeric,0)>100"),
+    ("price_refreshed_without_history", "critical",
+     "every announced-price change carries an SCD-2 row — a price that moved "
+     "without history cannot be explained or rolled back",
+     "backfill via price_history.record_price; never UPDATE announced_price directly",
+     "SELECT count(*) FROM drug_catalog dc "
+     "WHERE dc.monograph->'price_provenance'->>'source' IS NOT NULL "
+     "AND NOT EXISTS (SELECT 1 FROM price_history ph WHERE ph.irc=dc.irc "
+     "  AND ph.price_type='announced' AND ph.insurer IS NULL AND ph.valid_to IS NULL "
+     "  AND ph.value = dc.announced_price::bigint)"),
+    ("price_gap_extreme_strong_identity", "warn",
+     "a >10x gap on a CERTAIN match means our announced price is stale — the "
+     "identity is not in doubt, only the number",
+     "refresh from the insurer reference (increases only, provenance stamped)",
+     "SELECT count(DISTINCT dc.irc) FROM drug_catalog dc, jsonb_each(dc.coverage) e "
+     "WHERE dc.announced_price>0 AND jsonb_typeof(dc.coverage)='object' "
+     "AND jsonb_typeof(e.value)='object' "
+     # the SAME predicate the issue registry counts price_gap_extreme with —
+     # a reconciliation engine that disagrees with the board is worse than none
+     "AND abs((e.value->>'reference_price')::numeric - dc.announced_price) "
+     "    > 10*dc.announced_price "
+     "AND (e.value->>'reference_price')::numeric > dc.announced_price "
+     "AND (coalesce((e.value->>'match_confidence')::numeric,0) >= 0.90 "
+     "     OR e.value->>'match_method' IN ('code','crosswalk','irc')) "
+     "AND coalesce(dc.package_count,0) <= 1"),
     ("coverage_ref_price_no_announced", "info",
      "an insurer prices a product NFI does not — usually a lapsed registration "
      "still covered, or an NFI source gap",

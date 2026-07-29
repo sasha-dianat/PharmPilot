@@ -45,7 +45,11 @@ class DrugCatalogItem(TimestampedBase):
     last_invoice_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Per-insurer coverage: {"tamin": {"covered": true, "reference_price": 90000}, ...}
-    coverage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: assigning Python None must write SQL NULL, not JSON null.
+    # Without it every "clear the coverage" path left a jsonb 'null' behind,
+    # which is not NULL — so `coverage IS NOT NULL` counted rows that hold
+    # nothing (6,771 of them at the 2026-07-29 audit, 129 more within hours).
+    coverage: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
     # NFI enrichment (full detail-page extraction)
     country: Mapped[str | None] = mapped_column(String(80), index=True, nullable=True)
@@ -53,6 +57,6 @@ class DrugCatalogItem(TimestampedBase):
     brand_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
     license_valid_until: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Jalali as printed
     # everything else the NFI page offers: clinical sections + composition + brands table
-    monograph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    monograph: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
     source: Mapped[str | None] = mapped_column(String(40), nullable=True)   # "nfi" | "manual" | ...

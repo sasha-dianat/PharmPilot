@@ -411,3 +411,26 @@ async def test_conflicting_owner_rulings_resolve_to_the_latest(db_session):
         cw = await load_crosswalk(db_session, "tamin")
         assert cw["tamin|code:55055"]["status"] == "confirmed"
         assert cw["tamin|code:55055"]["irc"] == f"{PREFIX}SIRO"
+
+
+async def test_board_surfaces_sub_rulings_without_closing_the_cause(db_session):
+    """A cause can be triaged into classes with different remedies. Recording
+    those must not close the cause (work remains), but must be visible — or the
+    operator sees one undifferentiated number forever."""
+    from services.core.drug_catalog.issue_registry import board, set_disposition
+
+    await set_disposition(db_session, issue_type="price_gap_extreme",
+                          subject_key="cause:t29_pack", disposition="accepted",
+                          reason=f"{PREFIX} pack basis")
+    await db_session.commit()
+    b = await board(db_session)
+    row = next(c for c in b["causes"] if c["cause"] == "price_gap_extreme")
+    assert row["closed"] is False                      # still open work
+    keys = [s["subject_key"] for s in row["sub_rulings"]]
+    assert "cause:t29_pack" in keys                    # but the triage is visible
+
+    from sqlalchemy import delete
+    from shared.models.issue_disposition import IssueDisposition
+    await db_session.execute(delete(IssueDisposition).where(
+        IssueDisposition.subject_key == "cause:t29_pack"))
+    await db_session.commit()

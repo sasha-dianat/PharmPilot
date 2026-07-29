@@ -333,8 +333,17 @@ async def board(db, *, include_closed: bool = False) -> dict:
         closed = ruling is not None
         if closed and not include_closed:
             pass                      # still listed, but flagged — see 'closed'
+        # Sub-rulings (`subject_key = "cause:<class>"`) triage a cause WITHOUT
+        # closing it: on 2026-07-29 the 2,880 extreme price gaps split into
+        # refreshed / pack-basis / weak-match, each with a different remedy.
+        # Without surfacing them the operator sees one undifferentiated number
+        # forever and cannot tell triaged work from untouched work.
+        subs = [{"subject_key": k.split("|", 1)[1], **v}
+                for k, v in disp.items()
+                if k.startswith(f"{key}|cause:")]
         causes.append({
             "cause": key, "count": n, "lane": meta["lane"],
+            "sub_rulings": sorted(subs, key=lambda x: x["subject_key"]),
             "lane_fa": LANE_FA[meta["lane"]], "title": meta["title"],
             "why": meta["why"], "action": meta["action"], "route": meta["route"],
             "closed": closed,

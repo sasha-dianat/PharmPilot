@@ -34,9 +34,22 @@ Defects found and fixed the same day:
    (403) since the routes gained ticket auth. *Fixed: `wsUrl()` mints a
    ticket per attempt; verified 101 on all three streams.*
 
-Remaining judgement items (in their panels, not silently pending): 204
-spliced monographs, 6 owner-conflict codes, 1,159 insurer-priced/NFI-unpriced
-products, 631 retryable harvest failures.
+Later the same day, three more root causes were found and fixed:
+
+6. **JSONB `None` wrote a JSON null, not SQL NULL** — the model lacked
+   `none_as_null=True`, so every "clear the coverage" path left a `'null'::jsonb`
+   behind and 129 fresh ones appeared within hours of the first cleanup.
+   *Fixed at the column, not by re-normalizing.*
+7. **The reconciliation engine disagreed with the issue board** — my
+   `price_gap_extreme_strong_identity` check used `ref > 10×ap` while the
+   registry counts `abs(ref−ap) > 10×ap` (i.e. `> 11×`), inventing a permanent
+   116-row phantom in the 10–11× band. *Fixed: one shared predicate.*
+8. **A ruled item kept firing** — the spliced check ignored `issue_dispositions`,
+   so an accepted, correctly-quarantined page still counted. *Fixed: rulings
+   suppress the check while staying auditable.*
+
+All judgement items are now ruled (see §6); reconciliation reports
+`healthy: true`.
 
 ## 2. Canonical model and source-of-truth strategy
 
@@ -123,10 +136,33 @@ lossless normalizations. `GET /pricing/data-quality/report`.
 
 ## 6. Cleanup performed (2026-07-29)
 
-Normalized 6,771 JSON-null coverages · rejected the mislabeled run
-`bdbdbc75` with an explanatory note · restaged both re-uploaded runs from
+Normalized 6,771 (+129 recurrence) JSON-null coverages · rejected the mislabeled
+run `bdbdbc75` with an explanatory note · restaged both re-uploaded runs from
 their snapshots under the fixed linker · backfilled `monograph.nfi_id` on
-10,427 rows · recorded 3,846 auto decisions.
+10,427 rows · recorded 3,846 auto decisions · ruled all 77 decision
+disagreements and refit the model on 780 owner labels.
+
+**Spliced monographs: 204 → 0.** `apply_repairs` was iterated to a fixed point
+(164, then 28 exposed by the repaired vocabulary, then none). Two aluminium
+hydroxide rows are *genuine* splices with no donor — a chewable tablet served a
+suspension monograph — and are ruled `accepted`: the quarantine is the correct
+outcome, and the clinical text stays withheld until a future crawl serves the
+right page.
+
+**Extreme price gaps: 2,880 products → 0 open.** Every gap was classified
+deterministically before anything was written:
+
+| class | products | ruling | why |
+|---|---|---|---|
+| stale announced price, identity certain | 2,339 | **resolved** — refreshed from the insurer reference | licence lapsed or price ancient; increase-only, `price_provenance` stamped, SCD-2 history row per product |
+| insurer reference is a PACK price | 26 | **accepted** — never refresh | ratio ≈ `package_count` (×12 with pc=14, ×32 with pc=30); the two sides use different units, so "fixing" it would multiply the unit price |
+| weak match (conf < 0.90, method not code/crosswalk/irc) | 499 | **deferred** to match review | the gap is evidence the MATCH is wrong, not the number — refreshing would bake a wrong price into a wrong product |
+
+The refresh rule, stated exactly: *increase-only, strong identity only
+(`conf ≥ 0.90` or method ∈ {code, crosswalk, irc}), never a pack-basis row, skip
+if the row moved under us, highest-confidence insurer wins and ties take the
+LOWER reference.* Every write carries provenance and history — the
+`price_refreshed_without_history` check now enforces that permanently.
 
 ## 7. Tests
 
@@ -159,7 +195,8 @@ gates every commit (`/release-check`).
 
 | phase | work | acceptance |
 |---|---|---|
-| P1 (owner, now) | rule on 6 conflict codes + 75 revived rejections; repair 162 auto-repairable spliced monographs | reconciliation shows 0 warn |
+| ~~P1~~ **done** | 77 decision disagreements ruled · 204 spliced monographs repaired · 2,880 price gaps resolved/ruled | ✅ reconciliation `healthy: true`, 0 warn |
+| P1b (owner) | review the 499 weak-match products in «بازبینی تصمیم‌ها» — their coverage prices are suspect because the MATCH is | each product either re-matched or its coverage cleared |
 | P2 (proxy-dependent) | finish crawl 43k–70k; retry 631 failures; second audit pass over covered ground | succession detector armed |
 | P3 | schedule reconciliation after every apply/ingest automatically; surface the report as a panel card | report visible without CLI |
 | P4 | quote-path regression harness (pricing conservation against golden quotes) | release-check includes it |
