@@ -3,6 +3,7 @@
  * Single source of truth for all prescriptions on the workstation screen.
  */
 import { create } from 'zustand'
+import { wsUrl } from '../lib/api'
 
 export type RxStatus =
   | 'intake' | 'pending_dur' | 'dur_hold' | 'pending_verification'
@@ -151,40 +152,68 @@ export const useRxQueueStore = create<RxQueueState>((set) => ({
 export function useRxQueueWebSocket(pharmacyId: string) {
   const { setQueue, setWsConnected, setIncomingPatient, updateRxInQueue } = useRxQueueStore()
 
+  // Both sockets are authenticated: the server closes an unticketed handshake
+  // with 1008, which the badge reported forever as «Reconnecting…». A ticket is
+  // short-lived, so a FRESH one is minted for every attempt, reconnects
+  // included.
   const connect = () => {
-    const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8001'
-    const ws = new WebSocket(`${WS_URL}/api/v1/prescriptions/queue/ws/${pharmacyId}`)
-    const bioWs = new WebSocket(`${WS_URL}/api/v1/biometric/stream/${pharmacyId}/counter`)
+    let ws: WebSocket | null = null
+    let bioWs: WebSocket | null = null
+    let closed = false
+    let retry: ReturnType<typeof setTimeout> | undefined
 
-    ws.onopen = () => setWsConnected(true)
-    ws.onclose = () => {
-      setWsConnected(false)
-      setTimeout(() => connect(), 3000) // Auto-reconnect
+    const open = async () => {
+      if (closed) return
+      const [queueUrl, bioUrl] = await Promise.all([
+        wsUrl(`/api/v1/prescriptions/queue/ws/${pharmacyId}`),
+        wsUrl(`/api/v1/biometric/stream/${pharmacyId}/counter`),
+      ])
+      if (closed || !queueUrl || !bioUrl) {
+        // no ticket — signed out or the API is down; try again rather than
+        // spinning up a socket that is certain to be refused
+        setWsConnected(false)
+        retry = setTimeout(open, 3000)
+        return
+      }
+      ws = new WebSocket(queueUrl)
+      bioWs = new WebSocket(bioUrl)
+      wire(ws, bioWs)
     }
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.event === 'queue_update') {
-          setQueue(data.items || [])
-        } else if (data.event === 'rx_status_change') {
-          updateRxInQueue(data.rx_id, { status: data.new_status })
-        }
-      } catch { /* ignore parse errors */ }
+    const wire = (ws: WebSocket, bioWs: WebSocket) => {
+      ws.onopen = () => setWsConnected(true)
+      ws.onclose = () => {
+        setWsConnected(false)
+        if (!closed) retry = setTimeout(open, 3000) // Auto-reconnect
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.event === 'queue_update') {
+            setQueue(data.items || [])
+          } else if (data.event === 'rx_status_change') {
+            updateRxInQueue(data.rx_id, { status: data.new_status })
+          }
+        } catch { /* ignore parse errors */ }
+      }
+
+      bioWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.event_type === 'identity_resolved' && data.patient_id) {
+            setIncomingPatient(data.patient_profile || null, data.confidence || 0)
+          }
+        } catch { /* ignore */ }
+      }
     }
 
-    bioWs.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.event_type === 'identity_resolved' && data.patient_id) {
-          setIncomingPatient(data.patient_profile || null, data.confidence || 0)
-        }
-      } catch { /* ignore */ }
-    }
-
+    void open()
     return () => {
-      ws.close()
-      bioWs.close()
+      closed = true
+      if (retry) clearTimeout(retry)
+      ws?.close()
+      bioWs?.close()
     }
   }
 

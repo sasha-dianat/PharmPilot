@@ -74,6 +74,27 @@ export function apiErrorText(e: unknown, fallback = 'خطای ناشناخته')
   return String(d) || fallback
 }
 
+/**
+ * Short-lived credential for connections that cannot carry an Authorization
+ * header — WebSockets and EventSource. The access token must never be used
+ * here: a URL lands in server logs, browser history and Referer headers.
+ * Fetch a fresh one per connection attempt; tickets expire quickly by design.
+ */
+export async function wsTicket(): Promise<string> {
+  const { data } = await apiClient.post('/auth/sse-ticket')
+  return data.ticket as string
+}
+
+/** `${base}?ticket=…`, or null when no ticket can be minted (logged out). */
+export async function wsUrl(path: string): Promise<string | null> {
+  const base = import.meta.env.VITE_WS_URL || 'ws://localhost:8001'
+  try {
+    return `${base}${path}?ticket=${encodeURIComponent(await wsTicket())}`
+  } catch {
+    return null
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 export const authApi = {
   login: (username: string, password: string, workstationId?: string) =>

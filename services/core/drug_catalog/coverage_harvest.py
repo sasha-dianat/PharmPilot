@@ -714,8 +714,19 @@ async def start_upload(db, insurer: str, rows: list[dict], filenames: list[str],
                 FormularySnapshot.insurer, FormularySnapshot.raw_name).distinct())).all():
             if nm:
                 known.setdefault(ins, set()).add(nm)
-        names = [r.get("drug_name") or r.get("name") or "" for r in rows
-                 if isinstance(r, dict)]
+        # Resolve the column roles FIRST. A real دارونامه file names its columns
+        # in Persian («عنوان»), so reading r['drug_name'] off the raw rows found
+        # 0 names in 3,679, fell under the 20-name floor, and returned "no
+        # mismatch" — the guard was a silent no-op for every file that wasn't
+        # already normalized. That is how a salamat export was staged as tamin
+        # on 2026-07-29 without a word.
+        try:
+            names = [r.get("drug_name") or "" for r in
+                     normalize_rows(rows, resolve_roles(rows, None))
+                     if isinstance(r, dict)]
+        except Exception:
+            names = [r.get("drug_name") or r.get("name") or "" for r in rows
+                     if isinstance(r, dict)]
         bad = detect_insurer_mismatch(names, known, insurer)
         if bad:
             raise RuntimeError(

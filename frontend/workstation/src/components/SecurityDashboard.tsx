@@ -5,6 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { apiClient } from '../lib/api'
+import { wsUrl } from '../lib/api'
 
 interface SecurityEvent {
   event_id: string
@@ -69,10 +70,18 @@ export default function SecurityDashboard() {
   // WebSocket for real-time alerts
   useEffect(() => {
     if (!pharmacyId) return
-    const WS = import.meta.env.VITE_WS_URL || 'ws://localhost:8001'
-    const ws = new WebSocket(`${WS}/api/v1/security/stream/${pharmacyId}`)
-    wsRef.current = ws
+    // the stream is authenticated — an unticketed handshake is closed with 1008
+    let cancelled = false
+    let ws: WebSocket | null = null
+    void (async () => {
+      const url = await wsUrl(`/api/v1/security/stream/${pharmacyId}`)
+      if (cancelled || !url) { setWsConnected(false); return }
+      ws = new WebSocket(url)
+      wsRef.current = ws
+      wire(ws)
+    })()
 
+    const wire = (ws: WebSocket) => {
     ws.onopen  = () => setWsConnected(true)
     ws.onclose = () => {
       setWsConnected(false)
@@ -108,8 +117,9 @@ export default function SecurityDashboard() {
         }
       } catch { /* ignore */ }
     }
+    }
 
-    return () => ws.close()
+    return () => { cancelled = true; ws?.close() }
   }, [pharmacyId])
 
   const handleResolve = async (eventId: string) => {

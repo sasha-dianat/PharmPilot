@@ -296,3 +296,58 @@ async def test_backfill_stamps_the_page_id_on_catalog_rows(tmp_path, db_session)
     row = (await db_session.execute(select(DrugCatalogItem).where(
         DrugCatalogItem.irc == f"{PREFIX}BF1"))).scalar_one()
     assert row.monograph["nfi_id"] == 4242
+
+
+# ── the 2026-07-29 re-upload found these two ────────────────────────────────
+async def test_a_coded_decision_never_spreads_by_truncated_name(db_session):
+    """salamat prints ONE truncated name for many distinct products, so a
+    decision keyed by name swept them all onto a single product: «IOHEXOL» —
+    14 codes, 14 different strengths and volumes — resolved to 1 IRC at
+    confidence 1.0, never reaching review."""
+    from services.core.drug_catalog.crosswalk import load_crosswalk, record_decision
+
+    await record_decision(db_session, insurer="salamat", raw_name=f"{PREFIX}IOHEXOL",
+                          irc=f"{PREFIX}IOHEXOL-300", status="confirmed",
+                          source_code="60001")
+    await db_session.commit()
+    cw = await load_crosswalk(db_session, "salamat")
+
+    assert cw[f"salamat|code:60001"]["irc"] == f"{PREFIX}IOHEXOL-300"
+    # the sibling codes must NOT inherit it — they are different products
+    from services.core.drug_catalog.enrichment import enrich_key
+    assert f"salamat|name:{enrich_key(f'{PREFIX}IOHEXOL')}" not in cw
+
+
+async def test_a_codeless_decision_still_resolves_by_name(db_session):
+    """Insurers that publish no code have nothing else to key on."""
+    from services.core.drug_catalog.crosswalk import load_crosswalk, record_decision
+    from services.core.drug_catalog.enrichment import enrich_key
+
+    await record_decision(db_session, insurer="armed", raw_name=f"{PREFIX}SOLO PRODUCT",
+                          irc=f"{PREFIX}SOLO", status="confirmed", source_code=None)
+    await db_session.commit()
+    cw = await load_crosswalk(db_session, "armed")
+    assert cw[f"armed|name:{enrich_key(f'{PREFIX}SOLO PRODUCT')}"]["irc"] == f"{PREFIX}SOLO"
+
+
+def test_insurer_guard_reads_the_name_column_whatever_it_is_called():
+    """A real دارونامه names its columns in Persian. Reading r['drug_name'] off
+    the RAW rows saw 0 names in 3,679, fell under the 20-name floor and passed
+    the file through — which is how a salamat export was staged as tamin."""
+    from services.core.drug_catalog.coverage_harvest import (
+        detect_insurer_mismatch, normalize_rows, resolve_roles)
+
+    salamat_like = [{"رديف": i, "کد_ژنريک": f"{i:05d}", "عنوان": n,
+                     "شرايط_تعهد": "", "شکل": "TAB", "دوز": "10 mg"}
+                    for i, n in enumerate(
+                        [f"DRUG {i}" for i in range(40)], start=1)]
+    raw_names = [r.get("drug_name") or r.get("name") or "" for r in salamat_like]
+    assert not any(raw_names)                      # the old guard saw nothing
+    names = [r.get("drug_name") or "" for r in
+             normalize_rows(salamat_like, resolve_roles(salamat_like, None))]
+    assert sum(1 for n in names if n) >= 40        # the fixed guard sees them
+
+    known = {"salamat": set(names), "tamin": {"SOMETHING ELSE ENTIRELY 5 mg TAB"}}
+    assert detect_insurer_mismatch(names, known, "tamin") == {
+        "looks_like": "salamat", "match_pct": 100, "selected_pct": 0}
+    assert detect_insurer_mismatch(names, known, "salamat") is None

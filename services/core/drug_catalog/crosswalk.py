@@ -63,8 +63,15 @@ async def load_crosswalk(db, insurer: str | None = None,
     for e in (await db.execute(q)).scalars().all():
         payload = {"irc": e.irc, "status": e.status, "reason": e.reason}
         if e.source_code:
+            # A CODED decision is about that coded product and nothing else.
+            # Publishing a name key for it let one ruling sweep in every other
+            # product sharing salamat's truncated name — measured on the
+            # 2026-07-29 re-upload: 222 names pulled 613 distinct codes along,
+            # 181 of them onto a single IRC («IOHEXOL»: 14 codes → 1 product),
+            # all at confidence 1.0 and none of it reaching review. Migration
+            # 0027 fixed this on the write side; this is the read side.
             out[f"{e.insurer}|code:{e.source_code}"] = payload
-        if e.raw_key:
+        elif e.raw_key:
             out[f"{e.insurer}|name:{e.raw_key}"] = payload
     return out
 
