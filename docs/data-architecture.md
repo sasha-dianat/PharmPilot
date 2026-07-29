@@ -107,7 +107,9 @@ lossless normalizations. `GET /pricing/data-quality/report`.
 
 * **Versioning** — snapshots are append-only per run; `price_history` keeps
   every price movement; the canonical bundle (`data/canonical/`) is a
-  checksummed export of the decided layer, committed to git.
+  checksummed on-disk export of the decided layer (gitignored — 25 MB; the
+  manifest carries per-file sha256, and re-export after every ruling session
+  is the backup discipline).
 * **Rollback** — decided layer: re-import the canonical bundle. Observed
   layer: re-run any import; `restage_run` rebuilds a run from its own
   snapshots without the original file. Schema: every Alembic migration has a
