@@ -1283,6 +1283,39 @@ async def match_intel_retrain(body: RetrainRequest,
             "price_bands": {k: v.get("n") for k, v in (m.get("price_bands") or {}).items()}}
 
 
+# ── سلامت داده — standing reconciliation ────────────────────────────────────
+@router.get("/data-quality/report")
+async def data_quality_report(staff: Staff = Depends(require_permission("inventory:read")),
+                              db: AsyncSession = Depends(get_db)):
+    """Every invariant the 2026-07-29 audit checked by hand, run by machinery.
+    Read-only; each firing line names the invariant and the remedy."""
+    from services.core.drug_catalog.data_quality import report
+    return await report(db)
+
+
+@router.post("/data-quality/fix")
+async def data_quality_fix(staff: Staff = Depends(require_permission("inventory:write")),
+                           db: AsyncSession = Depends(get_db)):
+    """Apply only the provably-safe normalizations (lossless). Anything needing
+    judgement stays a report line."""
+    from services.core.drug_catalog.data_quality import fix
+    return await fix(db)
+
+
+@router.post("/coverage/runs/{run_id}/restage")
+async def coverage_restage_run(run_id: str,
+                               staff: Staff = Depends(require_permission("inventory:write")),
+                               db: AsyncSession = Depends(get_db)):
+    """Re-link a parsed run from its own snapshots with the CURRENT engine —
+    the file is not needed again. Cures staged results that predate a matcher
+    fix; the run stays parsed and still requires normal review to apply."""
+    from services.core.drug_catalog.coverage_harvest import restage_run
+    try:
+        return await restage_run(db, run_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 # ── بازبینی تصمیم‌ها — revise past decisions, and retrain on the result ──────
 class RescoreRequest(BaseModel):
     insurer: str | None = None

@@ -858,6 +858,66 @@ async def run_verdicts(db, run_id) -> list[dict]:
             for c, n, irc, conf, m in rows]
 
 
+async def restage_run(db, run_id) -> dict:
+    """Rebuild a parsed run's staged payload from its OWN snapshots with the
+    CURRENT engine — no original file needed.
+
+    This is what makes a run reproducible: the observed layer keeps every raw
+    row, so any past import can be re-linked after the matcher improves. It is
+    also the honest cure for stale staging — the 2026-07-29 review found two
+    runs whose staged links were produced by a linker that has since been fixed
+    (name-spread crosswalk); re-uploading the file was the only remedy, and the
+    file is not always still at hand."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun
+    from shared.models.formulary_snapshot import FormularySnapshot
+    from . import repo
+
+    run = (await db.execute(select(CoverageRun).where(CoverageRun.id == run_id))).scalar_one()
+    if run.status != "parsed":
+        raise RuntimeError(f"فقط اجرای parsed قابل بازسازی است (وضعیت فعلی: {run.status})")
+    rows = [r for (r,) in (await db.execute(
+        select(FormularySnapshot.row).where(FormularySnapshot.run_id == run.id))).all()
+        if isinstance(r, dict) and r.get("drug_name")]
+    if not rows:
+        raise RuntimeError("این اجرا هیچ ردیف رصدشده‌ای ندارد.")
+
+    from .crosswalk import build_code_registry, load_crosswalk
+    from .enrichment import load_approved
+    catalog = await repo.fetch_all(db)
+    current = await _current_coverage(db, run.insurer)
+    payload = stage_run_payload(
+        rows, catalog, insurer=run.insurer, overrides=None, current=current,
+        enrichments=await load_approved(db),
+        crosswalk=await load_crosswalk(db, run.insurer),
+        code_registry=await build_code_registry(db))
+
+    # refresh the engine's verdicts on the SAME snapshots (no new observation
+    # happened — the rows are identical, only the engine's reading changed)
+    verdicts = {(v.get("code"), v.get("name")): v
+                for v in payload.pop("_verdicts", [])}
+    snaps = (await db.execute(select(FormularySnapshot).where(
+        FormularySnapshot.run_id == run.id))).scalars().all()
+    from .crosswalk import row_source_code
+    for sn in snaps:
+        v = verdicts.get((row_source_code(sn.row), str((sn.row or {}).get("drug_name"))))
+        if v:
+            sn.matched_irc = v.get("irc")
+            sn.match_confidence = v.get("confidence")
+            sn.match_method = (str(v.get("method"))[:32] if v.get("method") else None)
+    payload.pop("_normalized_rows", None)
+
+    old = dict(run.stats or {})
+    run.stats, run.staged = payload["stats"], payload["staged"]
+    run.review, run.unmatched, run.diff = (
+        payload["review"], payload["unmatched"], payload["diff"])
+    run.stats["restaged_at"] = datetime.now(timezone.utc).isoformat()
+    run.stats["before_restage"] = {k: old.get(k) for k in ("applied", "review", "unmatched")}
+    await db.commit()
+    return {"rows": len(rows), "stats": run.stats}
+
+
 async def reject_run(db, run_id) -> None:
     from sqlalchemy import select
     from shared.models.coverage import CoverageRun

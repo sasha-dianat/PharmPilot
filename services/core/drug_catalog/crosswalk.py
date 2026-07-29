@@ -59,6 +59,15 @@ async def load_crosswalk(db, insurer: str | None = None,
         q = q.where(CrosswalkEntry.insurer == insurer)
     if origin:
         q = q.where(CrosswalkEntry.origin == origin)
+    # Deterministic precedence. The same code can legitimately carry several
+    # historical rows (each keyed by a different spelling), and 6 of them held
+    # CONTRADICTING owner rulings — which row won the dict was iteration order,
+    # i.e. the linker's answer for «SIROLIMUS» depended on Postgres row order.
+    # Rows load oldest-first so the LATEST ruling overwrites; on equal
+    # timestamps a confirmed ruling outranks a rejected one (the confirmation
+    # names a product, the rejection only refuses one pairing).
+    q = q.order_by(CrosswalkEntry.decided_at.asc().nulls_first(),
+                   (CrosswalkEntry.status == "confirmed").asc())
     out: dict[str, dict] = {}
     for e in (await db.execute(q)).scalars().all():
         payload = {"irc": e.irc, "status": e.status, "reason": e.reason}

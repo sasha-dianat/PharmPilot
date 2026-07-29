@@ -351,3 +351,63 @@ def test_insurer_guard_reads_the_name_column_whatever_it_is_called():
     assert detect_insurer_mismatch(names, known, "tamin") == {
         "looks_like": "salamat", "match_pct": 100, "selected_pct": 0}
     assert detect_insurer_mismatch(names, known, "salamat") is None
+
+
+# ── the standing reconciliation engine ──────────────────────────────────────
+async def test_data_quality_report_runs_every_check(db_session):
+    from services.core.drug_catalog.data_quality import CHECKS, report
+    rep = await report(db_session)
+    assert len(rep["checks"]) == len(CHECKS)
+    # a broken check must surface as a finding, never crash the report
+    assert all(c["count"] >= 0 for c in rep["checks"]), \
+        [c for c in rep["checks"] if c["count"] < 0]
+    assert all(c["invariant"] and c["action"] for c in rep["checks"])
+
+
+async def test_data_quality_fix_normalizes_json_null_coverage(db_session):
+    from sqlalchemy import select, text
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.data_quality import fix
+
+    db_session.add(DrugCatalogItem(irc=f"{PREFIX}JN", name_fa="x", generic_name="X",
+                                   ingredient_key="x||"))
+    await db_session.commit()
+    # force the pathological state: a JSON null, not SQL NULL
+    await db_session.execute(text(
+        "UPDATE drug_catalog SET coverage='null'::jsonb WHERE irc=:irc"),
+        {"irc": f"{PREFIX}JN"})
+    await db_session.commit()
+    out = await fix(db_session)
+    assert out["coverage_json_null_normalized"] >= 1
+    row = (await db_session.execute(select(DrugCatalogItem).where(
+        DrugCatalogItem.irc == f"{PREFIX}JN"))).scalar_one()
+    assert row.coverage is None                      # SQL NULL now
+
+
+async def test_conflicting_owner_rulings_resolve_to_the_latest(db_session):
+    """Two owner rows on one code (different spellings, opposite verdicts) made
+    the linker's answer depend on Postgres row order. The latest ruling must
+    win, deterministically."""
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select
+    from shared.models.crosswalk import CrosswalkEntry
+    from services.core.drug_catalog.crosswalk import load_crosswalk, record_decision
+
+    await record_decision(db_session, insurer="tamin", raw_name=f"{PREFIX}SIRO BRAND X",
+                          irc=None, status="rejected", source_code="55055")
+    await record_decision(db_session, insurer="tamin", raw_name=f"{PREFIX}SIROLIMUS GEN",
+                          irc=f"{PREFIX}SIRO", status="confirmed", source_code="55055")
+    await db_session.commit()
+    # make the CONFIRMED row decidedly newer
+    rows = (await db_session.execute(select(CrosswalkEntry).where(
+        CrosswalkEntry.source_code == "55055"))).scalars().all()
+    base = datetime.now(timezone.utc)
+    for r in rows:
+        r.decided_at = base + (timedelta(hours=1) if r.status == "confirmed"
+                               else timedelta(hours=-1))
+    await db_session.commit()
+
+    for _ in range(3):                               # stable across reads
+        cw = await load_crosswalk(db_session, "tamin")
+        assert cw["tamin|code:55055"]["status"] == "confirmed"
+        assert cw["tamin|code:55055"]["irc"] == f"{PREFIX}SIRO"
