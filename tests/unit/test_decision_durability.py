@@ -480,3 +480,36 @@ async def test_remove_missing_clears_every_stale_entry_not_just_the_sample(db_se
     await db_session.execute(delete(CoverageRun).where(CoverageRun.id == run.id))
     await db_session.execute(delete(CoverageSource).where(CoverageSource.id == src.id))
     await db_session.commit()
+
+
+async def test_applying_a_run_does_not_rule_on_untouched_review_rows(db_session):
+    """A rejection must be an ACT, not a default. Every non-accepted review item
+    used to become a durable owner rejection — including rows nobody had looked
+    at. Applying the 2026-07-29 runs would have written ~437 of them, each one a
+    permanent hard-0.0 block plus a negative training label it never earned."""
+    from sqlalchemy import select
+    from shared.models.crosswalk import CrosswalkEntry
+    from services.core.drug_catalog.crosswalk import record_run_decisions
+
+    class Run:                                    # the shape record_run_decisions reads
+        insurer = "tamin"
+        review = [
+            {"id": 1, "irc": f"{PREFIX}A", "name": f"{PREFIX}ACCEPTED ROW",
+             "row": {"drug_name": f"{PREFIX}ACCEPTED ROW", "generic_code": "9001"}},
+            {"id": 2, "irc": f"{PREFIX}B", "name": f"{PREFIX}REFUSED ROW",
+             "row": {"drug_name": f"{PREFIX}REFUSED ROW", "generic_code": "9002"},
+             "reject_reason": "wrong_strength"},          # the owner ruled
+            {"id": 3, "irc": f"{PREFIX}C", "name": f"{PREFIX}UNTOUCHED ROW",
+             "row": {"drug_name": f"{PREFIX}UNTOUCHED ROW", "generic_code": "9003"}},
+        ]
+
+    out = await record_run_decisions(db_session, Run(), {1})
+    await db_session.commit()
+    assert out["review_left_undecided"] == 1
+
+    got = {e.source_code: e.status for e in (await db_session.execute(
+        select(CrosswalkEntry).where(
+            CrosswalkEntry.source_code.in_(["9001", "9002", "9003"])))).scalars().all()}
+    assert got.get("9001") == "confirmed"         # accepted → durable
+    assert got.get("9002") == "rejected"          # explicitly refused → durable
+    assert "9003" not in got                      # untouched → still in the queue

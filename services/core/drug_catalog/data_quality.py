@@ -138,12 +138,16 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
      "— a link the matcher has stopped making, still being quoted from",
      "apply the newer run with remove_missing=true (it now clears the FULL set, "
      "not the 50-row display sample)",
-     "SELECT count(*) FROM drug_catalog dc "
-     "JOIN LATERAL (SELECT r.insurer, r.staged FROM coverage_runs r "
-     "  WHERE r.status='parsed' AND r.staged IS NOT NULL "
-     "  ORDER BY r.started_at DESC LIMIT 1) newest ON true "
-     "WHERE jsonb_typeof(dc.coverage)='object' AND dc.coverage ? newest.insurer "
-     "AND NOT (newest.staged ? dc.irc)"),
+     # The NEWEST run per insurer whatever its status — comparing against the
+     # newest *parsed* one made the check meaningless the moment a run was
+     # applied: it then measured live coverage against older, superseded
+     # staging and reported phantom orphans (141 of them on 2026-07-30).
+     "WITH newest AS ("
+     "  SELECT DISTINCT ON (insurer) insurer, staged FROM coverage_runs "
+     "  WHERE staged IS NOT NULL AND status IN ('parsed','approved') "
+     "  ORDER BY insurer, started_at DESC) "
+     "SELECT count(*) FROM drug_catalog dc JOIN newest n ON dc.coverage ? n.insurer "
+     "WHERE jsonb_typeof(dc.coverage)='object' AND NOT (n.staged ? dc.irc)"),
     ("coverage_ref_price_no_announced", "info",
      "an insurer prices a product NFI does not — usually a lapsed registration "
      "still covered, or an NFI source gap",

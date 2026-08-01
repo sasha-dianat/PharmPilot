@@ -185,7 +185,7 @@ async def record_run_decisions(db, run, accepted: set, *, staff_id=None) -> dict
     """Turn one approved coverage run into durable crosswalk decisions:
     accepted review pairs → confirmed; refused pairs → rejected (with the
     owner's reason code). Called from apply_run, inside its transaction."""
-    created = updated = 0
+    created = updated = skipped = 0
     for item in (run.review or []):
         if not isinstance(item, dict):
             continue
@@ -194,6 +194,15 @@ async def record_run_decisions(db, run, accepted: set, *, staff_id=None) -> dict
         if not raw_name:
             continue
         is_accepted = item.get("id") in accepted
+        # A REJECTION MUST BE AN ACT, NOT A DEFAULT. Every non-accepted item used
+        # to become a durable owner rejection — including the ones nobody had
+        # looked at. Applying the 2026-07-29 runs would have written ~437 of
+        # them: each one permanently blocks that pairing (rejected is a hard 0.0
+        # in the linker) and teaches the FS model a negative it never earned.
+        # An untouched review row stays undecided and waits in the queue.
+        if not is_accepted and not (item.get("reject_reason") or item.get("reject_note")):
+            skipped += 1
+            continue
         res = await record_decision(
             db, insurer=run.insurer, raw_name=raw_name,
             irc=item.get("irc") if is_accepted else None,
@@ -205,7 +214,8 @@ async def record_run_decisions(db, run, accepted: set, *, staff_id=None) -> dict
             created += 1
         elif res == "updated":
             updated += 1
-    return {"crosswalk_created": created, "crosswalk_updated": updated}
+    return {"crosswalk_created": created, "crosswalk_updated": updated,
+            "review_left_undecided": skipped}
 
 
 # ── national-code registry: the cross-insurer Rosetta stone ─────────────────

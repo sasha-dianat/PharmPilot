@@ -134,6 +134,30 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6a. The 2026-07-30 apply
+
+Both restaged runs were applied with `remove_missing`, after a full
+`coverage_backup_20260730` snapshot (39,184 rows) was taken as the rollback point:
+
+| | salamat | tamin |
+|---|---|---|
+| coverage entries written | 27,655 | 24,254 |
+| **stale links retired** | **4,119** | **5,955** |
+| review rows left undecided | 177 | 260 |
+| auto beliefs refreshed | 1,923 | 1,694 |
+| links that MOVED | 0 | 0 |
+
+Two defects were fixed first, because applying would otherwise have caused harm:
+the removal cap (above), and — found while checking the apply contract —
+`record_run_decisions` turned **every** non-accepted review row into a durable
+owner *rejection*, including rows nobody had looked at. That would have written
+437 false rejections, each a permanent hard-0.0 block in the linker and a
+negative training label it never earned. A rejection is now an act: only an
+accepted row or one carrying an explicit reject reason becomes a decision.
+
+Result: the weak+extreme class fell to **0** live, `price_gap_extreme` from 499
+to **12** (all pack-basis), and the judgement lane from 527 to **15**.
+
 ## 6. Cleanup performed (2026-07-29)
 
 Normalized 6,771 (+129 recurrence) JSON-null coverages · rejected the mislabeled
@@ -213,6 +237,7 @@ gates every commit (`/release-check`).
 |---|---|---|
 | ~~P1~~ **done** | 77 decision disagreements ruled · 204 spliced monographs repaired · 2,880 price gaps resolved/ruled | ✅ reconciliation `healthy: true`, 0 warn |
 | ~~P1b~~ **done** | the 499 weak-match products: **none survives**. 301 were stale links from the superseded 07-25 runs, 251 now carry certain identity, 23 fixed outright, 0 residual | ✅ verified against the restaged runs |
+| ~~P1d~~ **done** | both restaged runs applied with remove-missing: 51,909 coverage entries written, **10,074 stale links retired**, 487 further stale prices refreshed | ✅ reconciliation `healthy: true`; price_gap_extreme 499 → 12 |
 | P1c (owner) | 16 proposed relinks for the review queue — **proposals only, not adversarially verified** (`docs/review-2026-07-30-weak-link-adjudication.json`); 36 of the 68 queue rows are still unadjudicated | each proposal confirmed or rejected in «اجراها» before the runs are applied |
 | P2 (proxy-dependent) | finish crawl 43k–70k; retry 631 failures; second audit pass over covered ground | succession detector armed |
 | P3 | schedule reconciliation after every apply/ingest automatically; surface the report as a panel card | report visible without CLI |
