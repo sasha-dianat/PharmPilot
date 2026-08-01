@@ -149,6 +149,22 @@ suspension monograph — and are ruled `accepted`: the quarantine is the correct
 outcome, and the clinical text stays withheld until a future crawl serves the
 right page.
 
+**The "weak match" class was an artifact of stale coverage.** Comparing live
+coverage against the restaged runs settled all 575 weak+extreme pairs: **301**
+were links today's engine no longer makes at all (left over from the superseded
+07-25 runs), **251** are now matched with certain identity (so the gap is a price
+question, not a match question), **23** were fixed outright, and **0** remain.
+Applying the restaged runs would land **zero** weak+extreme entries, because
+sub-0.75 links never reach `staged` — they wait in the review queue behind the
+human gate.
+
+That comparison exposed a defect of its own: `apply_run` retired stale coverage
+from `diff.samples.removed`, which `compute_diff` caps at 50 **for display**. A
+run reporting 6,000 retired links could clear only 50, so a link the matcher had
+stopped making survived every later import. Measured before the fix: 4,119
+salamat + 5,955 tamin such entries were live. `remove_missing` now re-derives the
+full set, and `coverage_orphaned_by_newer_staging` watches it permanently.
+
 **Extreme price gaps: 2,880 products → 0 open.** Every gap was classified
 deterministically before anything was written:
 
@@ -196,7 +212,8 @@ gates every commit (`/release-check`).
 | phase | work | acceptance |
 |---|---|---|
 | ~~P1~~ **done** | 77 decision disagreements ruled · 204 spliced monographs repaired · 2,880 price gaps resolved/ruled | ✅ reconciliation `healthy: true`, 0 warn |
-| P1b (owner) | review the 499 weak-match products in «بازبینی تصمیم‌ها» — their coverage prices are suspect because the MATCH is | each product either re-matched or its coverage cleared |
+| ~~P1b~~ **done** | the 499 weak-match products: **none survives**. 301 were stale links from the superseded 07-25 runs, 251 now carry certain identity, 23 fixed outright, 0 residual | ✅ verified against the restaged runs |
+| P1c (owner) | 16 proposed relinks for the review queue — **proposals only, not adversarially verified** (`docs/review-2026-07-30-weak-link-adjudication.json`); 36 of the 68 queue rows are still unadjudicated | each proposal confirmed or rejected in «اجراها» before the runs are applied |
 | P2 (proxy-dependent) | finish crawl 43k–70k; retry 631 failures; second audit pass over covered ground | succession detector armed |
 | P3 | schedule reconciliation after every apply/ingest automatically; surface the report as a panel card | report visible without CLI |
 | P4 | quote-path regression harness (pricing conservation against golden quotes) | release-check includes it |

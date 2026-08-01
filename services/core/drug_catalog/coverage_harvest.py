@@ -815,14 +815,22 @@ async def apply_run(db, run_id, *, remove_missing: bool = False,
 
     removed_cleared = 0
     if remove_missing:
-        for irc in (run.diff or {}).get("samples", {}).get("removed", []):
-            row = (await db.execute(select(DrugCatalogItem).where(
-                DrugCatalogItem.irc == irc))).scalar_one_or_none()
-            if row and isinstance(row.coverage, dict) and run.insurer in row.coverage:
-                cov = dict(row.coverage)
-                cov.pop(run.insurer)
-                row.coverage = cov or None
-                removed_cleared += 1
+        # The FULL set, re-derived here — never `diff.samples.removed`, which is
+        # capped at _SAMPLE_CAP (50) for display. Reading the sample meant a run
+        # reporting 6,000 retired links could only ever clear 50 of them, so a
+        # link the matcher stopped making survived every later import. Measured
+        # 2026-07-30: 4,119 salamat + 5,955 tamin live entries that today's
+        # staging no longer reproduces, 301 of them the very weak+extreme rows
+        # under review.
+        live = (await db.execute(select(DrugCatalogItem).where(
+            DrugCatalogItem.coverage.has_key(run.insurer)))).scalars().all()  # noqa: W601
+        for row in live:
+            if row.irc in staged or not isinstance(row.coverage, dict):
+                continue
+            cov = dict(row.coverage)
+            cov.pop(run.insurer, None)
+            row.coverage = cov or None
+            removed_cleared += 1
 
     run.review = stamp_reject_reasons(run.review, accepted, reject_reasons)
     # X1: the owner's verdicts become DURABLE decisions — the next import of the

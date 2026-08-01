@@ -434,3 +434,49 @@ async def test_board_surfaces_sub_rulings_without_closing_the_cause(db_session):
     await db_session.execute(delete(IssueDisposition).where(
         IssueDisposition.subject_key == "cause:t29_pack"))
     await db_session.commit()
+
+
+# ── retiring links the matcher has stopped making ───────────────────────────
+async def test_remove_missing_clears_every_stale_entry_not_just_the_sample(db_session):
+    """apply_run read `diff.samples.removed`, which compute_diff caps at 50 for
+    DISPLAY. A run reporting 6,000 retired links could therefore clear only 50,
+    so a link the matcher stopped making survived every later import. Measured
+    2026-07-30: 4,119 salamat + 5,955 tamin such entries were live."""
+    from sqlalchemy import select
+    from shared.models.coverage import CoverageRun, CoverageSource
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog.coverage_harvest import apply_run
+
+    ins = "t29ins"
+    keep, drop = f"{PREFIX}KEEP", f"{PREFIX}DROP"
+    entry = {"covered": True, "share_pct": 70, "reference_price": 1000,
+             "match_confidence": 0.99, "match_method": "code"}
+    for irc in (keep, drop):
+        db_session.add(DrugCatalogItem(irc=irc, name_fa="x", generic_name="X",
+                                       ingredient_key="x||",
+                                       coverage={ins: dict(entry)}))
+    src = CoverageSource(insurer=ins, name="t29", strategy="manual", enabled=False)
+    db_session.add(src)
+    await db_session.commit()
+
+    # the new staging covers only `keep`; `drop` is stale. Its id is deliberately
+    # ABSENT from the (capped) samples list, which is what the bug relied on.
+    run = CoverageRun(source_id=src.id, insurer=ins, status="parsed",
+                      staged={keep: {ins: dict(entry)}}, review=[], unmatched=[],
+                      diff={"added": 0, "changed": 0, "removed": 1,
+                            "samples": {"added": [], "changed": [], "removed": []}})
+    db_session.add(run)
+    await db_session.commit()
+
+    out = await apply_run(db_session, run.id, remove_missing=True)
+    assert out["removed_cleared"] == 1
+
+    rows = {r.irc: r for r in (await db_session.execute(select(DrugCatalogItem).where(
+        DrugCatalogItem.irc.in_([keep, drop])))).scalars().all()}
+    assert ins in (rows[keep].coverage or {})          # still covered
+    assert ins not in (rows[drop].coverage or {})      # retired
+
+    from sqlalchemy import delete
+    await db_session.execute(delete(CoverageRun).where(CoverageRun.id == run.id))
+    await db_session.execute(delete(CoverageSource).where(CoverageSource.id == src.id))
+    await db_session.commit()

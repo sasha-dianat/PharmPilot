@@ -1,0 +1,293 @@
+[
+ {
+  "id": "tamin:01575",
+  "verdict": "relink",
+  "relink_irc": "8998690044135118",
+  "relink_name": "لورازپام 2 mg/1mL INJECTION (کیمیدارو، بسته 10)",
+  "price_explanation": "n/a",
+  "confidence": 0.93,
+  "reasoning": "The row is a parenteral lorazepam 2 mg/1mL injection; it is currently linked to a 1 mg ORAL TABLET, which is the wrong dosage form, wrong route and wrong strength. The matcher put both lorazepam injection rows (01575, 01576) on the same tablet IRC, a clear crosswalk failure. The catalog holds a real lorazepam 2 mg/1mL INJECTION PARENTERAL family whose current announced price is 550000 — exactly the insurer reference, to the rial. Molecule unchanged (lorazepam); the row itself names INJECTION PARENTERAL, so moving off the tablet is required, not optional. The catalog records no fill volume for lorazepam injections (monograph generic_full is 'LORAZEPAM INJECTION PARENTERAL 2 mg/1mL' with no volume token), so the trailing legacy descriptor '2ML' cannot be cross-checked; concentration, form and route all match and the price is exact, so this does not change the decision.",
+  "evidence": "Linked: 1439504978342442 لورازپام 1م گ قرص | 1 mg | TABLET | 22639. Target: 8998690044135118 | lorazepam | 2 mg/1mL | INJECTION | 550000 | pack 10 | کیمیدارو | generic_full='LORAZEPAM INJECTION PARENTERAL 2 mg/1mL'. Equivalent duplicates at the same identity and price: 2171726435311438 (pack 5), 7474410745063076 (pack 5), 2487351663910306 (pack 10), 6370766478932292 (pack 5). Price is invariant across pack 5 and pack 10, so 550000 is a per-item list price, not a pack total."
+ },
+ {
+  "id": "tamin:01576",
+  "verdict": "relink",
+  "relink_irc": "4792762856404882",
+  "relink_name": "لورازپام 4 mg/1mL INJECTION (کیمیدارو، بسته 10)",
+  "price_explanation": "n/a",
+  "confidence": 0.93,
+  "reasoning": "Same failure as 01575: a parenteral lorazepam 4 mg/1mL injection linked to a 1 mg oral tablet. The row states both the concentration (4 mg/1mL, repeated in the legacy descriptor '4MG/ML') and the form/route (INJECTION PARENTERAL). The catalog has a lorazepam 4 mg/1mL INJECTION family at 320000, exactly the insurer reference. Molecule unchanged; the row names the injection form itself. Note the 4 mg/mL presentation is priced below the 2 mg/mL one in our catalog (320000 vs 550000), which is counter-intuitive but is corroborated by both formulary rows landing on their respective tiers exactly — that one-to-one agreement is itself the strongest evidence the two tiers are correctly identified.",
+  "evidence": "Linked: 1439504978342442 | 1 mg | TABLET | 22639. Target: 4792762856404882 | lorazepam | 4 mg/1mL | INJECTION | 320000 | pack 10 | کیمیدارو | generic_full='LORAZEPAM INJECTION PARENTERAL 4 mg/1mL'. Same-identity alternate: 7603020070512965 (pack 5, 320000). Outlier 8586878847829149 (لورازپام 4، 544000, no pack) is a different price vintage and does not match the reference."
+ },
+ {
+  "id": "tamin:02134",
+  "verdict": "relink",
+  "relink_irc": "6996271246484092",
+  "relink_name": "فوروزماید 10 mg/1mL آمپول 4 میلی‌لیتر (ابوریحان، بسته 10)",
+  "price_explanation": "n/a",
+  "confidence": 0.88,
+  "reasoning": "The row names a 4 mL ampoule; the linked product 1036142117878841 is the 2 mL ampoule (its own name_fa says 'فوروزماید 20میلی گرم در 2میلی لیتر' and its monograph generic_full ends '10 mg/1mL 2MILLILITER'). Same molecule, same concentration, same IV route, different fill volume — that is a different product, so the link must move. The catalog's furosemide injection rows split cleanly by volume once monograph generic_full is read: the 4 mL family sits at 550000 in the current price vintage and the 2 mL family at 500000. The insurer reference here is 550000 and the reference on the sibling 2 mL row (tamin:51896) is 500000 — the two formulary rows map one-to-one onto the two volume tiers, which corroborates the volume reading independently of price alone. Not a pack effect: 500000 recurs unchanged at pack 2, 10 and 100, so announced_price does not scale with pack.",
+  "evidence": "Linked: 1036142117878841 | 10 mg/1mL | INJECTION | 11100 | generic_full='FUROSEMIDE INJECTION INTRAVENOUS 10 mg/1mL 2MILLILITER' (2 mL, stale vintage). Target: 6996271246484092 | furosemide | 10 mg/1mL | INJECTION | 550000 | pack 10 | ابوریحان | generic_full='... 10 mg/1mL 4MILLILITER'. Equally valid same-identity/same-price alternates: 7093125520408082 (البرز, pack 10), 0669010682195198 and 6955520782688015 (رزماید, کاسپین تأمین, pack 5). Older-vintage 4 mL rows at 13800 (2104577718225503, 7305344196398488, 6013916083737342) share the identity but carry the stale price. I chose a generic-named entry over the برند رزماید row the pipeline surfaced; any of the four 4 mL/550000 IRCs is defensible."
+ },
+ {
+  "id": "tamin:51896",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.87,
+  "reasoning": "Identity is exact: the row is furosemide 10 mg/1mL, 2 mL, IV injection, and the linked product 1036142117878841 is precisely that — name_fa 'فوروزماید 20میلی گرم در 2میلی لیتر', monograph generic_full '... 10 mg/1mL 2MILLILITER'. No pack explanation is available: our row has no package_count, and across the current-vintage 2 mL rows the announced price is a flat 500000 at pack 2, pack 10 and pack 100 alike, so the figure does not scale with pack size and the 45x gap cannot be pack-vs-unit. What the catalog does show is two price vintages of the same product — an old tier (11100, package_count NULL) and a current tier (500000, package_count populated) — and the insurer's 500000 matches the current tier exactly. So the link is right and our announced_price on this particular IRC is simply out of date. I deliberately did not relink to one of the 500000 twins: swapping between IRCs of identical identity would only mask a price-freshness problem as a matching problem.",
+  "evidence": "Linked 1036142117878841 = 2 mL, 11100, package_count NULL. Same-identity current-vintage rows all at 500000: 2708795962066554 (ابوریحان, pack 10), 7400005227194091 (البرز, pack 10), 4760275918593073 / 9684664134401255 (دارو پخش, pack 10), 4087142699697890 (کیمیدارو, pack 10), 3193266550334688 (رزماید, pack 10), 3194375148340133 (pack 2), 3678204926921198 (pack 2), 2099434152057104 (pack 100). Price invariant across pack 2/10/100 rules out pack arithmetic. Recommend a price refresh on 1036142117878841 (and its 11100 twins 2508955357016596, 3043805354502866) rather than a relink."
+ },
+ {
+  "id": "tamin:00080",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.9,
+  "reasoning": "Identity is exact on every axis the row states: AMPICILLIN, 1 g, INJECTION POWDER FOR SOLUTION, parenteral — and the linked 7390494769849117 is 'آمپی سیلین سدیم 1 گرمی ویال' with monograph generic_full 'AMPICILLIN INJECTION, POWDER, FOR SOLUTION PARENTERAL 1 g'. Ampicillin sodium is a salt of the same molecule, which is permitted. Pack-vs-unit does not explain the 35.3x gap: the current-tier price for 1 g is a flat 900000 whether the pack is 20 or 24, and vials are single-unit anyway, so 900000 is a per-vial list price, not a pack total (and 35.3 matches no plausible vial pack). The catalog instead shows the same two-vintage pattern across the whole ampicillin injection range, with an internally coherent ladder in each vintage: old tier 500 mg = 20000 and 1 g = 25500; current tier 250 mg = 500000, 500 mg = 700000, 1 g = 900000. The insurer's 900000 is the current 1 g tier exactly. Our announced price is the old vintage — a stale price, not a mismatch.",
+  "evidence": "Linked: 7390494769849117 | 1 g | INJECTION, POWDER, FOR SOLUTION | 25500 | package_count NULL | داروسازی دانا. Old-vintage twins at 25500: 0365060449500862, 5334025184725921, 8342808573213068. Current-vintage 1 g at 900000: 3554851063903921 (pack 24), 5605965891411616 آمپیکسیل (pack 20), 8659228013765888 آمپی ویل (pack 20) — price identical across pack 20 and 24. Ladder cross-check: 500 mg 20000→700000, 250 mg →500000."
+ },
+ {
+  "id": "tamin:06938",
+  "verdict": "relink",
+  "relink_irc": "7389383542457513",
+  "relink_name": "آمپی سول — AMPICILLIN 2 g / SULBACTAM 1 g، ویال پودر تزریقی (دانا، بسته 20)",
+  "price_explanation": "n/a",
+  "confidence": 0.92,
+  "reasoning": "The row explicitly names AMPICILLIN / SULBACTAM 2 g/1 g, but it is linked to a plain ampicillin 1 g vial — wrong strength and missing the sulbactam component entirely. This is not a jump to a foreign molecule: the target carries generic_name 'ampicillin' in our own catalog (strength field '2 g/SULBACTAM 1 g'), the ampicillin base is preserved, the form and route are unchanged (INJECTION, POWDER, FOR SOLUTION / PARENTERAL), and the combination is what the formulary row itself states. Leaving the current link would be the actively harmful outcome — it would stamp a combination-product reference price of 1250000 onto a plain 1 g ampicillin vial. The 2 g/1 g family again shows two vintages (800000 old, 1250000 current) and the insurer reference is 1250000, the current tier exactly.",
+  "evidence": "Linked: 7390494769849117 | ampicillin | 1 g | 25500. Target: 7389383542457513 | آمپی سول | generic_name=ampicillin | '2 g/SULBACTAM 1 g' | INJECTION, POWDER, FOR SOLUTION | 1250000 | pack 20 | دانا | generic_full='AMPICILLIN / SULBACTAM INJECTION, POWDER, FOR SOLUTION PARENTERAL 2 g/1 g'. Same-identity/same-price alternates: 7604871273612391 (آمپی سول, pack 20), 2566678763453087 (آمپی باکتام, pack 10), 9247189732821922 (آمپی باکتام, pack 3). Old-vintage 2 g/1 g rows at 800000: 7878081339087773, 2054191645770735. Distinct lower strength 1 g/0.5 g sits at 701800-800000 and is not what this row names."
+ },
+ {
+  "id": "tamin:02051",
+  "verdict": "relink",
+  "relink_irc": "8034053979241325",
+  "relink_name": "فلوکستین 4 mg/1mL شربت 60 میلی‌لیتر (شهردارو)",
+  "price_explanation": "n/a",
+  "confidence": 0.95,
+  "reasoning": "The row is an oral fluoxetine syrup, 4 mg/1mL, 60 mL bottle; it is linked to a 10 mg oral CAPSULE — wrong dosage form. The catalog contains the exact product: fluoxetine (as hydrochloride) SYRUP ORAL 4 mg/1mL 60MILLILITER at 650000, which equals the insurer reference to the rial. Every stated axis agrees — molecule, salt statement, route, form, concentration and volume — and the row itself names SYRUP, so changing form is mandated by the row, not invented. The trailing legacy descriptor '20MG/ML SYRUP' is a known-bad tamin free-text field (fluoxetine syrup is 20 mg/5 mL = 4 mg/mL); the structured part of the row, '4 mg/1mL ... 60 mL SYRUP ORAL', is self-consistent with the catalog and with the reference price, so I read the legacy token as a per-5mL restatement rather than a real 20 mg/mL concentration. No 20 mg/mL fluoxetine liquid exists in the catalog or in practice.",
+  "evidence": "Linked: 2022549559212413 فلوکستین 10میلی گرم | 10 mg | CAPSULE | 27845. Target: 8034053979241325 | fluoxetine | 4 mg/1mL | SYRUP | 650000 | لابراتوارهای شهردارو | generic_full='FLUOXETINE (AS HYDROCHLORIDE) SYRUP ORAL 4 mg/1mL 60MILLILITER'. Same-identity/same-price alternates: 6615378590695937 (فلوکستین-عبیدی), 2156666586456725 / 2775270872997169 (آسا دارو طوس), 3026882568447544 (رضوی), 1263347226298175 (شهردارو). Note package_count on several of these is 60, i.e. the bottle volume leaked into the pack field — do not read it as a 60x pack."
+ },
+ {
+  "id": "tamin:52820",
+  "verdict": "relink",
+  "relink_irc": "6911237313806205",
+  "relink_name": "فلوکسومید 90 mg کپسول با رهش تأخیری (امید بهبود، بسته 4)",
+  "price_explanation": "n/a",
+  "confidence": 0.95,
+  "reasoning": "The row names fluoxetine 90 mg CAPSULE, DELAYED RELEASE, ORAL — the once-weekly presentation — and is linked to an immediate-release 10 mg capsule. Same molecule and route, but the strength is 9x off and the release profile differs, so the link is wrong on the row's own stated terms. The catalog holds the exact product, فلوکسومید 90 mg CAPSULE, DELAYED RELEASE, whose monograph generic_full reproduces the formulary row verbatim ('FLUOXETINE (AS HYDROCHLORIDE) CAPSULE, DELAYED RELEASE ORAL 90 mg'), priced at 550000 — the insurer reference exactly. The pack of 4 is consistent with a month of weekly dosing and does not conflict with the price, since reference and announced price are equal either way.",
+  "evidence": "Linked: 2022549559212413 | 10 mg | CAPSULE | 27845. Target: 6911237313806205 | فلوکسومید | fluoxetine | 90 mg | CAPSULE, DELAYED RELEASE | 550000 | pack 4 | داروئی امید بهبود. Duplicate row with identical identity and price: 7783493699893407 (same manufacturer) — the catalog carries two IRCs for this product."
+ },
+ {
+  "id": "tamin:00717",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.88,
+  "reasoning": "Identity is exact: row is ISOSORBIDE DINITRATE 10 mg plain TABLET, linked record is isosorbide dinitrate 10 mg TABLET (Aria), pack 100. The ratio 30 is not a pack story — the linked record already carries package_count=100, and 700 x 100 = 70,000 which overshoots the 21,000 reference, so 700 is a per-pack price, not a per-unit price. The catalog contains a duplicate record of the very same product (same name_fa 'ایزوسورباید دی نیترات آریا', same manufacturer داروسازی آریا, 10 mg TABLET, pack 100) priced at exactly 21,000, plus two competitor 10 mg/pack-100 rows (سها, تولید دارو) also at 21,000. So 21,000 is the current announced price for this exact presentation and 700 is simply an out-of-date figure on a legacy duplicate. No relink: every candidate at 21,000 is the identical molecule/strength/form, and the row names no brand, so switching IRCs would be arbitrary. This is a price-refresh (and a dedup candidate: IRC 0000988398019728 vs 7099348060352435 are the same Aria product), not a mismatch.",
+  "evidence": "psql: 0000988398019728 | ایزوسورباید دی نیترات آریا | 10 mg | TABLET | 700 | 100 | داروسازی آریا; 7099348060352435 | ایزوسورباید دی نیترات آریا | 10 mg | TABLET | 21000 | 100 | داروسازی آریا; 5712952504070468 | سها | 21000 | 100; 7075975680497064 | ایزورباید | 21000 | 100. Reference = 21,000 exactly."
+ },
+ {
+  "id": "tamin:01574",
+  "verdict": "relink",
+  "relink_irc": "3158596090592728",
+  "relink_name": "لوراتادین 10 mg TABLET (pack 100, 30,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.75,
+  "reasoning": "The current link is not a real product: IRC 1000020000300004 has brand_name 'LORA TEST', name_fa 'لورا تست', manufacturer 'غذا آوران تست', and a synthetic sequential IRC (…300004/300005/300006 in data/canonical/catalog.json). A formulary row must not carry an insurer reference price onto a seeded test record, so the link cannot be kept. The row (LORATADINE 10 mg, plain TABLET, ORAL, ref 30,000) matches a large family of real loratadine 10 mg plain TABLET rows priced at exactly 30,000 (packs 30 and 100). I propose 3158596090592728 (لوراتادین, 10 mg, TABLET, 30,000, pack 100) — generic-named, plain tablet, exact price match. Caveat on the specific IRC: roughly 15 real generic rows are interchangeable at 30,000 (e.g. 5592565699140083, 7798820204744181 لوراتادین-ناژو, 6175247575816693 لوراتادین آریا, 5048487734171560); any of them is equally defensible, and the load-bearing part of this verdict is 'move off the test record onto a real loratadine 10 mg plain tablet'. Explicitly NOT the ODT rows at 21,500 (TABLET, ORALLY DISINTEGRATING is a different dosage form and the row does not name it), and explicitly NOT any desloratadine row at 30,000 — desloratadine 5 mg is a different molecule and its identical price is a coincidence that would trap a price-only matcher.",
+  "evidence": "catalog.json: {\"irc\": \"1000020000300004\", \"name_fa\": \"لورا تست\", \"brand_name\": \"LORA TEST\", \"manufacturer\": \"غذا آوران تست\", \"announced_price\": 760}. psql loratadine: eight legacy rows at 760 (pack empty) vs many current 10 mg TABLET rows at 30000 (pack 30/100); ODT rows at 21500; desloratadine 5 mg TABLET also 30000 (different molecule — do not use)."
+ },
+ {
+  "id": "tamin:00601",
+  "verdict": "relink",
+  "relink_irc": "7321622289208756",
+  "relink_name": "گلایسین 1.5 % SOLUTION، 3000 mL (داروسازی شهید قاضی)، 4,900,000",
+  "price_explanation": "n/a",
+  "confidence": 0.85,
+  "reasoning": "The current link is a corrupted/spliced NFI record: IRC 3790078311728795 carries generic_name 'glycine' and strength '1.5 %' but name_fa 'ایزوپروپیل الکل' (isopropyl alcohol) from دارو سازی سپیداج — the product identity in the record is not glycine irrigation at all, and its 120,000 price belongs to that mislabelled entity. The row names GLYCINE 1.5% 3000 mL irrigation solution. The catalog has genuine گلایسین 1.5 % SOLUTION rows where package_count encodes the bag volume in mL, and price scales with volume exactly as expected: 1000 mL = 1,900,000; 3000 mL = 4,900,000. The reference price 4,900,000 matches the 3000 mL bag exactly, and 3000 mL is the volume the row itself states — volume, price and identity all agree. I pick 7321622289208756 (شهید قاضی, package_count 3000); 1907117512702784 (Aculife, package_count 3000) is the equally valid alternative, and 5988058456906332 / 9199015456853121 (ثامن, package_count 3, i.e. 3 L expressed in litres) are the same presentation at the same price. Not relinked to the 1,900,000 rows: those are the 1000 mL bag, a different volume from what the row names. Same molecule throughout (glycine irrigation), route/form unchanged (irrigation solution).",
+  "evidence": "psql generic_name='glycine': 3790078311728795 | ایزوپروپیل الکل | 1.5 % | SOLUTION | 120000 | (pack empty) | دارو سازی سپیداج | nfi-harvest — name/molecule mismatch inside one row. Genuine: 6727669833432366 گلایسین 1.5% pack 1000 = 1,900,000; 7321622289208756 and 1907117512702784 گلایسین 1.5% pack 3000 = 4,900,000. Reference = 4,900,000."
+ },
+ {
+  "id": "tamin:01782",
+  "verdict": "keep",
+  "price_explanation": "pack",
+  "implied_pack_size": 50,
+  "confidence": 0.62,
+  "reasoning": "Identity is exact and unambiguous: mepivacaine HCl 3 % injection (dental cartridge) on both sides, and the catalog holds no other mepivacaine presentation the row could mean — the only other strength is 2 % (کاینامید), which the row does not name. So there is nothing to relink to that is not the same molecule/strength/form, and the row names no brand. The 600,000 reference is a box price, not a cartridge price: the siblings sitting exactly at 600,000 include اکسی کائین with package_count 50 and اسکاندینیبسا with package_count 54, i.e. the standard 50-cartridge dental box. That works out to ~12,000 per cartridge, the same order as our linked Exir record's 16,000 with package_count 1 (one cartridge). Pack-vs-unit therefore explains the bulk of the 37.5x gap, with the residual (37.5 vs 50) accounted for by ordinary manufacturer-to-manufacturer price variance. Confidence is held down because package_count in this family is visibly unreliable (600,000 also appears with pack 1, 50 and 54 for the same 3 % presentation) and the catalog stores no volume field, so I cannot confirm the row's stated 1.3 mL against any record; a partial staleness component in the Exir 16,000 figure cannot be excluded. The link itself is still correct — only the pack basis differs.",
+  "evidence": "psql mepivacaine: 7010595629580655 | مپیواکائین-اکسیر | 3 % | INJECTION | 16000 | pack 1; 2606123575350927 | اکسی کائین | 3 % | 600000 | pack 50; 4812684084461470 | اسکاندینیبسا | 3 % | 600000 | pack 54; 6748933159241709 اسکاندونست پلین | 600000 | pack 1; 7929278212386554 مپاکائین | 851000 | pack 1. Also note catalog noise: 5987930424257399 / 7680545747841983 are filed under mepivacaine 3 % INJECTION but named 'پارا آمینوبنزوئیک اسید 5% لوسیون 120 م ل' — spliced rows that should not be offered as match candidates."
+ },
+ {
+  "id": "tamin:01600",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.7,
+  "reasoning": "Identity is exact: morphine sulfate 10 mg/1mL INJECTION on both sides, and the row explicitly says PARENTERAL/INJECTION, so the 10 mg SUPPOSITORY and 10 mg TABLET siblings are excluded by form. Among injection rows the catalog splits cleanly into a legacy tier at 13,900 (three duplicate rows, package_count empty — a per-ampoule price years out of date) and a current tier at 500,000 (مورفین سولفات / مرفین, same 10 mg/1mL injection). Since the identical presentation from other holders is already at 500,000, the linked record's 13,900 is demonstrably stale; the remaining step from 500,000 to the 650,000 reference is a further price revision on the insurer side (1.3x, ordinary). A pure pack story does not work: 13,900 x 10 = 139,000, nowhere near 650,000, so pack alone cannot close a 46.8x gap — the gap is most likely a stale unit price plus a pack (10-ampoule box) basis, with staleness the dominant term. No relink: every injection candidate is the same molecule, strength and form, the row names no brand, and switching to a 500,000 row would still not reproduce 650,000. Confidence is moderate because no catalog row sits at exactly 650,000 and package_count is inconsistent (500,000 appears with both pack 10 and pack 100), so the exact unit basis of the reference is not provable from our data. Beware the apomorphine hydrochloride rows in this generic neighbourhood — different molecule, never a relink target.",
+  "evidence": "psql morphine injection: 3179394587968587 / 3179156637148392 / 6840548706263540 all 10 mg/1mL INJECTION at 13900 (pack empty); 4589905914154450 (pack 10), 8411562430322152 (pack 100), 8085820596156032 (pack 100) all 10 mg/1mL INJECTION at 500000. Reference = 650,000; no row matches it exactly. Same query also returns apomorphine hydrochloride 10 mg/1mL rows (داسپتون, and one named 'مرفین') — different molecule, excluded."
+ },
+ {
+  "id": "tamin:00348",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.88,
+  "reasoning": "Identity is exact: COLCHICINE 1 mg plain TABLET, oral, on both sides (the catalog's generic_name spelling 'colchiceine' is a catalog typo, not a different substance). The catalog shows a clear three-tier price history for the identical 1 mg tablet: 2,000 (the linked legacy row from داروسازی مداوا), 20,281 (an intermediate tier), and 75,000 (the current tier, held by six rows at packs 1/20/40/100). The 75,000 tier matches the insurer reference exactly. Decisive corroboration: the same manufacturer as the linked row, داروسازی مداوا, also has 'مداسین' 1 mg TABLET pack 100 at 75,000 — the same maker's current record for the same presentation — which proves 2,000 is an out-of-date price on a legacy record rather than a different product. Ratio 37.5 is not a pack story: colchicine 1 mg packs at 75,000 span 1, 20, 40 and 100 units at the same price, so package_count is not driving the reference. No relink — the row names no brand and every 75,000 candidate is the same molecule/strength/form. Side note for data hygiene: IRC 0000000294454241 is named 'قرص کلشی سین 10 میلیگرمی' while its strength field says 1 mg; that name/strength conflict should be reviewed separately.",
+  "evidence": "psql colchicine: 2851460917768889 | کولشیسین 1م گ قرص | 1 mg | TABLET | 2000 | داروسازی مداوا; 8499484691337671 | مداسین | 1 mg | TABLET | 75000 | pack 100 | داروسازی مداوا (same manufacturer, current price); 3721420797407704 مداسین 75000 pack 100; 5841767473202091 / 5847798710726397 کلشی سین ساید 75000 pack 40; 0000000716743162 کلشی سین 75000 pack 20. Reference = 75,000."
+ },
+ {
+  "id": "tamin:00325",
+  "verdict": "relink",
+  "relink_irc": "8080307999658078",
+  "relink_name": "کلوتریمازول 1 % کرم واژینال (دارو سازی بهوزان)، 1,400,000",
+  "price_explanation": "n/a",
+  "confidence": 0.85,
+  "reasoning": "The current link is the wrong product on two counts: IRC 9641184502586331 is 'کلوتریمازول/بتامتازون بهسا', a clotrimazole + betamethasone 0.05 % COMBINATION cream for dermatologic topical use, whereas the row is single-ingredient CLOTRIMAZOLE 1 % 50 g VAGINAL cream. The row names neither betamethasone nor a dermatologic route, so the corticosteroid combination cannot be what it refers to. Relinking is within the rules: the principal molecule is unchanged (clotrimazole), I am dropping an extra ingredient the row never mentions rather than switching molecules, and the target's form (cream) and route (vaginal) are exactly what the row states. Target 8080307999658078 is named literally 'کلوتریمازول 1 % کرم واژینال' (Behvazan), single-ingredient 1 %, CREAM, priced 1,400,000 — the reference price to the rial. Equally valid alternative: 8744970633913514, same name 'کلوتریمازول 1 % کرم واژینال' (تهران شیمی), 1 %, CREAM, 1,400,000; brand is not distinguishable from the row text. Deliberately NOT chosen: the 1 % topical/unspecified creams at 1,300,000 (route not stated as vaginal), the 2 % vaginal creams at 1,179,800 (wrong strength — the row says 1 %), and the 100 mg vaginal tablets/suppositories at 80,000–100,000 (wrong dosage form). The 50 g tube size is consistent with the Iranian clotrimazole vaginal cream presentation, though the catalog does not store tube weight, so the volume claim rests on the exact strength/route/price agreement rather than an explicit gram field.",
+  "evidence": "psql clotrimazole 1 % vaginal: 8080307999658078 | کلوتریمازول 1 % کرم واژینال | 1 % | CREAM | 1400000 | دارو سازی بهوزان; 8744970633913514 | کلوتریمازول 1 % کرم واژینال | 1 % | CREAM | 1400000 | داروسازی تهران شیمی. Current link: 9641184502586331 | کلوتریمازول/بتامتازون بهسا | 1 %/BETAMETHASONE 0.05 % | CREAM | 30000. Contrast rows: 2 % vaginal creams at 1,179,800 (3191056273753553, 3659121386227587); plain 1 % creams at 1,300,000. Reference = 1,400,000."
+ },
+ {
+  "id": "tamin:02418",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.87,
+  "reasoning": "Identity is exact: CEFEPIME 500 mg injection powder for solution, parenteral, on both sides. Vials are dispensed singly, and the 1,600,000 reference is matched exactly by every other cefepime 500 mg vial in the catalog — nine rows across سفپیم, سفمکس, اکسی پیم, آفاکساپیم and سپیماکس — including several whose package_count is 1. So 1,600,000 is the current single-vial announced price and the linked 'سفپیم-شفا' record's 47,000 is simply a stale legacy figure (its announced_price_at timestamp is only the harvest date, not a price date). Ratio 34 is not a pack story: package_count in this family is noise (the same 500 mg vial appears at 1,600,000 with pack 1, 12, 20, 25 and 500 alike), and a 34-vial pack is not an Iranian norm. No relink — every 1,600,000 candidate is the same molecule, strength and form, the row names no brand, and the 1 g rows at 1,800,000 are correctly excluded because the row states 500 mg.",
+  "evidence": "psql cefepime strength='500 mg': 9759535322565709 | سفپیم-شفا 500 م گ ویال | 47000 | announced_price_at 2026-07-25 (harvest stamp) — the only outlier; all nine others (2771804031461600 سفپیم pack 1, 0180776580951200 اکسی پیم pack 1, 6733434923890976 سپیماکس pack 1, 7969528758397380 / 4392337292177615 آفاکساپیم pack 20, 5983702102109176 / 6162437551645992 سفمکس, 7912859459404740 اکسی پیم, 7962239415928630 سفپیم) = 1,600,000. Reference = 1,600,000; 1 g rows = 1,800,000."
+ },
+ {
+  "id": "tamin:02316",
+  "verdict": "relink",
+  "relink_irc": "9861786233239735",
+  "relink_name": "مارکووار — BUPIVACAINE HYDROCHLORIDE INJECTION PARENTERAL 0.25 % 10MILLILITER",
+  "price_explanation": "n/a",
+  "confidence": 0.82,
+  "reasoning": "WRONG FAMILY MEMBER on volume. The row names 0.25% in 10 mL PARENTERAL. monograph->>'generic_full' for the linked IRC 7621680078497132 (بوپیواکائین-آگتان) reads 'BUPIVACAINE HYDROCHLORIDE INJECTION PARENTERAL 0.25 % 20MILLILITER' — a 20 mL product, not the 10 mL the row states. Only two catalog rows are 0.25% + 10 mL + PARENTERAL: نامبوکایین 7446659288637214 (36,635, legacy vintage) and مارکووار 9861786233239735 (1,700,000). Same molecule, same salt, same form, same route, correct concentration AND correct volume, so identity is satisfied independently of price; the exact price agreement (1,700,000 = reference) then selects مارکووار over the legacy-priced نامبوکایین. Note 1,700,000 is the uniform current price across the whole bupivacaine injection family (0.5% 4 mL intraspinal and 0.5%/0.25% parenteral alike), so it corroborates rather than proves — but the volume evidence alone already disqualifies the current link. If the parent prefers a vintage-neutral target, نامبوکایین 7446659288637214 is the same 0.25%/10 mL product with a stale price.",
+  "evidence": "generic_full: linked 7621680078497132 = '...0.25 % 20MILLILITER'; proposed 9861786233239735 = '...0.25 % 10MILLILITER'; alt 7446659288637214 = '...0.25 % 10MILLILITER' @36,635"
+ },
+ {
+  "id": "tamin:01491",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.9,
+  "reasoning": "Identity is exact and confirmed at full granularity: linked IRC 4018201783187427 has generic_full 'ERYTHROMYCIN GEL TOPICAL 2 % 30GRAM', matching the row's molecule, 2% strength, 30 g tube, gel form and topical route exactly. No relink candidate exists — the 4% gels are a different strength and the SOLUTION rows are a different form, both excluded by the rules. No pack explanation: ratio 80.1 is not a plausible pack count and topical tubes are dispensed as one unit. Three current-vintage rows with the identical generic_full string (5456258366270097 and 3595228373164413 اریترومایسین مدیفارم, 3322514457494096 اریترو ژل) sit at exactly 585,000 — the insurer's reference to the rial. Our 7,300 is simply an old price on an old record (no package_count, shared only by the other legacy row 4487055352338395 at the same 7,300).",
+  "evidence": "2% 30 g gel current rows all = 585,000 (= reference); legacy rows 4018201783187427 / 4487055352338395 = 7,300; 4% gels sit separately at 572,995 legacy / 611,000 current"
+ },
+ {
+  "id": "tamin:00229",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.88,
+  "reasoning": "Identity is exact: linked IRC 0000000294960585 has generic_full 'CEFOTAXIME (AS SODIUM) INJECTION, POWDER, FOR SOLUTION PARENTERAL 500 mg', matching the row token-for-token. The only other strength in the family is 1 g, which the row does not name, so no relink is available. Not pack-vs-unit: ratio 54.7 is not a plausible vial pack count, and decisively, nine current-vintage rows carry the identical price 1,450,000 while their package_count values range over 1, 12, 13, 20, 25 and 500 — a price that is invariant to pack size cannot be a pack price, so package_count here is unreliable metadata. That leaves staleness: the three legacy rows (0000000294960585, 2492271170582939, 7081708822053775) all sit at 26,500 while every current row for the same 500 mg vial sits at 1,450,000. Caveat for the parent: 1,450,000 rial for a single 500 mg cefotaxime vial is high for the Iranian market, so the current cluster may itself be package-priced with a corrupt package_count — do not copy the reference onto a per-vial field without checking the price basis.",
+  "evidence": "500 mg legacy trio = 26,500; nine current 500 mg rows = 1,450,000 across package_count 1/12/13/20/25/500; 1 g family = 450,900 legacy vs 1,800,000 current"
+ },
+ {
+  "id": "tamin:00277",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.87,
+  "reasoning": "Identity is exact and the row's own trailing label is the only oddity. Linked IRC 3063836209300383 has generic_full 'CHLORPROMAZINE HYDROCHLORIDE INJECTION INTRAMUSCULAR 25 mg/1mL 2MILLILITER', matching the row header (25 mg/1mL, 2 mL, INJECTION, INTRAMUSCULAR) exactly; the row's trailing legacy string '50MG/4ML' is internally inconsistent with its own header (25 mg/mL x 2 mL = 50 mg/2 mL) and no 4 mL chlorpromazine ampoule exists in the catalog or on the Iranian market, so I read it as a garbled label, not a real 4 mL product. The whole injectable family is only three rows, all 25 mg/1mL 2 mL, so there is no other family member to relink to; the TABLET rows are excluded by form. No pack explanation (ratio 46.4 is not a pack count). The two current rows سایکوکالم 5585812768417938 and نورمازین 6478908463627745 carry the same generic_full and sit at exactly 650,000 = the reference, while our legacy row sits at 14,000.",
+  "evidence": "generic_full identical across all three injection rows; 3063836209300383 = 14,000 (legacy, no package_count) vs 5585812768417938 / 6478908463627745 = 650,000 (= reference, package_count 10)"
+ },
+ {
+  "id": "tamin:00291",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.85,
+  "reasoning": "The apparent strength mismatch is a notation difference, not a different product. The row says 100 mg/1mL in 2 mL; the linked IRC 9771113293402946 records strength as '200 mg' (total ampoule content) and its sibling legacy row is literally named 'سایمتدین 200م گ آمپول' — 200 mg per 2 mL IS 100 mg/mL, the same ampoule. The five current rows spell it the other way and their generic_full reads 'CIMETIDINE INJECTION PARENTERAL 100 mg/1mL 2MILLILITER', i.e. the identical product. So this is not a wrong-family-member case and a relink would be a lateral move between two records of the same item. Not pack-vs-unit either: ratio 68.2 is not an ampoule pack count (Iranian norms 5/10). Staleness explains it: the two legacy rows sit at 8,800 and all five current rows at exactly 600,000 = the reference. If the parent wants the row anchored to a record that will carry a live price, 3396458872169987 is the same product with the current price — but the existing link is not wrong.",
+  "evidence": "legacy 9771113293402946 / 7314990912577059 = 8,800, strength '200 mg', no generic_full; current x5 = 600,000, generic_full '...100 mg/1mL 2MILLILITER'"
+ },
+ {
+  "id": "tamin:00419",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "implied_pack_size": 100,
+  "confidence": 0.76,
+  "reasoning": "Identity is exact — linked IRC 6309383810876275 and the four current rows share the identical generic_full 'DIAZEPAM TABLET ORAL 2 mg', so there is no family member to relink to (5 mg and 10 mg are different strengths the row does not name). The reference 23,000 equals to the rial the price of all four current 2 mg rows (4895403355404423, 0603591022583042, 1197822794877804, 9729220935229566), each with package_count 100, versus 430 on the two legacy rows. Pack alone does not explain it: 430 x 100 = 43,000, not 23,000, and the ratio is 53.5, not a pack count. Most likely a compound effect — the current cluster appears to be package-priced (100 tablets) while our legacy row is per-tablet, on top of a vintage difference. I flag one unresolved oddity the parent should not paper over: under a pack reading the current price implies 230 rial/tablet, BELOW the legacy 430 rial/tablet, and the same inversion appears at 5 mg (520 legacy vs 25,000/100 = 250). Nominal Iranian drug prices do not fall, so the two clusters are not on the same unit basis. Verdict keep is safe regardless; the price basis needs a separate ruling.",
+  "evidence": "2 mg: legacy 6309383810876275 / 3199757411598393 = 430 (no package_count); current x4 = 23,000 (package_count 100, = reference). Same inversion at 5 mg (520 vs 25,000/100) and 10 mg (27,000/100)"
+ },
+ {
+  "id": "tamin:00379",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.74,
+  "reasoning": "Identity is exact: linked IRC 1826182554972746 (دانوژن) has generic_full 'DANAZOL CAPSULE ORAL 100 mg', matching the row's molecule, strength, form and route. Critically, no relink is permissible — the row names 100 mg and the 200 mg siblings priced at 355,309 are a different strength, which the rules forbid using however tempting the price proximity. Unlike the rest of this batch the reference 273,000 matches NO catalog row: the 100 mg cohort is dispersed (0, 8,150, 8,150, 27,000, 33,900, 56,000, 326,000, null), so there is no regulated single price to anchor on. Two things still point to staleness rather than a mismatch: our 8,150 is the oldest end of that spread, and 273,000 is 0.77x the uniform 200 mg price of 355,309 — a normal strength-to-strength ratio for an Iranian price list, so the reference is a credible current 100 mg price. The nearest catalog row is دانوژن 1232230068975296 at 326,000 (same brand, same strength, current vintage), 19% above the reference — consistent with the insurer list and our catalog being different snapshots. Confidence is moderate because no exact price corroboration exists.",
+  "evidence": "100 mg cohort spans 8,150 to 326,000 with no 273,000; 200 mg uniformly 355,309; reference/200mg = 0.77; nearest row 1232230068975296 = 326,000"
+ },
+ {
+  "id": "tamin:00137",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.68,
+  "reasoning": "Identity is exact where it matters: linked IRC 0907632767301049 (پانوکسیل 10% ژل) has generic_full 'BENZOYL PEROXIDE GEL TOPICAL 10 % 30GRAM', matching the row's 10% strength, 30 g tube, gel form and topical route precisely — so the link is right and the row is not a wrong-family-member case. Beware the strength column in this family: it is corrupted, with rows named 5% (بنزوئیل پروکساید 5%, پانوکسیل 5%, PANGEL 5% 30G) all carrying strength '10 %'. I relied on name_fa plus generic_full instead. The price side is genuinely weaker than elsewhere in this batch: the 10%/30 g cohort is dispersed (4,983 / 6,800 / 30,900 / 46,000 / 500,000 / 6,650,000), so there is no uniform regulated price, and the two rows matching the reference exactly (پنوکساید 5432663629600458 and 1110717969233836 at 900,000) have NO generic_full, so I cannot confirm they are 30 g tubes rather than another size. I did not relink to them: that would be a brand swap on price evidence alone, with the tube size unverified, against a link whose size is verified. Staleness remains the best explanation (30,900 legacy vintage vs current 10% gels at 500,000-900,000), but the exact reference figure is not corroborated for this specific IRC.",
+  "evidence": "linked generic_full = 'BENZOYL PEROXIDE GEL TOPICAL 10 % 30GRAM'; پنوکساید 10% rows = 900,000 (= reference) but generic_full NULL; پنژل 10% 30GRAM = 500,000, 10% 60GRAM = 570,000; strength column mislabels several 5% products as '10 %'"
+ },
+ {
+  "id": "tamin:00972",
+  "verdict": "keep",
+  "price_explanation": "stale",
+  "confidence": 0.82,
+  "reasoning": "Identity is exact: the row is PERPHENAZINE 2 mg ORAL TABLET and the linked IRC 0665622883056978 is perphenazine 2 mg TABLET (Daroupakhsh), monograph generic_full = 'PERPHENAZINE TABLET ORAL 2 mg'. There is no strength/form/route discrepancy, so there is nothing to relink to — every other 2 mg row is the same product from a different manufacturer. Pack arithmetic does NOT explain the gap: if 850 were a per-tablet price, a 100-tablet pack would be 85,000, far above the 25,000 reference, and Iranian regulated prices do not fall nominally. So 850 is a legacy figure on a record that carries no package_count at all, while the reference 25,000 is exactly the current announced price of the 100-tablet pack on all eight current 2 mg rows. Classic stale announced price on an old cheap generic; ratio 29.4 is pure price drift, not a mismatch.",
+  "evidence": "Legacy rows 0665622883056978 (دارو پخش) and 2731493499871284 (خوارزمی): 2 mg TABLET, announced_price 850, package_count NULL. Eight current rows (2140958633530184, 4157403480156290, 6146605380349014, 3781713729266609, 8473520381661668, 4973276986474972, 1619351438631414, 3356958796694258): 2 mg TABLET, announced_price 25000, package_count 100 — equal to the tamin reference to the rial."
+ },
+ {
+  "id": "tamin:00973",
+  "verdict": "relink",
+  "relink_irc": "8268203865953118",
+  "relink_name": "پرفنازین 4 mg TABLET (perphenazine, pack 100, 34,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.95,
+  "reasoning": "Wrong family member on strength. The row states 4 MG; the link points at the 2 mg tablet (0665622883056978). The catalog holds eight perphenazine 4 mg oral tablet rows, all announced at 34,000, and the reference price is 34,000 exactly. Same molecule, same dosage form (TABLET), same route (ORAL) — only the strength is corrected, which is precisely what the row names. Choosing a package_count=100 record so the price basis is explicit (the 34,000 is a 100-tablet pack price, i.e. 340/tablet).",
+  "evidence": "8268203865953118 | پرفنازین | perphenazine | 4 mg | TABLET | 34000 | pack 100 | generic_full 'PERPHENAZINE TABLET ORAL 4 mg'. Interchangeable equivalents at the same price/pack: 8740560727157982, 1690749012610678, 8916813344614226, 9365809263288711, 4226381345790433. Legacy no-pack 4 mg rows 2025869941259785 / 8755876567556463 also sit at 34,000, corroborating the price."
+ },
+ {
+  "id": "tamin:00975",
+  "verdict": "relink",
+  "relink_irc": "5223345087368294",
+  "relink_name": "پرفنازین 8 mg TABLET (perphenazine hydrochloride, pack 100, 44,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.92,
+  "reasoning": "Wrong family member on strength. The row states 8 MG; the link points at the 2 mg tablet. The 8 mg strength does exist in the catalog, filed under generic_name 'perphenazine hydrochloride' — the hydrochloride salt of the same molecule, which the salt-form rule permits; the dosage form (TABLET) and route (ORAL) are unchanged, and the monograph generic_full reads 'PERPHENAZINE TABLET ORAL 8 mg'. Seven current 8 mg rows are announced at 44,000 with package_count 100, matching the 44,000 reference exactly. The 8 mg strength never appeared in the supplied sibling list, which is why the matcher fell back to 2 mg.",
+  "evidence": "5223345087368294 | پرفنازین | perphenazine hydrochloride | 8 mg | TABLET | 44000 | pack 100 | generic_full 'PERPHENAZINE TABLET ORAL 8 mg'. Equivalents: 4846847507562865, 5350287020532968, 6810292880435304, 6156154730632984, 1297593897215062, and brand 1077507437940204 (مزین). Legacy 8 mg rows 8299480615244483 / 4374303240404639 sit at 41,496 with no pack."
+ },
+ {
+  "id": "tamin:06170",
+  "verdict": "relink",
+  "relink_irc": "7597649192325616",
+  "relink_name": "اپیلیم / EPILIM — valproate sodium 200 mg/5mL, 300 mL SYRUP (Unither Pharma, 22,220,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.85,
+  "reasoning": "Wrong family member on VOLUME. The row names a 300 mL bottle at 200 mg/5mL; the linked IRC 6979015709410998 is name_en 'VALPROATE SODIUM (RAZAK) 200/5ML 120ML SYRUP' — right concentration, wrong bottle (120 mL). The sibling list hid this because the volume lives only in monograph->>'generic_full'. Filtering the catalog on that field, exactly four 200 mg/5mL syrups are 300 mL: Wockhardt 6092208976426829 (price 0, unusable), two Epilim rows at 718,000, and Epilim 7597649192325616 at 22,220,000 — equal to the reference to the rial. An eight-digit rial reference at 90% insurer share is consistent with an imported branded syrup, not a domestic generic. Molecule, concentration, dosage form, route and volume all match the relink target. CAVEAT worth a separate nfi_integrity look: our catalog carries two different prices (718,000 vs 22,220,000) for what appears to be the same Unither/Epilim 300 mL import — that internal disagreement is why I am at 0.85 rather than higher, though it does not affect the identity decision.",
+  "evidence": "Linked: 6979015709410998 name_en 'VALPROATE SODIUM (RAZAK) 200/5ML 120ML SYRUP', 40,000, no pack. Relink target: 7597649192325616 | اپیلیم | Unither Pharma | 200 mg/5mL | SYRUP | 22,220,000 | pack 1 | generic_full 'VALPROATE SODIUM SYRUP ORAL 200 mg/5mL 300MILLILITER'. Other 300 mL rows: 9290352798752548, 8297898357374644 (718,000), 6092208976426829 (Wockhardt, price 0)."
+ },
+ {
+  "id": "tamin:52064",
+  "verdict": "relink",
+  "relink_irc": "5838436679902562",
+  "relink_name": "سیمیوال / SIMIVAL — valproate sodium 200 mg/5mL, 250 mL SYRUP (1,550,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.9,
+  "reasoning": "Wrong family member on VOLUME. The row names a 250 mL bottle at 200 mg/5mL; the link points at 6979015709410998, the 120 mL Razak bottle. Exactly two catalog products are 200 mg/5mL in a 250 mL bottle — سیمیوال 5838436679902562 and رهاکین 8519392148796781 — and both are announced at 1,550,000, equal to the reference. The other 250 mL valproate syrups in the catalog (اورفیریل 5498265099350375, اورفیریل سافت 1343422169820348, والپورات سدیم 3001090111330612) are 300 mg/5mL, a different concentration, so they are correctly excluded. Same molecule, concentration, form, route and the exact volume named by the row. The two candidates are interchangeable at identical price; either may be used.",
+  "evidence": "5838436679902562 | سیمیوال | زاویه دارویی طب آریانا | 200 mg/5mL | SYRUP | 1,550,000 | pack 1 | generic_full 'VALPROATE SODIUM SYRUP ORAL 200 mg/5mL 250MILLILITER'. Equivalent: 8519392148796781 (رهاکین, same volume/price)."
+ },
+ {
+  "id": "tamin:07669",
+  "verdict": "relink",
+  "relink_irc": "9404955699012383",
+  "relink_name": "والپروات سدیم — valproate sodium 200 mg/5mL, 120 mL SYRUP (لابراتوارهای رازک, 970,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.75,
+  "reasoning": "The row names a 120 mL bottle at 200 mg/5mL. The linked IRC 0309825596876127 (Shafa) has NO recorded volume anywhere — name_en is 'VALPROATE SODIUM-SHAFA® 200MG/5ML SYRUP', monograph generic_full is NULL, package_count NULL, price 13,600 — so its identity cannot be confirmed as 120 mL, and its legacy neighbour 3878628688949289 (Razak) is explicitly a 60 mL bottle, proving that legacy domestic valproate syrup rows are not uniformly 120 mL. Four current records state 120 mL explicitly and are announced at exactly 970,000, matching the reference to the rial. Relinking to a record whose stated volume equals the volume the row names is strictly safer than leaving the row on a volume-unknown stub. Honest alternative reading: if the Shafa bottle is in fact 120 mL, this is a 'keep + stale' (13,600 is a years-old price) rather than a relink — but the relink carries no identity risk, since the target is the same molecule, concentration, dosage form and route, at the exact volume stated.",
+  "evidence": "9404955699012383 | والپروات سدیم | لابراتوارهای رازک | 200 mg/5mL | SYRUP | 970,000 | pack 1 | generic_full '... 200 mg/5mL 120MILLILITER'. Equivalents at 970,000/120 mL: 3134383966537691 (دنیای بهداشت), 3474544383770160 (عبیدی), 6665650076051445 (بهسا). Contrast legacy 3878628688949289 = 'VALPROATE SODIUM 200MG/5ML 60ML SYRUP'."
+ },
+ {
+  "id": "tamin:01057",
+  "verdict": "relink",
+  "relink_irc": "3785876810772137",
+  "relink_name": "پروژسترون — progesterone 25 mg/1mL, 1 mL INJECTION (ایران هورمون, pack 10, 300,000)",
+  "price_explanation": "n/a",
+  "confidence": 0.92,
+  "reasoning": "Wrong family member on strength. The row names PROGESTERONE 25 mg/1mL, 1 mL parenteral ampoule; the link points at the 50 mg/mL ampoule (8845557067367283). The catalog holds ten progesterone 25 mg/1mL 1 mL injection records, all announced at 300,000, matching the reference exactly. Same molecule, same form (INJECTION), same route (PARENTERAL), same 1 mL fill confirmed by monograph generic_full — only the concentration is corrected to what the row states. I chose Iran Hormone's plainly-named پروژسترون because the current (wrong-strength) link is also Iran Hormone, so the manufacturer identity is preserved. Note on basis: the 300,000 is a 10-ampoule pack price (30,000/ampoule), which is the same basis as the relink target's announced_price, so after the relink there is no residual gap. Excluded on the different-molecule rule: all hydroxyprogesterone caproate and medroxyprogesterone acetate rows, several of which sit near this price.",
+  "evidence": "3785876810772137 | پروژسترون | ایران هورمون | 25 mg/1mL | INJECTION | 300,000 | pack 10 | generic_full 'PROGESTERONE INJECTION PARENTERAL 25 mg/1mL 1MILLILITER'. Equivalents: 9077288840288226, 7885466659818625 (فموژکس-آی اچ), 9130271838020140 / 2129996171989426 (فرتیژست). Beware 1894686245330577 and 6901792182500036 (فرتیژست 25 mg/1mL but 2 MILLILITER fill) — wrong volume for this row."
+ },
+ {
+  "id": "tamin:01058",
+  "verdict": "keep",
+  "price_explanation": "other",
+  "implied_pack_size": 10,
+  "confidence": 0.75,
+  "reasoning": "Identity is correct: the row names PROGESTERONE 50 mg/1mL, 1 mL parenteral ampoule, and the linked 8845557067367283 is 'پروژسترون م ل/50م گ آمپول' (Iran Hormone) — progesterone 50 mg per mL ampoule. There is no different strength, form or route to move to, so this is not a wrong-family-member case (contrast tamin:01057, where the same IRC was reused for the 25 mg row and does need a relink). The 63.2x gap is TWO factors compounding, which is why no single rubric label fits: (a) pack-vs-unit — every current 50 mg/1mL record is package_count 10 at 600,000, i.e. 60,000 per ampoule, and 600,000 equals the reference exactly, so the insurer is quoting the 10-ampoule pack; and (b) staleness — our 9,500 is a years-old per-ampoule figure, ~6.3x below the current 60,000. Pack alone (10x) or drift alone (6.3x) does not close 63.2x; together they do (10 x 6.3 = 63). Data-hygiene note, not an identity correction: the linked row is a legacy stub with no package_count and no monograph volume, so applying a pack-level reference price against it will misprice a single ampoule downstream. If the pipeline supports consolidating onto a complete record, 3174862975332231 or 5991994555839132 (پروژسترون, ایران هورمون, 50 mg/1mL, 1 mL, pack 10, 600,000) are the same product with an explicit price basis.",
+  "evidence": "Linked: 8845557067367283 | ایران هورمون | strength '50 mg' | INJECTION | 9,500 | package_count NULL | monograph generic_full NULL. Current 50 mg/1mL 1 mL rows, all 600,000 / pack 10: 3174862975332231, 5991994555839132 (پروژسترون, ایران هورمون), 6796643393089619, 9141966556818411 (فرتیژست, ابوریحان), 2768903827073424 (فموژکس-آی اچ) — generic_full 'PROGESTERONE INJECTION PARENTERAL 50 mg/1mL 1MILLILITER'. Also 4811447523618914 (پروژسترون 50, کاسپین تأمین) at 591,434, no pack."
+ }
+]

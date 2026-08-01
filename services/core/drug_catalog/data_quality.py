@@ -133,6 +133,17 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
      "AND (coalesce((e.value->>'match_confidence')::numeric,0) >= 0.90 "
      "     OR e.value->>'match_method' IN ('code','crosswalk','irc')) "
      "AND coalesce(dc.package_count,0) <= 1"),
+    ("coverage_orphaned_by_newer_staging", "warn",
+     "live coverage the NEWEST staged run for that insurer no longer reproduces "
+     "— a link the matcher has stopped making, still being quoted from",
+     "apply the newer run with remove_missing=true (it now clears the FULL set, "
+     "not the 50-row display sample)",
+     "SELECT count(*) FROM drug_catalog dc "
+     "JOIN LATERAL (SELECT r.insurer, r.staged FROM coverage_runs r "
+     "  WHERE r.status='parsed' AND r.staged IS NOT NULL "
+     "  ORDER BY r.started_at DESC LIMIT 1) newest ON true "
+     "WHERE jsonb_typeof(dc.coverage)='object' AND dc.coverage ? newest.insurer "
+     "AND NOT (newest.staged ? dc.irc)"),
     ("coverage_ref_price_no_announced", "info",
      "an insurer prices a product NFI does not — usually a lapsed registration "
      "still covered, or an NFI source gap",
