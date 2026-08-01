@@ -135,6 +135,28 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6d. Volume joined `ingredient_key` (2026-08-01)
+
+The matcher fix stopped wrong-volume LINKS, but `ingredient_key` was still
+`generic|strength|form`, so the ingredient GROUP — which drives coverage spread
+at apply time and the cheaper-alternatives pool — remained volume-blind.
+
+`ingredient_key` now appends `|<n>ml` **only when the product states a volume**.
+29,705 of 39,184 rows state none and keep exactly the key they had; the split is
+confined to rows carrying the evidence. Backfill: 9,479 keys recomputed,
+3,439 → 4,299 groups, after snapshotting all keys into
+`ingredient_key_backup_20260801`.
+
+Why it matters beyond tidiness — the methotrexate 10 mg/mL injection group held
+**17 products across 1 mL, 1.5 mL and 5 mL vials**. Asked for cheaper
+alternatives to ابترکس (a 5 mL vial at 6,970,000﷼), the system offered
+ابترکسات at 785,800﷼ — a **1.5 mL** vial. That is not a cheaper product, it is
+a third of the drug, and a substitution made on it under-dispenses by 3.3×. The
+pool is now 7 same-volume products.
+
+The same blindness put a 10 mL bupivacaine pack price onto 20 mL ampoules during
+the relinks; those 5 products now sit in two groups (3×20 mL, 2×10 mL).
+
 ## 6c. Volume became part of product identity (2026-08-01)
 
 «IOHEXOL 300 mg/1mL 10 mL» and «… 100 mL» share a molecule, a form, a route and

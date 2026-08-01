@@ -142,3 +142,44 @@ def test_a_single_volume_claimant_is_not_a_collision():
     out = [_link("X 1 mg 10 mL SOLUTION", stub, 1.0, "code"),
            _link("X 1 mg 10 mL SOLUTION SECOND BRAND", stub, 1.0, "code")]
     assert ci._volume_collision_pass(out) == 0
+
+
+# ── ingredient_key ──────────────────────────────────────────────────────────
+def test_ingredient_key_separates_volumes():
+    """A 50 mL vial and a 100 mL vial of the same concentration are not
+    interchangeable: the insurer prices them separately, so coverage must not
+    spread between them, and neither may be offered as the other's cheaper
+    alternative."""
+    a = rec("A", "iohexol", "300 mg/1mL", "INJECTION",
+            generic_full="IOHEXOL INJECTION PARENTERAL 300 mg/1mL 50MILLILITER")
+    b = rec("B", "iohexol", "300 mg/1mL", "INJECTION",
+            generic_full="IOHEXOL INJECTION PARENTERAL 300 mg/1mL 100MILLILITER")
+    assert a.ingredient_key != b.ingredient_key
+    assert a.ingredient_key.endswith("|50ml")
+    assert b.ingredient_key.endswith("|100ml")
+
+
+def test_a_volume_less_row_keeps_the_key_it_always_had():
+    """29,705 of 39,184 catalog rows state no volume. Appending an empty
+    segment would rekey every one of them for nothing — and silently orphan the
+    coverage keyed to the old value."""
+    from services.core.drug_catalog.schema import ingredient_key as ik
+    stub = rec("S", "iohexol", "300 mg", "INJECTION")
+    assert stub.ingredient_key == ik("iohexol", "300 mg", "INJECTION")
+    assert not stub.ingredient_key.endswith("ml")
+
+
+def test_same_volume_written_differently_still_groups():
+    a = rec("A", "x", "1 mg/1mL", "SOLUTION", generic_full="X SOLUTION 1 mg/1mL 250MILLILITER")
+    b = rec("B", "x", "1 mg/1mL", "SOLUTION", generic_full="X SOLUTION 1 mg/1mL 250 mL")
+    c = rec("C", "x", "1 mg/1mL", "SOLUTION", generic_full="X SOLUTION 1 mg/1mL 0.25LITER")
+    assert a.ingredient_key == b.ingredient_key == c.ingredient_key
+
+
+def test_the_concentration_denominator_never_becomes_the_group_volume():
+    """«2 mg/1mL» with no stated fill must not group as a 1 mL presentation —
+    that would split every concentration-labelled product away from its own
+    volume-less siblings."""
+    r = rec("R", "lorazepam", "2 mg/1mL", "INJECTION",
+            generic_full="LORAZEPAM INJECTION PARENTERAL 2 mg/1mL")
+    assert not r.ingredient_key.endswith("ml")

@@ -294,9 +294,10 @@ async def apply_repairs(db, ircs: list[str], *, staff_id=None) -> dict:
             setattr(row, f, v if v is not None else None)
             await set_override(db, irc, f, v, reason="nfi_integrity:spliced_page",
                                staff_id=staff_id)
-        row.ingredient_key = ingredient_key(row.generic_name or "",
-                                            row.strength or "",
-                                            row.dosage_form or "")
+        row.ingredient_key = ingredient_key(
+            row.generic_name or "", row.strength or "", row.dosage_form or "",
+            # volume too, or a repaired row would rejoin a group of a different size
+            f"{row.strength or ''} {(row.monograph or {}).get('generic_full') or ''}")
         # Coverage was matched against the OLD (foreign) identity — its
         # reference_price/share belong to the other drug (ranitidine 150 tab
         # wearing follitropin's 16,425,650﷼). Identity changed ⇒ that link is
