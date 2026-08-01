@@ -38,8 +38,20 @@ async def fetch_by_irc(db: AsyncSession, ircs: list[str]) -> dict[str, CatalogRe
     return {r.irc: _to_record(r) for r in rows}
 
 
-async def fetch_all(db: AsyncSession) -> list[CatalogRecord]:
-    rows = (await db.execute(select(DrugCatalogItem))).scalars().all()
+async def fetch_all(db: AsyncSession, include_excluded: bool = False) -> list[CatalogRecord]:
+    """Every catalog product the matcher may consider.
+
+    Rows carrying `monograph.excluded` are withheld by default. NFI publishes
+    junk of its own — three «لورا تست» loratadine rows on synthetic IRCs
+    (1000020000300004-6), a placeholder IRC 1234567890123456 on four pages — and
+    the harvester ingests it faithfully. On 2026-08-01 a real tamin formulary row
+    was found linked to one of those test products, carrying live coverage at
+    70%. Flagging them is not enough: unless they are withheld HERE, the next
+    import simply matches them again."""
+    q = select(DrugCatalogItem)
+    if not include_excluded:
+        q = q.where(DrugCatalogItem.monograph["excluded"].is_(None))
+    rows = (await db.execute(q)).scalars().all()
     return [_to_record(r) for r in rows]
 
 

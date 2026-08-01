@@ -146,8 +146,18 @@ CHECKS: list[tuple[str, str, str, str, str]] = [
      "  SELECT DISTINCT ON (insurer) insurer, staged FROM coverage_runs "
      "  WHERE staged IS NOT NULL AND status IN ('parsed','approved') "
      "  ORDER BY insurer, started_at DESC) "
+     # An OWNER relink deliberately writes coverage the staging did not produce.
+     # Counting it as an orphan would make every owner correction look like drift
+     # and would eventually get the check ignored.
      "SELECT count(*) FROM drug_catalog dc JOIN newest n ON dc.coverage ? n.insurer "
-     "WHERE jsonb_typeof(dc.coverage)='object' AND NOT (n.staged ? dc.irc)"),
+     "WHERE jsonb_typeof(dc.coverage)='object' AND NOT (n.staged ? dc.irc) "
+     "AND coalesce(dc.coverage->n.insurer->>'match_method','') <> 'owner_relink'"),
+    ("excluded_row_carrying_coverage", "critical",
+     "a product withdrawn from matching must never be quoted from — NFI's own "
+     "test rows were found holding live insurer coverage at 70%",
+     "clear the coverage; repo.fetch_all withholds these from the matcher",
+     "SELECT count(*) FROM drug_catalog WHERE monograph->'excluded' IS NOT NULL "
+     "AND jsonb_typeof(coverage)='object' AND coverage <> '{}'::jsonb"),
     ("coverage_ref_price_no_announced", "info",
      "an insurer prices a product NFI does not — usually a lapsed registration "
      "still covered, or an NFI source gap",

@@ -513,3 +513,24 @@ async def test_applying_a_run_does_not_rule_on_untouched_review_rows(db_session)
     assert got.get("9001") == "confirmed"         # accepted → durable
     assert got.get("9002") == "rejected"          # explicitly refused → durable
     assert "9003" not in got                      # untouched → still in the queue
+
+
+async def test_excluded_rows_are_withheld_from_the_matcher(db_session):
+    """NFI publishes test rows of its own («لورا تست» on synthetic IRCs). One was
+    found on 2026-08-01 holding real tamin coverage at 70%. Flagging is not
+    enough — unless fetch_all withholds them, the next import re-matches them."""
+    from shared.models.drug_catalog import DrugCatalogItem
+    from services.core.drug_catalog import repo
+
+    db_session.add(DrugCatalogItem(irc=f"{PREFIX}REAL", name_fa="واقعی",
+                                   generic_name="LORATADINE", ingredient_key="lor|10 mg|tab"))
+    db_session.add(DrugCatalogItem(irc=f"{PREFIX}FAKE", name_fa="لورا تست",
+                                   generic_name="LORATADINE", ingredient_key="lor|10 mg|tab",
+                                   monograph={"excluded": {"reason": "synthetic test row"}}))
+    await db_session.commit()
+
+    ircs = {r.irc for r in await repo.fetch_all(db_session)}
+    assert f"{PREFIX}REAL" in ircs
+    assert f"{PREFIX}FAKE" not in ircs                    # withheld from matching
+    all_ircs = {r.irc for r in await repo.fetch_all(db_session, include_excluded=True)}
+    assert f"{PREFIX}FAKE" in all_ircs                    # still visible when asked for

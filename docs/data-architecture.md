@@ -134,6 +134,43 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6b. The 2026-08-01 relinks
+
+All 16 relink proposals were verified deterministically against the catalog —
+same molecule, the strength/form/route/**volume** the formulary row names, and
+a target price equal to the insurer reference to the rial. None was refuted.
+The pattern was uniform: the matcher had fallen back to a family member when the
+exact one was unreachable (lorazepam *injections* on a 1 mg oral *tablet*,
+perphenazine 4 mg and 8 mg both on the 2 mg, three valproate syrups on the wrong
+bottle volume).
+
+Four were more than a strength correction:
+
+* **clotrimazole** — the row is plain 1% vaginal cream; it was linked to
+  clotrimazole **+ betamethasone**, an antifungal combined with a steroid.
+* **ampicillin/sulbactam** — the row is the combination; it was linked to plain
+  ampicillin 1 g.
+* **glycine irrigation** — the old link's `name_fa` is «ایزوپروپیل الکل»
+  (isopropyl alcohol) while its `generic_name` says glycine. Same mislabelling
+  class as the immunoglobulin-called-albumin row.
+* **loratadine** — the old link was a **synthetic NFI test row** («لورا تست»,
+  IRC 1000020000300004). NFI publishes junk of its own (also a placeholder IRC
+  1234567890123456 on four pages) and the harvester ingests it faithfully; three
+  such rows were holding live salamat coverage at 70%.
+
+Two design corrections came out of applying them:
+
+1. **An owner relink is a statement about ONE product.** The first pass spread
+   each entry across the target's ingredient group, as `apply_run` does — and
+   because `ingredient_key` is generic|strength|form, **volume is not in the
+   key**, so a 1,700,000 price for a 10 mL bupivacaine pack landed on 20 mL
+   ampoules priced 19,000–38,857. The 179 spread entries were pulled back; only
+   the 16 named products keep the entry.
+2. **Flagging a bad row is not enough** — `repo.fetch_all` now withholds any row
+   carrying `monograph.excluded` from the matcher, or the next import simply
+   re-links it. A new critical check, `excluded_row_carrying_coverage`, watches
+   for the state that started this.
+
 ## 6a. The 2026-07-30 apply
 
 Both restaged runs were applied with `remove_missing`, after a full
@@ -238,7 +275,8 @@ gates every commit (`/release-check`).
 | ~~P1~~ **done** | 77 decision disagreements ruled · 204 spliced monographs repaired · 2,880 price gaps resolved/ruled | ✅ reconciliation `healthy: true`, 0 warn |
 | ~~P1b~~ **done** | the 499 weak-match products: **none survives**. 301 were stale links from the superseded 07-25 runs, 251 now carry certain identity, 23 fixed outright, 0 residual | ✅ verified against the restaged runs |
 | ~~P1d~~ **done** | both restaged runs applied with remove-missing: 51,909 coverage entries written, **10,074 stale links retired**, 487 further stale prices refreshed | ✅ reconciliation `healthy: true`; price_gap_extreme 499 → 12 |
-| P1c (owner) | 16 proposed relinks for the review queue — **proposals only, not adversarially verified** (`docs/review-2026-07-30-weak-link-adjudication.json`); 36 of the 68 queue rows are still unadjudicated | each proposal confirmed or rejected in «اجراها» before the runs are applied |
+| ~~P1c~~ **done** | all 16 relink proposals verified against the catalog and applied as owner decisions; 3 synthetic NFI test rows withdrawn from matching | ✅ reconciliation `healthy: true` |
+| P1e (owner) | ~~16 proposed relinks for the review queue~~ — **proposals only, not adversarially verified** (`docs/review-2026-07-30-weak-link-adjudication.json`); 36 of the 68 queue rows are still unadjudicated | each proposal confirmed or rejected in «اجراها» before the runs are applied |
 | P2 (proxy-dependent) | finish crawl 43k–70k; retry 631 failures; second audit pass over covered ground | succession detector armed |
 | P3 | schedule reconciliation after every apply/ingest automatically; surface the report as a panel card | report visible without CLI |
 | P4 | quote-path regression harness (pricing conservation against golden quotes) | release-check includes it |
