@@ -29,8 +29,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.platform.database import get_db
 from services.platform.auth import get_current_user
+from services.core.pharmacy_workflow.state_machine import (
+    InvalidTransitionError, RxStateMachine, TRANSITIONS)
+from shared.models.prescription import RxStatus
 
 router = APIRouter(tags=["pos"])
+
+# Derived from the state machine's own table rather than restated here, so the
+# two cannot drift apart. Today this is {filled, will_call}.
+DISPENSABLE_FROM: frozenset[str] = frozenset(
+    status.value for status, allowed in TRANSITIONS.items()
+    if RxStatus.DISPENSED in allowed
+)
 
 # ─── Pydantic schemas ──────────────────────────────────────────────────────────
 
@@ -56,6 +66,11 @@ class CollectPaymentResponse(BaseModel):
     tender_type:     str
     receipt_number:  str
     timestamp:       str
+    # Payment and dispensing are separate events. Taking the money never moves
+    # the medicine on its own, so the caller is told plainly what happened.
+    dispensed:               bool = False
+    rx_status:               str  = ""
+    dispense_blocked_reason: Optional[str] = None
 
 class EndOfDaySummary(BaseModel):
     date:            str
@@ -80,6 +95,7 @@ async def _get_rx_row(db: AsyncSession, rx_id: str) -> dict:
     """Fetch rx number and patient_pay from prescriptions + adjudication tables."""
     result = await db.execute(text("""
         SELECT p.rx_number,
+               p.status,
                COALESCE(a.patient_pay, 0) AS patient_pay
         FROM   prescriptions p
         LEFT JOIN (
@@ -119,6 +135,16 @@ async def _ensure_payment_events_table(db: AsyncSession) -> None:
         )
     """))
     await db.commit()
+
+def _staff_uuid(current: dict):
+    """Acting staff from the verified session. `body.collected_by` is
+    caller-supplied and must not become the actor on an audited transition."""
+    raw = (current or {}).get("staff_id") or (current or {}).get("sub")
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -165,22 +191,55 @@ async def collect_payment(
         receipt_mode=body.receipt_mode, now=now,
     ))
 
-    # Mark Rx as paid in prescriptions table (best-effort)
-    await db.execute(text("""
-        UPDATE prescriptions
-        SET    status     = 'dispensed',
-               updated_at = :now
-        WHERE  id = :rx_id
-          AND  status NOT IN ('cancelled', 'voided')
-    """), {"rx_id": body.rx_id, "now": now})
-
+    # The payment is a financial fact and is committed on its own. Paying for a
+    # prescription that is still being filled is ordinary practice, so the money
+    # is always recorded — what is withheld is the medicine, not the receipt.
     await db.commit()
+
+    # Dispensing is a SEPARATE event and goes through RxStateMachine, which
+    # validates the transition, hash-chains an RxStateEvent and applies the EPCS
+    # rules. This endpoint previously wrote status='dispensed' by raw SQL from
+    # any status except cancelled/voided — including DUR_HOLD, whose whole
+    # purpose is to stop a dispense. Collecting payment dispensed the medicine.
+    current_status = str(rx["status"])
+    dispensed = False
+    blocked_reason: Optional[str] = None
+
+    if current_status in DISPENSABLE_FROM:
+        try:
+            updated = await RxStateMachine(db).transition(
+                prescription_id=uuid.UUID(body.rx_id),
+                to_status=RxStatus.DISPENSED,
+                triggered_by_id=_staff_uuid(_current),
+                triggered_by_type="staff",
+                reason=f"POS payment {receipt_num} ({body.tender_type})",
+                metadata={"payment_id": payment_id,
+                          "receipt_number": receipt_num,
+                          "tender_type": body.tender_type},
+            )
+            await db.commit()
+            dispensed = True
+            current_status = str(updated.status)
+        except InvalidTransitionError as exc:
+            await db.rollback()
+            blocked_reason = str(exc)
+        except Exception as exc:            # EPCS, missing Rx, anything else
+            await db.rollback()
+            blocked_reason = f"{type(exc).__name__}: {exc}"
+    else:
+        blocked_reason = (
+            f"Prescription is '{current_status}'. Dispensing is only permitted "
+            f"from {sorted(DISPENSABLE_FROM)}. Payment has been recorded; the "
+            f"prescription must complete its workflow before it is handed over."
+        )
 
     return CollectPaymentResponse(
         payment_id=payment_id, rx_id=body.rx_id, rx_number=rx_num,
         patient_pay=patient_pay, amount_tendered=amount_tendered,
         change_due=change_due, tender_type=body.tender_type,
         receipt_number=receipt_num, timestamp=now.isoformat(),
+        dispensed=dispensed, rx_status=current_status,
+        dispense_blocked_reason=blocked_reason,
     )
 
 

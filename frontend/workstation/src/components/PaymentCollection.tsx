@@ -37,6 +37,13 @@ interface PaymentResult {
   tender_type:    string
   receipt_number: string
   timestamp:      string
+  // Payment and dispensing are separate events. The backend records the money
+  // but will not move an Rx to DISPENSED from a state the workflow forbids —
+  // DUR_HOLD above all. The counter must SEE that, or a blocked dispense
+  // becomes a handed-over bag.
+  dispensed?:               boolean
+  rx_status?:               string
+  dispense_blocked_reason?: string | null
 }
 
 interface Props {
@@ -140,10 +147,16 @@ export default function PaymentCollection({
     }).then(r => r.data as PaymentResult),
     onSuccess: (data) => { setResult(data); onComplete(data) },
     onError:   () => {
-      // Demo fallback when API not available
+      // Demo fallback when the API is unavailable. It must NEVER imply the
+      // prescription was dispensed: nothing reached the server, so no state
+      // machine validated anything and no DUR hold was consulted.
       const demo = { ...DEMO_RESULT, rx_id: rxId, rx_number: rxNumber,
         patient_pay: patientPay, amount_tendered: cashAmount || patientPay,
-        change_due: changeDue, tender_type: tenderType }
+        change_due: changeDue, tender_type: tenderType,
+        dispensed: false, rx_status: 'unknown — server unreachable',
+        dispense_blocked_reason:
+          'The payment did not reach the server. Nothing was recorded and the '
+          + 'prescription was not dispensed. Do not hand over the medication.' }
       setResult(demo)
       onComplete(demo)
     },
@@ -169,8 +182,29 @@ export default function PaymentCollection({
       <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm">
           <div className="p-5 text-center space-y-3">
-            <div className="text-4xl">🧾</div>
-            <h2 className="font-semibold text-gray-800">Payment Complete</h2>
+            <div className="text-4xl">{result.dispensed === false ? '⛔' : '🧾'}</div>
+            <h2 className="font-semibold text-gray-800">
+              {result.dispensed === false ? 'Payment taken — DO NOT HAND OVER' : 'Payment Complete'}
+            </h2>
+            {result.dispensed === false && (
+              <div className="text-left border-2 border-red-500 bg-red-50 rounded-lg p-3 space-y-1">
+                <p className="text-sm font-bold text-red-800">
+                  This prescription was NOT dispensed.
+                </p>
+                <p className="text-xs text-red-700">
+                  Status: <span className="font-mono font-semibold">{result.rx_status || 'unknown'}</span>
+                  {result.rx_status === 'dur_hold' &&
+                    ' — held for a drug-utilisation review. A pharmacist must resolve the hold.'}
+                </p>
+                {result.dispense_blocked_reason && (
+                  <p className="text-[11px] text-red-600 font-mono">{result.dispense_blocked_reason}</p>
+                )}
+                <p className="text-xs text-red-800 font-semibold">
+                  The payment is recorded. The medication must stay behind the counter
+                  until the prescription completes its workflow.
+                </p>
+              </div>
+            )}
             <div ref={receiptRef} className="font-mono text-xs text-left border border-dashed border-gray-300 p-3 rounded-lg space-y-1">
               <div className="text-center font-bold text-sm">PHARMPILOT PHARMACY</div>
               <div className="text-center text-gray-500">Receipt #{result.receipt_number}</div>
