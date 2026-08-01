@@ -89,7 +89,8 @@ fetch/upload → rows_from_upload/fetch_rows → merge_row_sets (multi-file, by 
   → insurer-mismatch guard (roles resolved FIRST; force to override)
   → resolve_roles / normalize_rows (Persian/English aliases, BOM, multi-tier cells)
   → link_rows (crosswalk short-circuit → code join → structural → ingredient
-               → price-picks-form; ingredient floor; FS verification demotes)
+               → price-picks-form; ingredient floor; FS verification demotes;
+               VOLUME guard + collision pass demote wrong-size presentations)
   → stage_run_payload: CoverageRun {stats, staged, review, unmatched, diff}
   → save_snapshots (full observed rows + per-row engine verdict)
   → HUMAN GATE: apply_run — nothing touches live coverage before it
@@ -133,6 +134,40 @@ lossless normalizations. `GET /pricing/data-quality/report`.
 * **Historical comparison** — «بازبینی تصمیم‌ها» re-derives every stored
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
+
+## 6c. Volume became part of product identity (2026-08-01)
+
+«IOHEXOL 300 mg/1mL 10 mL» and «… 100 mL» share a molecule, a form, a route and
+a dose set, so nothing downstream could tell them apart. 13 tamin rows collapsed
+onto one volume-less stub priced 1,440 rial against references up to 25,000,000
+(ratios to ×17,361).
+
+`structural_match` now parses **fill volume** as its own dimension:
+`volume_set()` strips the concentration denominator first (so «300 mg/1mL 50 mL»
+is a 50 mL vial, not a 1 mL one), `record_volumes()` reads it from
+`monograph.generic_full` — where NFI keeps it, never in `strength` — and
+`volumes_agree()` treats **silence as agreement**, because 44% of liquid catalog
+rows state no volume and refusing those would discard thousands of correct
+matches.
+
+Two mechanisms, because the data supports two kinds of evidence:
+
+| | when it fires | measured on the two live formularies |
+|---|---|---|
+| `_volume_guard` | both sides state a volume and they differ | **273** links demoted (cisplatin 100 mL on a 10 mL record, bimatoprost 3 mL on 0.5 mL, adenosine 1 mL *and* 4 mL both on a 2 mL record) |
+| `_volume_collision_pass` | the catalog row is silent, but rows naming different volumes all landed on it | **41** links demoted — including all 10 tamin iohexol rows |
+
+The guard sits in `link_rows`, not only in the structural lane, because of a
+measurement: of the 23 bad links left in the review queue, **zero** arrived
+structurally — all came via the code join, the ingredient lane or a
+crosswalk-derived guess. An exact IRC and an owner ruling are never demoted.
+
+The collision pass deliberately skips records that DO state a volume: the guard
+has already demoted exactly the contradicting rows there, and sweeping the group
+would punish the correct claimant (piperazine 100 mL is right, 60 mL is wrong).
+
+Effect: auto-applied links 4,677 → 4,375; the 302 difference moved to human
+review with the reason in the method name. Nothing was discarded.
 
 ## 6b. The 2026-08-01 relinks
 

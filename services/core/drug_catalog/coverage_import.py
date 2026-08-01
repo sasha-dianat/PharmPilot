@@ -310,6 +310,82 @@ class LinkResult:
         self.matched = self.record is not None and self.confidence >= 0.55
 
 
+def _volume_guard(row_text: str, rec, conf: float, method: str) -> tuple[float, str]:
+    """Demote a match whose FILL VOLUME contradicts the row's.
+
+    The structural matcher now refuses these outright, but the rows that
+    actually went wrong never reached it: of the 23 bad links left in the review
+    queue on 2026-08-01, every one arrived via the code join, the ingredient
+    lane or a crosswalk-derived guess — 0 via `structural`. So the guard belongs
+    HERE, where the record is finally chosen, whatever chose it.
+
+    Demote rather than discard: the candidate is still the closest thing found
+    and a reviewer benefits from seeing it, but a wrong-volume link must never
+    apply itself. «IOHEXOL 300 mg/1mL 100 mL» sat on a volume-less 1,440-rial
+    stub against a 25,000,000-rial reference.
+
+    An exact IRC and an owner crosswalk ruling are definitive and never demoted.
+    """
+    from . import structural_match as _sm
+    if rec is None:
+        return conf, method
+    row_vols = _sm.volume_set(row_text)
+    if not row_vols:
+        return conf, method
+    if _sm.volumes_agree(row_vols, _sm.record_volumes(rec)):
+        return conf, method
+    return min(conf, 0.60), f"{method}+volume_mismatch"
+
+
+def _volume_collision_pass(out: list) -> int:
+    """Demote links where rows of DIFFERENT volumes piled onto one product.
+
+    `_volume_guard` needs both sides to state a volume, and 44% of liquid
+    catalog rows state none — «آیوهگزول 300» is a bare stub with no
+    `generic_full` at all. So the worst case slips through it: 13 iohexol rows
+    naming 10/20/50/100 mL vials all landed on the same volume-less stub, with
+    references from 333,700 to 25,000,000 rial.
+
+    The evidence needed is inside the run itself. If several formulary rows each
+    name a DIFFERENT volume and all resolve to one record, at most one of them
+    can be right — whatever the catalog does or does not say. Demote them all to
+    review; no silent apply, and nothing is thrown away.
+
+    Returns how many links were demoted.
+    """
+    from . import structural_match as _sm
+    # ONLY where the catalog is silent. When a record states its own volume,
+    # `_volume_guard` has already demoted exactly the rows that contradict it —
+    # sweeping the whole group here would punish the correct claimant too
+    # (piperazine 100 mL is right, 60 mL is wrong, and both sat on the 100 mL
+    # record).
+    claims: dict[str, set] = {}
+    silent: dict[str, bool] = {}
+    for l in out:
+        if l.record is None:
+            continue
+        silent.setdefault(l.record.irc, not _sm.record_volumes(l.record))
+        v = _sm.volume_set(str(l.row.get("drug_name") or ""))
+        if v:
+            claims.setdefault(l.record.irc, set()).update(v)
+    contested = {irc for irc, vols in claims.items()
+                 if len(vols) > 1 and silent.get(irc)}
+    if not contested:
+        return 0
+    n = 0
+    for i, l in enumerate(out):
+        if l.record is None or l.record.irc not in contested:
+            continue
+        if not _sm.volume_set(str(l.row.get("drug_name") or "")):
+            continue
+        if l.method in ("irc", "crosswalk"):      # definitive; never demoted
+            continue
+        out[i] = LinkResult(l.row, l.record, min(l.confidence, 0.60),
+                            f"{l.method}+volume_collision")
+        n += 1
+    return n
+
+
 def link_rows(rows: list[dict], catalog: list[CatalogRecord],
               enrichments: dict | None = None,
               crosswalk: dict | None = None, insurer: str = "",
@@ -399,7 +475,8 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
             reg = code_registry.get(_code) if _code else None
             if reg:
                 if reg.get("irc") and reg["irc"] in by_irc:
-                    out.append(LinkResult(row, by_irc[reg["irc"]], 1.0, "code"))
+                    _c, _m = _volume_guard(name, by_irc[reg["irc"]], 1.0, "code")
+                    out.append(LinkResult(row, by_irc[reg["irc"]], _c, _m))
                     continue
                 rich = str(reg.get("name") or "")
                 if len(rich) > len(name) + 4:      # meaningfully more specified
@@ -587,8 +664,10 @@ def link_rows(rows: list[dict], catalog: list[CatalogRecord],
             # the crosswalk then makes it permanent (and tier-1 thereafter).
             method = f"{method}+code"
             score = min(score, 0.74)
+        score, method = _volume_guard(name, rec, score, method)
         out.append(LinkResult(row, rec if score >= 0.45 else None,
                               round(score, 3), method))
+    _volume_collision_pass(out)
     return out
 
 

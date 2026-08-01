@@ -44,6 +44,66 @@ _PCT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 _IU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:\[?\s*i\.?u\.?\s*\]?|units?)\b", re.I)
 
 
+# ── volume: the dimension the structural key was blind to ───────────────────
+# A vial's FILL VOLUME is not its strength. «IOHEXOL 300 mg/1mL 10 mL» and
+# «IOHEXOL 300 mg/1mL 100 mL» have identical dose sets ({300.0}) and identical
+# (generic, form) keys, so the matcher could not tell them apart — 13 tamin
+# formulary rows collapsed onto one stub, with references from 333,700 to
+# 25,000,000 rial (ratios up to x17,361). Volume therefore gets its own
+# namespace and its own agreement rule.
+#
+# It is a CONSTRAINT, not another dose token: dose agreement is "any dose on one
+# side matches any on the other" (names list several numbers), but two stated
+# volumes that differ mean two different products, full stop.
+_VOL_ML = {"ml": 1.0, "milliliter": 1.0, "millilitre": 1.0, "cc": 1.0,
+           "l": 1000.0, "liter": 1000.0, "litre": 1000.0}
+# a CONCENTRATION denominator («300 mg/1mL», «2 mg/1 mL») is not a fill volume —
+# strip those before looking for the volume the presentation actually has
+_CONC_RE = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:mcg|microgram|µg|ug|mg|kg|gr|g|%|\[?\s*i\.?u\.?\s*\]?|units?)"
+    r"\s*/\s*\d+(?:[.,]\d+)?\s*(?:ml|milliliters?|millilitres?|cc|l|liters?|litres?)\b",
+    re.I)
+_VOL_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(milliliters?|millilitres?|liters?|litres?|ml|cc|l)\b", re.I)
+
+
+def volume_set(text) -> set:
+    """Fill volumes in `text`, in mL. Concentration denominators are removed
+    first, so «300 mg/1mL 50 mL» yields {50.0} and not {1.0, 50.0}."""
+    s = _CONC_RE.sub(" ", str(text or ""))
+    out: set = set()
+    for num, unit in _VOL_RE.findall(s):
+        try:
+            out.add(round(float(num.replace(",", ".")) * _VOL_ML[unit.lower()], 4))
+        except (ValueError, KeyError):
+            continue
+    return out
+
+
+def volumes_agree(a: set, b: set, tol: float = 0.02) -> bool:
+    """True unless BOTH sides state a volume and none of them match.
+
+    Silence is not disagreement: most catalog rows never recorded a volume, and
+    refusing those would throw away every correct match we already make."""
+    if not a or not b:
+        return True
+    for x in a:
+        for y in b:
+            if abs(x - y) <= tol * max(x, y, 1e-9):
+                return True
+    return False
+
+
+def record_volumes(rec) -> set:
+    """Volumes a catalog record states. NFI keeps the presentation volume in
+    `monograph.generic_full` («… 300 mg/1mL 50MILLILITER»), never in `strength`,
+    which is why nothing downstream could see it."""
+    mono = getattr(rec, "monograph", None) or {}
+    text = " ".join(str(x) for x in (
+        getattr(rec, "strength", "") or "", mono.get("generic_full") or "") if x)
+    return volume_set(text)
+
+
 def dose_set(text) -> set:
     """Every dose in `text` as comparable tokens. Mass folds to mg (so 0.05 mg
     == 50 microgram compare equal); percentages and IU keep their own namespace
@@ -268,7 +328,8 @@ def parse_name(name: str, form_vocab: list[str]) -> dict:
         if cg and cg not in generics:
             generics.append(cg)
     return {"generics": generics, "form": form, "route": route,
-            "doses": dose_set(raw), "combo": len(generics) > 1}
+            "doses": dose_set(raw), "volumes": volume_set(raw),
+            "combo": len(generics) > 1}
 
 
 def components(text) -> list[str]:
@@ -303,7 +364,7 @@ def build_index(catalog) -> dict:
             continue
         form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
         doses = dose_set(getattr(rec, "strength", "") or "")
-        entry = (rec, doses, frozenset(comps))
+        entry = (rec, doses, frozenset(comps), record_volumes(rec))
         for cg in comps:                       # reachable by ANY of its components
             exact.setdefault((cg, form), []).append(entry)
             family.setdefault((cg, form_family(form)), []).append(entry)
@@ -335,19 +396,23 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
         return None, 0.0, ""
     form = parsed["form"]
     doses = parsed.get("doses") or set()
+    vols = parsed.get("volumes") or set()
     want = frozenset(generics)
     combo = len(want) > 1
 
     for level in ("exact", "family"):
         lookup_form = form if level == "exact" else form_family(form)
         for cg in generics:
-            for rec, cat_doses, comps in index[level].get((cg, lookup_form), []):
+            for rec, cat_doses, comps, cat_vols in index[level].get((cg, lookup_form), []):
                 # Ingredient sets must agree in BOTH directions: a combination
                 # never lands on a mono product, and a mono row never lands on a
                 # combination that merely contains it.
                 if comps != want:
                     continue
                 if doses and cat_doses and not doses_agree(doses, cat_doses):
+                    continue
+                # a 10 mL vial is not a 100 mL vial, however well the dose agrees
+                if not volumes_agree(vols, cat_vols):
                     continue
                 if doses and cat_doses:
                     conf = CONF_EXACT_DOSE if level == "exact" else CONF_FAMILY_DOSE
@@ -369,10 +434,12 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
         cands = index.get("salt", {}).get((g.split()[0], form)) or []
         widened = {cg for cg, _e in cands if cg.startswith(g + " ")}
         if len(widened) == 1:
-            for cg, (rec, cat_doses, comps) in cands:
+            for cg, (rec, cat_doses, comps, cat_vols) in cands:
                 if cg not in widened or len(comps) != 1:
                     continue
                 if doses and cat_doses and not doses_agree(doses, cat_doses):
+                    continue
+                if not volumes_agree(vols, cat_vols):
                     continue
                 return rec, CONF_SALT, f"salt-tolerant ({g} → {cg})"
     return None, 0.0, ""
