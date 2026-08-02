@@ -135,6 +135,36 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6f. The last 24 review rows (2026-08-01)
+
+Adjudicated by exhaustive catalog search on molecule + concentration +
+**volume** + form, not by name similarity. Artifact:
+`docs/review-2026-08-01-final-24-adjudication.json`.
+
+| verdict | n | what it means |
+|---|---|---|
+| **relink** | 6 | an exact dose+volume product exists and its price equals the reference — apomorphine 20 mL, ethosuximide 200 mL and nitroglycerin 5 mL match to the rial; insulin glulisine, poractant and propofol within 6–11% |
+| **catalog gap (iohexol)** | 6 | NFI holds only 3 iohexol rows, all volume-less, priced 850–1,440 rial. The 10/20/50/100 mL vials at 240/300/350 mg/mL are simply **not in the catalog** — nothing to link to, so the presentations become an NFI crawl work-list |
+| **blocked by a mislabel** | 2 | see below |
+| **price question** | 10 | identity exact, no volume to compare: pack-basis or a stale announced price |
+
+**A mislabel that hides 184 products.** The povidone rows could not be
+adjudicated because the catalog stores `generic_name = 'povidone'` on **184
+rows** whose own `generic_full` reads `POVIDONE IODINE`. Povidone (PVP) alone is
+an excipient; povidone-iodine is the antiseptic. The formulary says
+«POVIDONE IODINE», which canonicalises to `povidone iodine` and therefore never
+meets `povidone` — so 20 products of the exact 10% 3800 mL presentation the row
+names, all priced 23,786,000, are unreachable. Same defect class as the
+isopropyl-alcohol-called-glycine and immunoglobulin-called-albumin rows. Fixing
+the generic on those 184 rows unblocks both formulary rows at once.
+
+**A method note.** The first pass of this analysis reported "0 candidates" for
+every family, which would have made everything look like a catalog gap. The
+cause was in the analysis script, not the data: `record_volumes()` reads
+`monograph`, and the query had aliased that column, so every catalog volume read
+as empty. Volume must be read from `strength + monograph.generic_full` or not at
+all.
+
 ## 6e. Applying under the new grouping (2026-08-01)
 
 Both runs were restaged and re-applied with `remove_missing` after
