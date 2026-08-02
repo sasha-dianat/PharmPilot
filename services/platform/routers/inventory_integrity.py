@@ -428,7 +428,7 @@ async def list_approvals(
         "id": str(a.id), "irc": a.irc, "ndc11": a.ndc11,
         "movement_type": a.movement_type, "quantity": float(a.quantity),
         "reason": a.reason, "is_controlled": a.is_controlled, "status": a.status,
-        "requested_by": str(a.requested_by_id),
+        "requested_by": str(a.requested_by_id), "payload": a.payload,
         "created_at": a.created_at.isoformat() if a.created_at else None,
     } for a in rows], "count": len(rows)}
 
@@ -464,11 +464,64 @@ async def decide_approval(
         await db.commit()
         return {"id": str(a.id), "status": a.status, "stock_changed": False}
 
+    # A FIELD_EDIT carries no quantity: it is a correction that could put
+    # blocked stock back on the shelf (extending an expiry, releasing a recall),
+    # so it needs the same two signatures but applies to a column, not a lot
+    # balance. One queue, one set of rules, two kinds of change.
+    if a.movement_type == "FIELD_EDIT":
+        applied = await _apply_field_edit(db, a, staff)
+        a.status = "applied"
+        await db.commit()
+        return {"id": str(a.id), "status": a.status, "stock_changed": False,
+                "field_changed": applied}
+
     movement = await _apply_movement(db, a, staff)
     a.status = "applied"
     await db.commit()
     return {"id": str(a.id), "status": a.status, "stock_changed": True,
             "movement_id": str(movement.id), "event_hash": movement.event_hash}
+
+
+async def _apply_field_edit(db: AsyncSession, a: InventoryApproval,
+                            staff: Staff) -> dict:
+    """Apply an approved field correction, re-validating the policy at approval
+    time. The rules are checked again here because the row may have moved since
+    the request was raised — an approval is permission to make *this* change,
+    not permission to overwrite whatever is there now."""
+    from services.core.inventory import admin_rules as A
+
+    payload = a.payload or {}
+    field, new = payload.get("field"), payload.get("new")
+    if payload.get("table") != "inventory_lots" or not field:
+        raise HTTPException(422, "approval payload does not describe a lot field edit")
+
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == a.inventory_lot_id,
+        InventoryLot.pharmacy_id == a.pharmacy_id))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot no longer exists")
+    if field in A.LOT_LEDGER_ONLY_FIELDS or field not in A.EDITABLE:
+        raise HTTPException(422, f"{field} is not an approvable field edit")
+
+    current = getattr(lot, field, None)
+    if current != payload.get("old"):
+        # Someone changed it in the meantime. Re-applying blind would overwrite
+        # a change nobody approved.
+        cur_j = current.isoformat() if hasattr(current, "isoformat") else current
+        if cur_j != payload.get("old"):
+            raise HTTPException(409,
+                f"{field} changed since this approval was requested "
+                f"(now {cur_j!r}, request assumed {payload.get('old')!r}); "
+                f"raise a fresh request against the current value")
+
+    if field == "expiry_date" and isinstance(new, str):
+        from datetime import date as _date
+        new = _date.fromisoformat(new[:10])
+    setattr(lot, field, new)
+    lot.updated_by = staff.id
+    log.info("approved field edit %s on lot %s by %s (approval %s)",
+             field, lot.id, staff.id, a.id)
+    return {"field": field, "old": payload.get("old"), "new": payload.get("new")}
 
 
 async def _apply_movement(db: AsyncSession, a: InventoryApproval,

@@ -309,6 +309,28 @@ export const inventoryIntegrityApi = {
     apiClient.post(`/inventory/approvals/${id}/decide`, body),
 }
 
+// ── Inventory administration: search, view, correct, receive ──────────────
+export const inventoryAdminApi = {
+  items: (params: { q?: string; filter?: string; sort?: string
+                    limit?: number; offset?: number }) =>
+    apiClient.get('/inventory/admin/items', { params }),
+  filters: () => apiClient.get('/inventory/admin/filters'),
+  detail: (ndc11: string) => apiClient.get(`/inventory/admin/items/${ndc11}`),
+  editLot: (lotId: string, body: { field: string; value: unknown; reason: string }) =>
+    apiClient.patch(`/inventory/admin/lots/${lotId}`, body),
+  editStock: (ndc11: string, body: { field: string; value: unknown; reason: string }) =>
+    apiClient.patch(`/inventory/admin/stock/${ndc11}`, body),
+  bulkEdit: (body: { lot_ids: string[]; field: string; value: unknown; reason: string }) =>
+    apiClient.post('/inventory/admin/lots/bulk', body),
+  receive: (body: { ndc11: string; lot_number: string; expiry_date: string
+                    quantity: number; unit_cost?: number; irc?: string
+                    storage_location?: string; reason?: string }) =>
+    apiClient.post('/inventory/admin/receive', body),
+  writeOff: (body: { lot_id: string; movement_type: string; quantity: number
+                     reason: string }) =>
+    apiClient.post('/inventory/admin/write-off', body),
+}
+
 // ── Depot → shelf dual-verification replenishment ─────────────────────────
 export const depotApi = {
   listShelves: () => apiClient.get('/inventory/shelves'),

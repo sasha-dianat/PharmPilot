@@ -70,14 +70,17 @@ and verified present · **GAP** = designed here, not built.
 | R17 | Negative-stock prevention | brief §4 | **DONE** | CHECK constraint + no-clamp ledger |
 | R18 | Unit-conversion error detection | brief §4 | **DONE** | `check_unit_conversion`, 2 tests |
 | R19 | Duplicate/invalid record detection | brief §4 | **DONE** | `check_duplicate_lots`, 2 tests |
-| R20 | Bulk edit / fast admin search | brief §1 | **GAP→P3** | binding apply is bulk; general bulk editor not built |
+| R20 | Bulk edit / fast admin search | brief §1 | **DONE** | `inventory_admin.py` — one search box (name/IRC/NDC/GTIN/lot), 12 named filters with live counts, 6 sorts, bounded bulk edit; 42 tests |
 | R21 | Formulary sync versioning/rollback | brief §1 | **PRE** | `formulary_snapshots` (50,232), `price_history` SCD-2, `catalog_succession` |
-| R22 | Barcode / GTIN receiving | brief §2 | **GAP→P2** | resolver supports GTIN at 0.99; scan flow not built |
+| R22 | Barcode / GTIN receiving | brief §2 | **PARTIAL** | receiving endpoint live and ledger-backed; search box already classifies a scanned GTIN; hardware scan-to-field still P2 |
 | R23 | RFID / sensors / CV | brief §2 | **GAP→P4/P5** | see §6 division of responsibility |
 | R24 | Surveillance integration | brief §2 | **GAP→P4** | `docs/design/SURVEILLANCE_PLATFORM.md` (unapproved) |
-| R25 | Guided picking / layout optimisation | brief §3 | **GAP→P3** | FEFO pick order exists in the ledger; UI not built |
+| R25 | Guided picking / layout optimisation | brief §3 | **PARTIAL** | lots shown in FEFO order with blocked-reason per lot; picking route UI still P3 |
 | R26 | Fair operational KPIs | brief §3 | **DONE (principle)** | patterns attach to items, escalate to a reviewer, never score a person |
 | R27 | Supplier selection / cash flow / margin | brief §1 | **PRE/GAP** | `procurement.py` exists; multi-supplier optimisation not built |
+| R28 | Correction audit: who changed what, when, why | brief §1,§4 | **DONE** | every edit carries a mandatory reason; movement history rendered per item with actor and chain marker |
+| R29 | Goods receipt as a ledger event | brief §4 | **DONE** | `POST /admin/receive` → RECEIPT movement; past-dated expiry refused; one lot number cannot hold two expiries |
+| R30 | Admin panel cannot bypass inventory controls | derived | **DONE** | quantity fields unreachable from the panel (4 parametrised tests); sensitive edits routed to approval |
 
 ---
 
@@ -214,6 +217,7 @@ blocked on R1, not on model choice.**
 | Phase | Scope | Cost tier | Exit criteria |
 |---|---|---|---|
 | **P1 — done** | Ledger, reconciliation, counts, approvals, chain, formulary binding, schema | None (software) | 70 tests green; report runs on live data |
+| **P1b — done** | Admin panel: search/filter/sort/paginate, item drill-down with lots + full movement history, single and bulk correction, goods receipt, write-off request | None (software) | 42 further tests green (31 policy + 11 end-to-end on a real database); all 8 endpoints served |
 | **P2** | Dispense hook (R1); GTIN scan at receiving (R22); backfill 46 orphan fills as an approved batch | Barcode scanners ~$40 ea | `fill_without_movement` = 0 and stays 0 for 14 days |
 | **P3** | Wire ML detector; guided picking UI; bulk editor; supplier optimisation | None | Detector precision ≥ 0.6 on labelled history |
 | **P4** | Cold-chain sensors; controlled-area video tie-in | Sensors ~$60/fridge | Breach → quarantine within 5 min |

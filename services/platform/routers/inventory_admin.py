@@ -1,0 +1,617 @@
+"""Inventory administration — search, drill-down, correction, bulk edit, receiving.
+
+The working surface an administrator spends the day in. It is deliberately
+powerful, and it is safe for exactly one reason: **it cannot change a quantity**.
+
+Quantities move only through `services.core.inventory.ledger` — a receipt, a
+dispense, a counted variance, or an approved write-off — so every unit that ever
+entered or left has a movement row explaining it, chained and append-only. Field
+corrections (location, cost, par levels, formulary binding) apply immediately
+and are audited; corrections that could hide something (extending an expiry,
+releasing a recalled or quarantined lot) become approval requests in the same
+queue as write-offs.
+
+`services.core.inventory.admin_rules` holds that policy as pure functions, so
+each rule is provable by a test rather than being a branch inside a handler.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, timezone
+from typing import Any, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.core.inventory import admin_rules as A
+from services.core.inventory import ledger as L
+from services.platform.auth import require_permission
+from services.platform.database import get_db
+from services.platform.routers.inventory_integrity import append_movement, iso_utc
+from shared.models.auth import Staff
+from shared.models.inventory import (
+    DrugProduct, InventoryApproval, InventoryLot, StockLevel,
+)
+
+router = APIRouter()
+log = logging.getLogger(__name__)
+
+DEAD_STOCK_DAYS = 180
+EXPIRING_SOON_DAYS = 90
+
+
+# ── Search ────────────────────────────────────────────────────────────────
+
+def _filter_sql(f: str) -> str:
+    """SQL predicate for a named view. Kept beside `A.FILTERS` so a filter can
+    never appear in the UI without a definition here."""
+    today = "CURRENT_DATE"
+    return {
+        "all": "TRUE",
+        "below_par": "s.par_level_min IS NOT NULL AND agg.on_hand < s.par_level_min",
+        "out_of_stock": "COALESCE(agg.on_hand, 0) <= 0",
+        "expiring_soon": f"agg.next_expiry IS NOT NULL "
+                         f"AND agg.next_expiry <= {today} + CAST(:soon AS integer) "
+                         f"AND agg.next_expiry >= {today} AND agg.on_hand > 0",
+        "expired": f"agg.next_expiry IS NOT NULL AND agg.next_expiry < {today} AND agg.on_hand > 0",
+        "quarantined": "agg.quarantined_lots > 0",
+        "recalled": "agg.recalled_lots > 0",
+        "controlled": "dp.is_controlled = true",
+        "unbound": "s.irc IS NULL",
+        "dead_stock": "agg.on_hand > 0 AND (s.last_dispensed_at IS NULL "
+                      f"OR s.last_dispensed_at < NOW() - make_interval(days => CAST(:dead AS integer)))",
+        "cold_chain": "agg.breached_lots > 0",
+        "overstocked": "s.avg_daily_demand > 0 AND agg.on_hand / s.avg_daily_demand > 365",
+    }.get(f, "TRUE")
+
+
+_SORT_SQL = {
+    "name": "drug_name ASC",
+    "quantity": "COALESCE(agg.on_hand,0) DESC",
+    "expiry": "agg.next_expiry ASC NULLS LAST",
+    "value": "COALESCE(agg.value,0) DESC",
+    "days_supply": "days_supply ASC NULLS LAST",
+    "last_dispensed": "s.last_dispensed_at DESC NULLS LAST",
+}
+
+
+@router.get("/admin/items")
+async def search_items(
+    q: Optional[str] = Query(None, description="name, IRC, NDC, GTIN or lot number"),
+    filter: str = Query("all"),
+    sort: str = Query("name"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """One search box over every identifier an administrator might have in hand,
+    plus the named views that match the questions they actually ask."""
+    if filter not in A.FILTERS:
+        raise HTTPException(422, f"unknown filter {filter!r}")
+    if sort not in A.SORTS:
+        raise HTTPException(422, f"unknown sort {sort!r}")
+
+    parsed = A.normalize_query(q)
+    params: dict[str, Any] = {"pid": staff.pharmacy_id, "lim": limit, "off": offset,
+                              "soon": EXPIRING_SOON_DAYS, "dead": DEAD_STOCK_DAYS}
+
+    where = [_filter_sql(filter)]
+    if parsed["kind"] == "name":
+        where.append("(dp.generic_name ILIKE :q OR dp.brand_name ILIKE :q "
+                     "OR dc.name_fa ILIKE :q OR dc.brand_name ILIKE :q)")
+        params["q"] = f"%{parsed['value']}%"
+    elif parsed["kind"] in ("irc_or_ndc", "numeric"):
+        where.append("(s.ndc11 LIKE :q OR s.irc LIKE :q)")
+        params["q"] = f"%{parsed['value']}%"
+    elif parsed["kind"] == "gtin":
+        where.append("(dc.gtin = :qexact OR s.irc = :qexact)")
+        params["qexact"] = parsed["value"]
+    elif parsed["kind"] == "lot":
+        where.append("EXISTS (SELECT 1 FROM inventory_lots xl WHERE xl.ndc11 = s.ndc11 "
+                     "AND xl.pharmacy_id = s.pharmacy_id AND UPPER(xl.lot_number) LIKE :q)")
+        params["q"] = f"%{parsed['value']}%"
+
+    sql = f"""
+        WITH agg AS (
+            SELECT ndc11, pharmacy_id,
+                   SUM(quantity_on_hand)                              AS on_hand,
+                   SUM(quantity_on_hand * COALESCE(unit_cost, 0))     AS value,
+                   MIN(CASE WHEN quantity_on_hand > 0 THEN expiry_date END) AS next_expiry,
+                   COUNT(*)                                           AS lot_count,
+                   COUNT(*) FILTER (WHERE is_quarantined)             AS quarantined_lots,
+                   COUNT(*) FILTER (WHERE is_recalled)                AS recalled_lots,
+                   COUNT(*) FILTER (WHERE cold_chain_breach)          AS breached_lots
+            FROM inventory_lots
+            WHERE pharmacy_id = :pid AND is_deleted = false
+            GROUP BY ndc11, pharmacy_id
+        )
+        SELECT s.ndc11, s.irc,
+               COALESCE(dc.name_fa, dp.brand_name, dp.generic_name, s.ndc11) AS drug_name,
+               dp.generic_name, dp.strength, dp.dosage_form, dp.is_controlled,
+               dp.requires_refrigeration, dp.storage_condition, dp.lasa_group,
+               dc.package_count, dc.announced_price,
+               COALESCE(agg.on_hand, 0) AS on_hand, s.quantity_reserved,
+               s.quantity_on_order, s.par_level_min, s.par_level_max,
+               s.reorder_point, s.avg_daily_demand, s.last_dispensed_at,
+               COALESCE(agg.value, 0) AS value, agg.next_expiry,
+               COALESCE(agg.lot_count, 0) AS lot_count,
+               COALESCE(agg.quarantined_lots, 0) AS quarantined_lots,
+               COALESCE(agg.recalled_lots, 0) AS recalled_lots,
+               COALESCE(agg.breached_lots, 0) AS breached_lots,
+               CASE WHEN s.avg_daily_demand > 0
+                    THEN ROUND(COALESCE(agg.on_hand,0) / s.avg_daily_demand, 1) END AS days_supply,
+               COUNT(*) OVER () AS total_rows
+        FROM stock_levels s
+        LEFT JOIN agg ON agg.ndc11 = s.ndc11 AND agg.pharmacy_id = s.pharmacy_id
+        LEFT JOIN drug_products dp ON dp.id = s.drug_product_id
+        LEFT JOIN drug_catalog  dc ON dc.irc = s.irc
+        WHERE s.pharmacy_id = :pid AND {' AND '.join(where)}
+        ORDER BY {_SORT_SQL[sort]}
+        LIMIT :lim OFFSET :off"""
+
+    rows = (await db.execute(text(sql), params)).mappings().all()
+    total = rows[0]["total_rows"] if rows else 0
+
+    def out(r):
+        d = {k: v for k, v in dict(r).items() if k != "total_rows"}
+        for k in ("on_hand", "quantity_reserved", "quantity_on_order", "value",
+                  "par_level_min", "par_level_max", "reorder_point",
+                  "avg_daily_demand", "days_supply", "announced_price"):
+            if d.get(k) is not None:
+                d[k] = float(d[k])
+        for k in ("next_expiry", "last_dispensed_at"):
+            if d.get(k) is not None:
+                d[k] = d[k].isoformat()
+        d["expired"] = bool(d["next_expiry"] and
+                            date.fromisoformat(d["next_expiry"][:10]) < date.today())
+        return d
+
+    return {"items": [out(r) for r in rows], "total": total,
+            "limit": limit, "offset": offset,
+            "query": parsed, "filter": filter, "sort": sort}
+
+
+@router.get("/admin/filters")
+async def filter_counts(
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """How many items each named view holds, so the panel's chips carry live
+    counts instead of the administrator having to click each one to find out."""
+    params = {"pid": staff.pharmacy_id, "soon": EXPIRING_SOON_DAYS,
+              "dead": DEAD_STOCK_DAYS}
+    parts = [f"COUNT(*) FILTER (WHERE {_filter_sql(f)}) AS \"{f}\"" for f in A.FILTERS]
+    sql = f"""
+        WITH agg AS (
+            SELECT ndc11, pharmacy_id, SUM(quantity_on_hand) AS on_hand,
+                   MIN(CASE WHEN quantity_on_hand > 0 THEN expiry_date END) AS next_expiry,
+                   COUNT(*) FILTER (WHERE is_quarantined) AS quarantined_lots,
+                   COUNT(*) FILTER (WHERE is_recalled) AS recalled_lots,
+                   COUNT(*) FILTER (WHERE cold_chain_breach) AS breached_lots
+            FROM inventory_lots WHERE pharmacy_id = :pid AND is_deleted = false
+            GROUP BY ndc11, pharmacy_id)
+        SELECT {', '.join(parts)}
+        FROM stock_levels s
+        LEFT JOIN agg ON agg.ndc11 = s.ndc11 AND agg.pharmacy_id = s.pharmacy_id
+        LEFT JOIN drug_products dp ON dp.id = s.drug_product_id
+        WHERE s.pharmacy_id = :pid"""
+    row = (await db.execute(text(sql), params)).mappings().one()
+    return {"counts": {k: int(v) for k, v in row.items()},
+            "labels": A.FILTERS, "sorts": sorted(A.SORTS)}
+
+
+# ── Item detail: lots + full movement history ─────────────────────────────
+
+@router.get("/admin/items/{ndc11}")
+async def item_detail(
+    ndc11: str,
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything known about one item: its lots in FEFO order, its complete
+    movement history, and its formulary record."""
+    p = {"pid": staff.pharmacy_id, "ndc": ndc11}
+    head = (await db.execute(text("""
+        SELECT s.ndc11, s.irc, s.par_level_min, s.par_level_max, s.reorder_point,
+               s.avg_daily_demand, s.quantity_reserved, s.quantity_on_order,
+               s.last_dispensed_at, s.last_received_at,
+               dp.id AS drug_product_id, dp.generic_name, dp.brand_name, dp.strength,
+               dp.dosage_form, dp.is_controlled, dp.dea_schedule,
+               dp.requires_refrigeration, dp.storage_condition, dp.lasa_group,
+               dc.name_fa, dc.announced_price, dc.package_count, dc.manufacturer,
+               dc.gtin, dc.atc, dc.coverage
+        FROM stock_levels s
+        LEFT JOIN drug_products dp ON dp.id = s.drug_product_id
+        LEFT JOIN drug_catalog  dc ON dc.irc = s.irc
+        WHERE s.pharmacy_id = :pid AND s.ndc11 = :ndc"""), p)).mappings().first()
+    if head is None:
+        raise HTTPException(404, "item not stocked at this pharmacy")
+
+    lots = (await db.execute(text("""
+        SELECT id, lot_number, irc, expiry_date, quantity_on_hand, quantity_reserved,
+               quantity_received, unit_cost, storage_location, received_at,
+               is_quarantined, is_recalled, recall_reference, cold_chain_breach,
+               split_pack_open, serial_number
+        FROM inventory_lots
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc AND is_deleted = false
+        ORDER BY expiry_date ASC NULLS LAST, lot_number"""), p)).mappings().all()
+
+    movements = (await db.execute(text("""
+        SELECT m.id, m.movement_type, m.reason, m.quantity_before, m.quantity_after,
+               m.quantity_delta, m.reference, m.notes, m.created_at, m.created_by,
+               m.inventory_lot_id, m.prescription_fill_id, m.approval_id,
+               m.event_hash, st.role AS actor_role,
+               NULLIF(TRIM(COALESCE(st.first_name,'') || ' ' || COALESCE(st.last_name,'')), '')
+                 AS actor_name
+        FROM inventory_movements m
+        LEFT JOIN staff st ON st.id = m.created_by
+        WHERE m.pharmacy_id = :pid AND m.ndc11 = :ndc
+        ORDER BY m.created_at DESC LIMIT 200"""), p)).mappings().all()
+
+    today = date.today()
+
+    def lot_out(l):
+        d = dict(l)
+        exp = d["expiry_date"]
+        d["id"] = str(d["id"])
+        d["days_to_expiry"] = (exp - today).days if exp else None
+        d["blocked_reason"] = ("recalled" if d["is_recalled"]
+                               else "cold_chain_breach" if d["cold_chain_breach"]
+                               else "quarantined" if d["is_quarantined"]
+                               else "expired" if exp and exp < today else None)
+        for k in ("quantity_on_hand", "quantity_reserved", "quantity_received", "unit_cost"):
+            d[k] = float(d[k]) if d[k] is not None else None
+        for k in ("expiry_date", "received_at"):
+            d[k] = d[k].isoformat() if d[k] else None
+        return d
+
+    return {
+        "item": {k: (float(v) if k in ("par_level_min", "par_level_max", "reorder_point",
+                                       "avg_daily_demand", "quantity_reserved",
+                                       "quantity_on_order", "announced_price")
+                     and v is not None else
+                     v.isoformat() if hasattr(v, "isoformat") else
+                     str(v) if k == "drug_product_id" and v else v)
+                 for k, v in dict(head).items()},
+        "lots": [lot_out(l) for l in lots],
+        "movements": [{
+            "id": str(m["id"]), "movement_type": m["movement_type"],
+            "reason": m["reason"], "delta": float(m["quantity_delta"]),
+            "before": float(m["quantity_before"]), "after": float(m["quantity_after"]),
+            "reference": m["reference"], "notes": m["notes"],
+            "at": iso_utc(m["created_at"]) if m["created_at"] else None,
+            "actor": m["actor_name"] or (str(m["created_by"])[:8] if m["created_by"] else None),
+            "actor_role": m["actor_role"],
+            "lot_id": str(m["inventory_lot_id"]) if m["inventory_lot_id"] else None,
+            "fill_id": str(m["prescription_fill_id"]) if m["prescription_fill_id"] else None,
+            "approval_id": str(m["approval_id"]) if m["approval_id"] else None,
+            "chained": bool(m["event_hash"]),
+        } for m in movements],
+        "editable_fields": {"lot_direct": sorted(A.LOT_DIRECT_FIELDS),
+                            "lot_sensitive": sorted(A.LOT_SENSITIVE_FIELDS),
+                            "ledger_only": sorted(A.LOT_LEDGER_ONLY_FIELDS),
+                            "stock_direct": sorted(A.STOCK_DIRECT_FIELDS)},
+    }
+
+
+# ── Edit one lot ──────────────────────────────────────────────────────────
+
+class LotEdit(BaseModel):
+    field: str
+    value: Any = None
+    reason: str = Field(..., min_length=3)
+
+
+@router.patch("/admin/lots/{lot_id}")
+async def edit_lot(
+    lot_id: UUID, body: LotEdit,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct one field on one lot.
+
+    Quantities are refused outright. Corrections that could put blocked stock
+    back on the shelf become an approval request rather than an edit.
+    """
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == lot_id,
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot not found")
+
+    drug = (await db.execute(select(DrugProduct).where(
+        DrugProduct.id == lot.drug_product_id))).scalar_one_or_none()
+    is_controlled = bool(drug and drug.is_controlled)
+
+    old = getattr(lot, body.field, None)
+    try:
+        plan = A.validate_lot_edit(body.field, old, body.value,
+                                   reason=body.reason, is_controlled=is_controlled)
+    except A.AdminEditError as e:
+        raise HTTPException(422, str(e))
+
+    if plan.requires_approval:
+        appr = InventoryApproval(
+            pharmacy_id=staff.pharmacy_id, irc=lot.irc, ndc11=lot.ndc11,
+            inventory_lot_id=lot.id, movement_type="FIELD_EDIT", quantity=0,
+            is_controlled=is_controlled, status="pending",
+            reason=f"{body.field}: {old!r} → {body.value!r} — {body.reason}"[:240],
+            payload={"table": "inventory_lots", "row_id": str(lot.id),
+                     "field": body.field, "old": _jsonable(old),
+                     "new": _jsonable(body.value), "reason": body.reason},
+            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+        db.add(appr)
+        await db.commit()
+        return {"applied": False, "approval_id": str(appr.id),
+                "message": "این تغییر نیازمند تأیید نفر دوم است و در صف تأیید قرار گرفت."}
+
+    _assign(lot, body.field, body.value)
+    lot.updated_by = staff.id
+    await db.commit()
+    log.info("lot %s field %s changed by %s: %r → %r (%s)",
+             lot_id, body.field, staff.id, old, body.value, body.reason)
+    return {"applied": True, "field": body.field, "old": _jsonable(old),
+            "new": _jsonable(body.value), "sensitive": plan.sensitive}
+
+
+def _jsonable(v):
+    return v.isoformat() if hasattr(v, "isoformat") else (
+        float(v) if hasattr(v, "quantize") else v)
+
+
+def _assign(obj, field: str, value):
+    if field == "expiry_date" and isinstance(value, str):
+        value = date.fromisoformat(value[:10])
+    setattr(obj, field, value)
+
+
+# ── Bulk edit ─────────────────────────────────────────────────────────────
+
+class BulkEdit(BaseModel):
+    lot_ids: list[UUID]
+    field: str
+    value: Any = None
+    reason: str = Field(..., min_length=3)
+
+
+@router.post("/admin/lots/bulk")
+async def bulk_edit(
+    body: BulkEdit,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply one safe field to many lots. Bounded, and never a bulk *release* of
+    blocked stock — that direction must be justified row by row."""
+    try:
+        A.validate_bulk(body.field, body.value, body.lot_ids, reason=body.reason)
+    except A.AdminEditError as e:
+        raise HTTPException(422, str(e))
+
+    lots = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id.in_(body.lot_ids),
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalars().all()
+    missing = len(body.lot_ids) - len(lots)
+
+    changed, skipped = 0, []
+    for lot in lots:
+        old = getattr(lot, body.field, None)
+        if old == body.value:
+            skipped.append({"lot_id": str(lot.id), "why": "already set"})
+            continue
+        _assign(lot, body.field, body.value)
+        lot.updated_by = staff.id
+        changed += 1
+    await db.commit()
+    log.info("bulk %s=%r on %d lots by %s (%s)", body.field, body.value,
+             changed, staff.id, body.reason)
+    return {"changed": changed, "unchanged": len(skipped),
+            "not_found_or_other_pharmacy": missing, "skipped": skipped[:20]}
+
+
+class StockEdit(BaseModel):
+    field: str
+    value: Any = None
+    reason: str = Field(..., min_length=3)
+
+
+@router.patch("/admin/stock/{ndc11}")
+async def edit_stock_level(
+    ndc11: str, body: StockEdit,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set par levels or the formulary binding on the item aggregate. The
+    quantity columns on this row are ledger-derived and not editable here."""
+    if body.field not in A.STOCK_DIRECT_FIELDS:
+        raise HTTPException(422,
+            f"{body.field} is not editable on the stock aggregate; "
+            f"allowed: {sorted(A.STOCK_DIRECT_FIELDS)}")
+    row = (await db.execute(select(StockLevel).where(
+        StockLevel.pharmacy_id == staff.pharmacy_id,
+        StockLevel.ndc11 == ndc11))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "item not stocked at this pharmacy")
+    old = getattr(row, body.field)
+    setattr(row, body.field, body.value)
+    if body.field == "irc" and body.value:
+        # Keep the lots in step, or the item and its own lots disagree about
+        # which formulary product they are.
+        await db.execute(text(
+            "UPDATE inventory_lots SET irc = :irc "
+            "WHERE pharmacy_id = :pid AND ndc11 = :ndc AND is_deleted = false"),
+            {"irc": body.value, "pid": staff.pharmacy_id, "ndc": ndc11})
+    await db.commit()
+    return {"applied": True, "field": body.field,
+            "old": _jsonable(old), "new": _jsonable(body.value)}
+
+
+# ── Receiving: the only way stock enters ──────────────────────────────────
+
+class ReceiveLot(BaseModel):
+    ndc11: str
+    lot_number: str = Field(..., min_length=1)
+    expiry_date: date
+    quantity: float = Field(..., gt=0)
+    unit_cost: Optional[float] = None
+    irc: Optional[str] = None
+    storage_location: Optional[str] = None
+    serial_number: Optional[str] = None
+    purchase_order_id: Optional[UUID] = None
+    reason: str = "goods receipt"
+
+
+@router.post("/admin/receive", status_code=201)
+async def receive_stock(
+    body: ReceiveLot,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Take delivery of stock.
+
+    Creates the lot if the lot number is new, tops it up if it already exists,
+    and in both cases writes a RECEIPT movement through the ledger — so the
+    arriving units are as traceable as the leaving ones. An expiry date in the
+    past is refused: receiving expired stock into sellable inventory is how
+    expired stock ends up dispensed.
+    """
+    if body.expiry_date < date.today():
+        raise HTTPException(422,
+            f"expiry {body.expiry_date.isoformat()} is in the past — quarantine "
+            f"the delivery instead of receiving it as sellable stock")
+
+    drug = (await db.execute(select(DrugProduct).where(
+        DrugProduct.ndc11 == body.ndc11))).scalar_one_or_none()
+    if drug is None:
+        raise HTTPException(404, f"NDC {body.ndc11} is not in the product catalog")
+
+    if body.irc:
+        known = (await db.execute(text("SELECT 1 FROM drug_catalog WHERE irc = :i"),
+                                  {"i": body.irc})).scalar()
+        if not known:
+            raise HTTPException(422, f"IRC {body.irc} is not in the formulary")
+
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.ndc11 == body.ndc11,
+        InventoryLot.lot_number == body.lot_number,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+
+    now = datetime.now(timezone.utc)
+    created = lot is None
+    if created:
+        lot = InventoryLot(
+            pharmacy_id=staff.pharmacy_id, drug_product_id=drug.id, ndc11=body.ndc11,
+            irc=body.irc, lot_number=body.lot_number, expiry_date=body.expiry_date,
+            quantity_received=0, quantity_on_hand=0, quantity_reserved=0,
+            unit_cost=body.unit_cost, storage_location=body.storage_location,
+            serial_number=body.serial_number, received_at=now,
+            purchase_order_id=body.purchase_order_id,
+            created_by=staff.id, updated_by=staff.id)
+        db.add(lot)
+        await db.flush()
+    elif lot.expiry_date != body.expiry_date:
+        raise HTTPException(422,
+            f"lot {body.lot_number} already exists with expiry "
+            f"{lot.expiry_date.isoformat()}; two different expiries cannot share "
+            f"a lot number — check the carton")
+
+    view = L.Lot(lot_id=str(lot.id), lot_number=lot.lot_number,
+                 expiry_date=lot.expiry_date,
+                 quantity_on_hand=L.q(lot.quantity_on_hand),
+                 is_recalled=bool(lot.is_recalled))
+    try:
+        plan = L.plan_receipt(view, body.quantity, movement_type="RECEIPT",
+                              reason=body.reason, is_controlled=bool(drug.is_controlled))
+    except L.LedgerError as e:
+        raise HTTPException(422, str(e))
+
+    lot.quantity_on_hand = plan.quantity_after
+    lot.quantity_received = L.q(float(lot.quantity_received or 0) + body.quantity)
+    lot.updated_by = staff.id
+    if body.unit_cost is not None:
+        lot.unit_cost = body.unit_cost
+
+    stock = (await db.execute(select(StockLevel).where(
+        StockLevel.pharmacy_id == staff.pharmacy_id,
+        StockLevel.ndc11 == body.ndc11))).scalar_one_or_none()
+    if stock is None:
+        stock = StockLevel(pharmacy_id=staff.pharmacy_id, ndc11=body.ndc11,
+                           irc=body.irc, drug_product_id=drug.id,
+                           quantity_on_hand=0, quantity_reserved=0, quantity_on_order=0)
+        db.add(stock)
+        await db.flush()
+    stock.quantity_on_hand = L.q(float(stock.quantity_on_hand or 0) + body.quantity)
+    stock.last_received_at = now
+    if body.irc and not stock.irc:
+        stock.irc = body.irc
+
+    movement = await append_movement(
+        db, pharmacy_id=staff.pharmacy_id, ndc11=body.ndc11,
+        irc=body.irc or lot.irc, lot_id=lot.id, plan=plan, actor_id=staff.id)
+    await db.commit()
+    return {"lot_id": str(lot.id), "lot_created": created,
+            "quantity_received": body.quantity,
+            "lot_on_hand": float(plan.quantity_after),
+            "movement_id": str(movement.id), "event_hash": movement.event_hash}
+
+
+# ── Write-off request ─────────────────────────────────────────────────────
+
+class WriteOffRequest(BaseModel):
+    lot_id: UUID
+    movement_type: str          # WASTE | EXPIRY_REMOVAL | RECALL_REMOVAL | RETURN_TO_SUPPLIER
+    quantity: float = Field(..., gt=0)
+    reason: str = Field(..., min_length=3)
+
+
+@router.post("/admin/write-off", status_code=201)
+async def request_write_off(
+    body: WriteOffRequest,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask for stock to be written off. Never applies it.
+
+    The request lands in the same approval queue as a count variance, and a
+    different person applies it. That is the whole point: the person who
+    discovers the loss is not the person who signs it off.
+    """
+    if body.movement_type not in L.APPROVAL_ALWAYS:
+        raise HTTPException(422,
+            f"{body.movement_type} is not a write-off; allowed: "
+            f"{sorted(L.APPROVAL_ALWAYS - {'COUNT_GAIN', 'COUNT_LOSS'})}")
+
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == body.lot_id,
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot not found")
+    if L.q(body.quantity) > L.q(lot.quantity_on_hand):
+        raise HTTPException(422,
+            f"cannot write off {body.quantity} — only {float(lot.quantity_on_hand)} on hand")
+
+    drug = (await db.execute(select(DrugProduct).where(
+        DrugProduct.id == lot.drug_product_id))).scalar_one_or_none()
+
+    appr = InventoryApproval(
+        pharmacy_id=staff.pharmacy_id, irc=lot.irc, ndc11=lot.ndc11,
+        inventory_lot_id=lot.id, movement_type=body.movement_type,
+        quantity=body.quantity, is_controlled=bool(drug and drug.is_controlled),
+        status="pending", reason=body.reason[:240],
+        requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+    db.add(appr)
+    await db.commit()
+    return {"approval_id": str(appr.id), "status": "pending", "stock_changed": False,
+            "requires_witness": appr.is_controlled,
+            "message": "درخواست ثبت شد؛ تا تأیید نفر دوم موجودی تغییری نمی‌کند."}

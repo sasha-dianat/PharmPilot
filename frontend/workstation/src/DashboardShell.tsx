@@ -10,13 +10,14 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, Boxes, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
 import InventoryIntegrity    from './dashboards/InventoryIntegrity'
+import InventoryAdmin        from './dashboards/InventoryAdmin'
 import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
 import FinancialOperations   from './dashboards/FinancialOperations'
@@ -43,6 +44,7 @@ import MedReconciliationPage from './pages/MedReconciliationPage'
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
+  { id:'inventory-admin', key:'v', label:'Inventory Admin',   icon:Boxes,       description:'Search, view, correct, receive', shortcut:'Alt+V' },
   { id:'inventory-integrity', key:'i', label:'Inventory Integrity', icon:ShieldCheck, description:'Reconciliation & write-off approvals', shortcut:'Alt+I' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
@@ -74,6 +76,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
   'inventory-integrity': InventoryIntegrity,
+  'inventory-admin': InventoryAdmin,
   clinical:  ClinicalIntelligence,
   cds:       ClinicalAssistant,
   adr:       ADRDetective,

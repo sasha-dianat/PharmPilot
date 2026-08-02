@@ -259,6 +259,10 @@ class InventoryApproval(AuditedBase):
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # A controlled-substance destruction needs a witness beyond the approver.
     witness_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Empty for a stock movement; for a FIELD_EDIT it holds
+    # {table, row_id, field, old, new} so one approval queue and one set of
+    # separation-of-duties rules covers both kinds of change.
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class StockCount(AuditedBase):

@@ -326,6 +326,56 @@ incorrect one rather than silently rewriting history.
   (dispense hook + GTIN receiving + backfilling the 46 orphan fills as one
   approved reconciliation batch).
 
+### 2026-08-02 — Claude Code — inventory admin panel: supervise, view, correct
+
+- Workstream: `CL-003` (continues the entry above; same branch)
+- Branch: `feat/inventory-integrity`
+- Changed:
+  - NEW `services/core/inventory/admin_rules.py` — the field policy as pure
+    functions: DIRECT (location, cost, IRC, par levels) apply immediately;
+    SENSITIVE (expiry, quarantine, recall, cold chain) demand a reason and, in
+    the releasing direction, an approval; LEDGER_ONLY (all quantities) are
+    unreachable from the panel entirely. Plus bulk bounds, the search-box
+    classifier, and the 12 named filter views.
+  - NEW `routers/inventory_admin.py` — 8 endpoints: item search
+    (name/IRC/NDC/GTIN/lot, 12 filters, 6 sorts, paginated), live filter counts,
+    item drill-down (lots in FEFO order with per-lot blocked reason + the full
+    movement history with actor and chain marker), single-field edit, bounded
+    bulk edit, stock-aggregate edit, goods receipt, write-off request.
+  - `routers/inventory_integrity.py` — `_apply_field_edit` so an approved
+    FIELD_EDIT actually lands, re-validating policy at approval time and
+    refusing (409) if the row moved since the request was raised.
+  - NEW frontend `InventoryAdmin.tsx` + nav entry (Alt+V) + `inventoryAdminApi`.
+- Interfaces/schema: migration **0031** — `payload` JSONB on
+  `inventory_approvals` (so one approval queue serves both quantity movements
+  and field corrections) plus a non-negative CHECK on `quantity`. Additive;
+  round-tripped up/down/up on `pharmpilot_test` before `pharmpilot`. Head 0031.
+- Verification:
+  - `pytest tests/unit` → **1055 passed, 1 failed**; the failure is the
+    pre-existing `test_integrations_sandbox` caplog-ordering case (recorded
+    2026-07-29, green in isolation). Inventory-related suites: **203 passed**.
+  - 42 new tests: `test_inventory_admin_rules.py` (31, pure policy) and
+    `test_inventory_admin_e2e.py` (11, against the real test database —
+    receive → correct → approve → write-off → chain verify).
+  - `npx tsc --noEmit` clean. Backend restarted (PID 27840, single listener
+    :8001); all 8 admin routes confirmed in the served OpenAPI.
+  - Endpoints exercised against **live data**: filter chips returned real counts
+    (16 items, 2 expired, 16 unbound, 2 dead stock), search resolved by name and
+    by NDC, drill-down returned the expired `CEF250-OLD` lot at −31 days with
+    `blocked_reason=expired`.
+  - Vite served `InventoryAdmin.tsx` (200) with zero console errors. The panel's
+    visual render behind the login screen was **not** verified — signing in
+    requires entering a password, which I do not do.
+- Notable during build: the append-only trigger blocked the E2E fixture's own
+  attempt to DELETE movements between tests. That is the guarantee working, so
+  isolation now comes from a fresh NDC per test rather than erasing history.
+- Risks/blockers: unchanged from the entry above — quantities remain
+  untrustworthy until the P2 dispense hook lands and a full count is posted. The
+  panel deliberately cannot repair that; it can only receive, correct metadata,
+  and route write-offs for signature.
+- Next action/owner: owner to rule on the 2 expired lots (now one click from the
+  «منقضی‌شده» filter → کسر → approval) and on P2 scope.
+
 ## Entry template
 
 ```markdown
