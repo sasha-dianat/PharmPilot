@@ -243,3 +243,204 @@ async def test_the_chain_stays_intact_across_the_whole_sequence(env):
         ORDER BY created_at ASC, id ASC"""), {"p": pid})).mappings().all()
     result = verify_chain(IG.chain_rows_for(rows))
     assert result["intact"] is True and result["verified"] >= 2
+
+
+# ── the dispense hook ─────────────────────────────────────────────────────
+async def _make_rx(db, pid, ndc, qty=30, status="will_call"):
+    """A prescription ready to dispense, with the patient/prescriber rows it needs."""
+    pat = (await db.execute(text("SELECT id FROM patients WHERE pharmacy_id=:p LIMIT 1"),
+                            {"p": pid})).scalar()
+    if not pat:
+        pat = uuid.uuid4()
+        await db.execute(text("""
+            INSERT INTO patients (id, pharmacy_id, first_name, last_name,
+              date_of_birth, gender, created_at, updated_at, is_deleted)
+            VALUES (:i,:p,'Test','Patient','1980-01-01','O',now(),now(),false)"""),
+            {"i": pat, "p": pid})
+    prescriber = (await db.execute(text("SELECT id FROM prescribers LIMIT 1"))).scalar()
+    if not prescriber:
+        prescriber = uuid.uuid4()
+        await db.execute(text("""
+            INSERT INTO prescribers (id, npi, first_name, last_name,
+              created_at, updated_at, is_deleted)
+            VALUES (:i,:n,'Test','Prescriber',now(),now(),false)"""),
+            {"i": prescriber, "n": uuid.uuid4().hex[:10]})
+    rx_id, rx_no = uuid.uuid4(), f"RX{uuid.uuid4().hex[:10].upper()}"
+    await db.execute(text("""
+        INSERT INTO prescriptions (id, pharmacy_id, patient_id, prescriber_id,
+          rx_number, ndc, drug_name, sig_text, quantity_prescribed, days_supply,
+          refills_authorized, refills_remaining, status, source, written_date,
+          created_at, updated_at, is_deleted)
+        VALUES (:i,:ph,:pa,:pr,:rn,:n,'testolol','1 tab daily',:q,30,1,1,:st,
+                'paper',CURRENT_DATE,now(),now(),false)"""),
+        {"i": rx_id, "ph": pid, "pa": pat, "pr": prescriber, "rn": rx_no,
+         "n": ndc, "q": qty, "st": status})
+    await db.commit()
+    return rx_id, rx_no
+
+
+async def test_dispensing_decrements_stock_and_records_the_lot(env):
+    """The defect this whole workstream exists to close: 46 fills against 8
+    movements, because the transition only ever logged 'trigger inventory
+    deduction'."""
+    from services.core.pharmacy_workflow.state_machine import RxStateMachine
+    from shared.models.prescription import RxStatus
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=100)
+    rx_id, rx_no = await _make_rx(db, pid, ndc, qty=30)
+
+    await RxStateMachine(db).transition(
+        prescription_id=rx_id, to_status=RxStatus.DISPENSED,
+        triggered_by_id=alice.id, triggered_by_type="staff", reason="pickup")
+    await db.commit()
+
+    on_hand = (await db.execute(text(
+        "SELECT SUM(quantity_on_hand) FROM inventory_lots "
+        "WHERE pharmacy_id=:p AND ndc11=:n"), {"p": pid, "n": ndc})).scalar()
+    assert float(on_hand) == 70.0            # 100 dispensed 30
+
+    mv = (await db.execute(text(
+        "SELECT quantity_delta, prescription_fill_id, event_hash FROM inventory_movements "
+        "WHERE ndc11=:n AND movement_type='DISPENSE'"), {"n": ndc})).mappings().all()
+    assert len(mv) == 1 and float(mv[0]["quantity_delta"]) == -30.0
+    assert mv[0]["prescription_fill_id"] is not None    # traceable to the fill
+    assert mv[0]["event_hash"]                          # and chained
+
+    fill = (await db.execute(text(
+        "SELECT inventory_lot_id, lot_number FROM prescription_fills WHERE id=:f"),
+        {"f": mv[0]["prescription_fill_id"]})).mappings().one()
+    assert fill["inventory_lot_id"] is not None and fill["lot_number"] == "L-1"
+
+
+async def test_the_aggregate_follows_the_lots(env):
+    from services.core.pharmacy_workflow.state_machine import RxStateMachine
+    from shared.models.prescription import RxStatus
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=50)
+    rx_id, _ = await _make_rx(db, pid, ndc, qty=20)
+    await RxStateMachine(db).transition(
+        prescription_id=rx_id, to_status=RxStatus.DISPENSED,
+        triggered_by_id=alice.id, triggered_by_type="staff", reason="pickup")
+    await db.commit()
+    agg = (await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    lots = (await db.execute(text(
+        "SELECT SUM(quantity_on_hand) FROM inventory_lots WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    assert float(agg) == float(lots) == 30.0
+
+
+async def test_dispensing_picks_the_earliest_expiry(env):
+    from services.core.pharmacy_workflow.state_machine import RxStateMachine
+    from shared.models.prescription import RxStatus
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=40, lot="LATE", days=400)
+    await _receive(db, alice, ndc, qty=40, lot="SOON", days=40)
+    rx_id, _ = await _make_rx(db, pid, ndc, qty=10)
+    await RxStateMachine(db).transition(
+        prescription_id=rx_id, to_status=RxStatus.DISPENSED,
+        triggered_by_id=alice.id, triggered_by_type="staff", reason="pickup")
+    await db.commit()
+    rows = dict((await db.execute(text(
+        "SELECT lot_number, quantity_on_hand FROM inventory_lots "
+        "WHERE pharmacy_id=:p AND ndc11=:n"), {"p": pid, "n": ndc})).all())
+    assert float(rows["SOON"]) == 30.0 and float(rows["LATE"]) == 40.0
+
+
+async def test_a_dispense_the_shelf_cannot_cover_still_succeeds(env):
+    """A bookkeeping error must never stop a patient receiving their medicine.
+    The gap is recorded for reconciliation instead."""
+    from services.core.pharmacy_workflow.state_machine import RxStateMachine
+    from shared.models.prescription import RxStatus
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=5)
+    rx_id, _ = await _make_rx(db, pid, ndc, qty=30)
+    rx = await RxStateMachine(db).transition(
+        prescription_id=rx_id, to_status=RxStatus.DISPENSED,
+        triggered_by_id=alice.id, triggered_by_type="staff", reason="pickup")
+    await db.commit()
+    assert str(rx.status) in ("RxStatus.DISPENSED", "dispensed")
+    on_hand = (await db.execute(text(
+        "SELECT SUM(quantity_on_hand) FROM inventory_lots WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    assert float(on_hand) == 0.0          # took everything it could, never negative
+
+
+async def test_expired_stock_is_not_handed_to_a_patient(env):
+    """Coming up short is acceptable. Dispensing expired stock is not."""
+    from services.core.inventory import dispense as D
+
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    await db.execute(text("UPDATE inventory_lots SET expiry_date = CURRENT_DATE - 1 "
+                          "WHERE id = :i"), {"i": r["lot_id"]})
+    await db.commit()
+    lots = await D._lots_for(db, pid, ndc)
+    from services.core.inventory import ledger as L
+    alloc = L.plan_dispense(lots, 10, reason="rx")
+    assert alloc.plans == [] and float(alloc.shortfall) == 10.0
+
+
+async def test_dispensing_twice_does_not_decrement_twice(env):
+    """A retried transition or re-delivered event must not take the stock again."""
+    from services.core.inventory import dispense as D
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=100)
+    rx_id, _ = await _make_rx(db, pid, ndc, qty=25)
+    rx = (await db.execute(text("SELECT * FROM prescriptions WHERE id=:i"),
+                           {"i": rx_id})).mappings().one()
+
+    class RxView:
+        pass
+    v = RxView()
+    for k, val in rx.items():
+        setattr(v, k, val)
+
+    first = await D.apply_dispense(db, v, staff_id=alice.id)
+    await db.commit()
+    second = await D.apply_dispense(db, v, staff_id=alice.id)
+    await db.commit()
+
+    assert first.skipped is None and float(first.allocated) == 25.0
+    assert second.skipped is not None          # recognised as already done
+    on_hand = (await db.execute(text(
+        "SELECT SUM(quantity_on_hand) FROM inventory_lots WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    assert float(on_hand) == 75.0              # not 50
+
+
+async def test_returning_to_stock_puts_the_units_back_without_erasing_history(env):
+    from services.core.pharmacy_workflow.state_machine import RxStateMachine
+    from shared.models.prescription import RxStatus
+
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=100)
+    rx_id, _ = await _make_rx(db, pid, ndc, qty=30)
+    await RxStateMachine(db).transition(
+        prescription_id=rx_id, to_status=RxStatus.DISPENSED,
+        triggered_by_id=alice.id, triggered_by_type="staff", reason="pickup")
+    await db.commit()
+
+    from services.core.inventory import dispense as D
+    fill_id = (await db.execute(text(
+        "SELECT id FROM prescription_fills WHERE prescription_id=:r"),
+        {"r": rx_id})).scalar()
+    res = await D.reverse_dispense(db, fill_id, staff_id=alice.id)
+    await db.commit()
+
+    assert res.ok and float(res.allocated) == 30.0
+    on_hand = (await db.execute(text(
+        "SELECT SUM(quantity_on_hand) FROM inventory_lots WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    assert float(on_hand) == 100.0
+    # the original DISPENSE row survives — history is added to, never rewritten
+    kinds = [r[0] for r in (await db.execute(text(
+        "SELECT movement_type FROM inventory_movements WHERE ndc11=:n ORDER BY created_at"),
+        {"n": ndc})).all()]
+    assert kinds == ["RECEIPT", "DISPENSE", "RETURN_FROM_PATIENT"]

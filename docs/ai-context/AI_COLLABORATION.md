@@ -376,6 +376,61 @@ incorrect one rather than silently rewriting history.
 - Next action/owner: owner to rule on the 2 expired lots (now one click from the
   «منقضی‌شده» filter → کسر → approval) and on P2 scope.
 
+### 2026-08-02 — Claude Code — the dispense hook: stock actually decrements
+
+- Workstream: `CL-003` · Branch `feat/inventory-integrity`
+- Closes **ROADMAP:34** and R1. `RxStateMachine._handle_transition_effects`
+  contained the line `logger.info("Rx %s dispensed — trigger inventory deduction
+  for NDC %s")` and nothing else. That single stub is why 46 fills existed
+  against 8 movements.
+- Changed:
+  - NEW `services/core/inventory/dispense.py` — `apply_dispense` (FEFO, creates
+    or finds the fill, writes chained DISPENSE movements, keeps the aggregate in
+    step, releases reservations, stamps the lot on the fill) and
+    `reverse_dispense` for returned-to-stock.
+  - `ledger.py` — `plan_dispense` / `DispenseAllocation`. **The only issue type
+    permitted to come up short.** Every other type raises rather than under-fill;
+    dispensing reports the shortfall as data because the medicine is already with
+    the patient and a bookkeeping error must never become a refusal of care.
+  - `state_machine.py` — DISPENSED calls the hook, RETURNED_TO_STOCK reverses it.
+    Both log loudly on failure and neither can block the transition.
+  - `reconciliation.py` + `inventory_integrity.py` — new `dispense_shortfall`
+    check (12 checks now).
+  - `shared/models/prescription.py` — **defect found by test**: migration 0030
+    added `prescription_fills.inventory_lot_id` but the column was never declared
+    on the model, so every assignment was silently dropped (`lot_number`
+    persisted, the FK did not). Now declared.
+  - NEW `scripts/backfill_dispense_movements.py` — dry-run by default.
+- Design decisions worth review:
+  - The hook is **best-effort and never raises**. A failure leaves the
+    prescription dispensed and is caught by `fill_without_movement`. Refusing to
+    dispense because inventory bookkeeping failed would be the worse outcome.
+  - **Idempotent** on the fill: a retried transition is recognised and skipped
+    (tested — a double call leaves 75, not 50).
+  - Blocked and expired lots are never allocated, **even when that causes the
+    shortfall**. Coming up short is acceptable; handing over recalled stock is not.
+  - A dispense never requires approval — the prescription and the pharmacist's
+    verification are the authorisation.
+  - A dispense with no acting staff records the nil UUID rather than borrowing a
+    real person's identity.
+- Verification: `pytest tests/unit` → **1076 passed, 1 failed** (the same
+  pre-existing `test_integrations_sandbox` case). 15 new tests: 8 allocation
+  rules plus 7 end-to-end driving a real `RxStateMachine.transition` against the
+  test database — decrement, aggregate parity, FEFO order, short-stock survival,
+  idempotency, expired-stock refusal, and return-to-stock leaving
+  `[RECEIPT, DISPENSE, RETURN_FROM_PATIENT]` intact. Backend restarted (PID
+  30593). Live report now runs 12 checks; `dispense_shortfall` = 0.
+- Findings for the owner:
+  - The **46 orphan fills are historical and were NOT backfilled.** Whether to
+    backfill is a judgement only the owner can make: if those units were never
+    physically deducted then current on-hand already reflects their absence and
+    backfilling would deduct them twice. Dry run is ready.
+  - The dry run surfaced **NDC 00009001903 dispensed 6× (360 units) against no
+    stock record at all** — an item dispensed that the pharmacy has never
+    recorded holding.
+- Next action/owner: rule on the backfill and on `00009001903`; then GTIN
+  scan-to-field at receiving (R22) is the remaining P2 item.
+
 ## Entry template
 
 ```markdown

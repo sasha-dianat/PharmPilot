@@ -91,6 +91,20 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         "SELECT DISTINCT prescription_fill_id FROM inventory_movements "
         "WHERE prescription_fill_id IS NOT NULL AND pharmacy_id = :pid"), p)).all()}
 
+    # What each fill handed over versus what the shelf could actually supply.
+    # The hook never refuses a dispense, so the gap is recorded rather than
+    # prevented — and this is where it surfaces.
+    shortfalls = (await db.execute(text("""
+        SELECT pf.id AS fill_id, pf.ndc_dispensed AS ndc11,
+               pf.quantity_dispensed, pf.created_at AS filled_at,
+               COALESCE(SUM(-m.quantity_delta), 0) AS allocated
+        FROM prescription_fills pf
+        JOIN inventory_movements m ON m.prescription_fill_id = pf.id
+                                  AND m.movement_type = 'DISPENSE'
+        WHERE m.pharmacy_id = :pid AND pf.is_deleted = false
+        GROUP BY pf.id, pf.ndc_dispensed, pf.quantity_dispensed, pf.created_at"""),
+        p)).mappings().all()
+
     movements = (await db.execute(text("""
         SELECT m.id, m.created_by, m.irc, m.ndc11, m.movement_type, m.reason,
                m.quantity_before, m.quantity_delta, m.created_at,
@@ -122,6 +136,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_negative_stock([dict(r) for r in lots] + [dict(r) for r in agg]),
         R.check_fills_without_movements([dict(r) for r in fills], linked),
         R.check_untraceable_fills([dict(r) for r in fills]),
+        R.check_dispense_shortfall([dict(r) for r in shortfalls]),
         R.check_formulary_binding([dict(r) for r in lots]),
         R.check_expired_on_hand([dict(r) for r in lots]),
         R.check_suspicious_adjustments([dict(r) for r in movements]),

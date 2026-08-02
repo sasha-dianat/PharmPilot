@@ -188,3 +188,67 @@ def test_the_hash_is_reproducible_from_the_stored_row_alone():
         quantity_after=Decimal("9.0"), actor_id="staff1",
         created_at_iso="2026-08-02T10:00:00+00:00")
     assert again == r["event_hash"]
+
+
+# ── dispense allocation: the one issue type allowed to come up short ──────
+def test_a_covered_dispense_allocates_fefo_and_reports_no_shortfall():
+    a = L.plan_dispense([lot("a", 10, 200), lot("b", 10, 30)], 15, as_of=TODAY,
+                        reason="rx")
+    assert [p.lot_id for p in a.plans] == ["b", "a"]
+    assert (a.allocated, a.shortfall, a.complete) == (Decimal("15.000"),
+                                                      Decimal("0.000"), True)
+
+
+def test_a_short_dispense_takes_what_exists_and_records_the_gap():
+    """The medicine is already with the patient. Refusing here would let a
+    bookkeeping error stop patient care; inventing the units would hide the
+    discrepancy worth knowing about."""
+    a = L.plan_dispense([lot("a", 4)], 10, as_of=TODAY, reason="rx")
+    assert a.allocated == Decimal("4.000")
+    assert a.shortfall == Decimal("6.000")
+    assert a.complete is False
+    assert sum(abs(p.quantity_delta) for p in a.plans) == a.allocated
+
+
+def test_a_dispense_with_no_stock_at_all_still_returns_rather_than_raising():
+    a = L.plan_dispense([], 10, as_of=TODAY, reason="rx")
+    assert a.plans == [] and a.shortfall == Decimal("10.000")
+
+
+def test_blocked_and_expired_lots_are_never_dispensed_even_when_short():
+    """Coming up short is acceptable; handing over recalled stock is not."""
+    lots = [lot("recalled", 100, 200, is_recalled=True),
+            lot("expired", 100, -1),
+            lot("ok", 3, 100)]
+    a = L.plan_dispense(lots, 50, as_of=TODAY, reason="rx")
+    assert [p.lot_id for p in a.plans] == ["ok"]
+    assert a.shortfall == Decimal("47.000")
+
+
+def test_a_dispense_never_requires_approval():
+    """A prescription plus a pharmacist's verification is the authorisation; a
+    second queue between a patient and their medicine is not."""
+    a = L.plan_dispense([lot("a", 10)], 5, as_of=TODAY, reason="rx",
+                        is_controlled=True)
+    assert all(p.requires_approval is False for p in a.plans)
+    assert all(p.movement_type == "DISPENSE" for p in a.plans)
+
+
+def test_a_non_positive_dispense_is_still_a_programming_error():
+    for bad in (0, -5):
+        with pytest.raises(L.LedgerError):
+            L.plan_dispense([lot("a", 10)], bad, as_of=TODAY, reason="rx")
+
+
+def test_reserved_stock_is_not_available_to_another_patient():
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=TODAY + timedelta(days=90),
+              quantity_on_hand=Decimal("10"), quantity_reserved=Decimal("7"))
+    a = L.plan_dispense([l], 10, as_of=TODAY, reason="rx")
+    assert a.allocated == Decimal("3.000") and a.shortfall == Decimal("7.000")
+
+
+def test_allocation_conserves_across_many_lots():
+    lots = [lot(str(i), 7, 10 + i) for i in range(5)]
+    a = L.plan_dispense(lots, 33, as_of=TODAY, reason="rx")
+    assert a.allocated + a.shortfall == a.requested
+    assert sum(abs(p.quantity_delta) for p in a.plans) == a.allocated

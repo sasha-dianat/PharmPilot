@@ -208,6 +208,77 @@ def plan_issue(lots: list[Lot], quantity, *, movement_type: str, reason: str,
     return plans
 
 
+@dataclass
+class DispenseAllocation:
+    """What the shelf could actually supply for a dispense, and what it could not."""
+    plans: list[MovementPlan]
+    requested: Decimal
+    allocated: Decimal
+    shortfall: Decimal
+    lots_used: list[str]
+
+    @property
+    def complete(self) -> bool:
+        return self.shortfall == 0
+
+
+def plan_dispense(lots: list[Lot], quantity, *, reason: str,
+                  as_of: date | None = None,
+                  is_controlled: bool = False) -> DispenseAllocation:
+    """Allocate a dispense FEFO, reporting any shortfall instead of raising.
+
+    Every other issue type refuses to under-fill, because a transfer or a
+    write-off that quietly moves less than it claims is how the books drift.
+    Dispensing is the one exception, and the reason is physical: the medicine is
+    already in the patient's hand. If our records say there is not enough, the
+    *records* are wrong — the stock either walked, arrived uncounted, or was
+    mis-entered. Refusing here would let a bookkeeping error stop patient care,
+    and inventing the missing units would hide the very discrepancy worth
+    knowing about.
+
+    So we take what exists, and return the gap as data. `check_dispense_shortfall`
+    surfaces it, and a cycle count settles it.
+    """
+    want = q(quantity)
+    if want <= 0:
+        raise LedgerError("dispense quantity must be positive")
+    today = as_of or date.today()
+
+    usable = [l for l in lots
+              if not _blocked_reason(l, allow_quarantined=False)
+              and not (l.expiry_date and l.expiry_date < today)
+              and l.available > 0]
+    usable.sort(key=lambda l: (l.expiry_date is None,
+                               l.expiry_date or date.max, l.lot_number))
+
+    plans: list[MovementPlan] = []
+    remaining = want
+    for lot in usable:
+        if remaining <= 0:
+            break
+        take = q(min(lot.available, remaining))
+        if take <= 0:
+            continue
+        before = q(lot.quantity_on_hand)
+        plans.append(MovementPlan(
+            lot_id=lot.lot_id, movement_type="DISPENSE",
+            quantity_delta=q(-take), quantity_before=before,
+            quantity_after=q(before - take), lot_number=lot.lot_number,
+            expiry_date=lot.expiry_date, reason=reason,
+            # A dispense is authorised by the prescription and the pharmacist's
+            # verification, not by a stock write-off signature. Requiring an
+            # approval here would put a second queue between a patient and their
+            # medicine.
+            requires_approval=False,
+            meta={"location": lot.storage_location, "controlled": is_controlled}))
+        remaining = q(remaining - take)
+
+    allocated = q(want - remaining)
+    return DispenseAllocation(plans=plans, requested=want, allocated=allocated,
+                              shortfall=remaining,
+                              lots_used=[p.lot_id for p in plans])
+
+
 def plan_receipt(lot: Lot, quantity, *, movement_type: str, reason: str,
                  is_controlled: bool = False) -> MovementPlan:
     """Plan an addition to a single, identified lot. Receipts are never spread

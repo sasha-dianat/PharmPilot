@@ -141,6 +141,35 @@ def check_untraceable_fills(fills: list[dict]) -> Finding:
     )
 
 
+# ── C4b. Dispenses the shelf could not cover ──────────────────────────────
+def check_dispense_shortfall(rows: list[dict]) -> Finding:
+    """A dispense that took less stock than the prescription handed over.
+
+    The hook never refuses a dispense — the medicine is already with the patient
+    — so when the books cannot cover it the gap is written down here instead.
+    Each row means one of three things, all worth knowing: stock arrived without
+    being received, stock left without being recorded, or a count is wrong.
+    """
+    bad = []
+    for r in rows:
+        want, got = _f(r, "quantity_dispensed"), _f(r, "allocated")
+        if want > got:
+            bad.append({"fill_id": r.get("fill_id"), "ndc11": r.get("ndc11"),
+                        "irc": r.get("irc"), "dispensed": float(want),
+                        "taken_from_stock": float(got),
+                        "shortfall": float(q(want - got)),
+                        "filled_at": r.get("filled_at")})
+    return Finding(
+        "dispense_shortfall", "high", len(bad),
+        "کسری موجودی هنگام تحویل",
+        "Stock records could not cover a dispense that physically happened, so "
+        "fewer units were deducted than were handed to the patient.",
+        sorted(bad, key=lambda x: -x["shortfall"]),
+        "Count the affected items. The shortfall is the size of the disagreement "
+        "between the books and the shelf, not a reason to edit either.",
+    )
+
+
 # ── C5. Formulary binding ─────────────────────────────────────────────────
 def check_formulary_binding(rows: list[dict]) -> Finding:
     """Stock must point at a row of the real formulary.
@@ -338,7 +367,7 @@ def check_chain(verify_result: dict) -> Finding:
 
 
 ALL_CHECKS = ("aggregate_drift", "negative_stock", "fill_without_movement",
-              "untraceable_fill", "unbound_from_formulary", "expired_on_hand",
+              "untraceable_fill", "dispense_shortfall", "unbound_from_formulary", "expired_on_hand",
               "suspicious_adjustment", "duplicate_lot", "unit_conversion_suspect",
               "over_reserved", "ledger_chain")
 

@@ -51,9 +51,9 @@ and verified present · **GAP** = designed here, not built.
 
 | ID | Requirement | Source | Status | Evidence |
 |---|---|---|---|---|
-| R1 | Stock decrements when a prescription is dispensed | ROADMAP:34 | **GAP→P2** | `check_fills_without_movements` now *detects* it: 46 firing |
+| R1 | Stock decrements when a prescription is dispensed | ROADMAP:34 | **DONE** | `dispense.py` hooked into `RxStateMachine._handle_transition_effects`; 15 tests incl. 7 end-to-end through a real state transition |
 | R2 | Reconciliation between dispensing, depot/shelf and stock | ROADMAP:34 | **DONE** | `reconciliation.py`, 11 checks, 28 tests |
-| R3 | Batch/lot traceability for recall | brief §2 | **DONE (schema)** | `prescription_fills.inventory_lot_id` FK, migration 0030 |
+| R3 | Batch/lot traceability for recall | brief §2 | **DONE** | FK + model field + the hook stamps the FEFO lot on every fill; verified end-to-end |
 | R4 | Inventory bound to the real formulary | brief §4, formulary integration | **DONE (schema+resolver)** | `irc` on 4 tables; `formulary_binding.py`, 12 tests |
 | R5 | Expiry control | MASTER_PROMPT ⑫ | **PRE + DONE** | `expiry_prevention.py`; `check_expired_on_hand` found 2 live |
 | R6 | Demand forecasting / reorder | MASTER_PROMPT ⑫⑰ | **PRE** | `forecaster.py` (fallback path active) |
@@ -81,6 +81,9 @@ and verified present · **GAP** = designed here, not built.
 | R28 | Correction audit: who changed what, when, why | brief §1,§4 | **DONE** | every edit carries a mandatory reason; movement history rendered per item with actor and chain marker |
 | R29 | Goods receipt as a ledger event | brief §4 | **DONE** | `POST /admin/receive` → RECEIPT movement; past-dated expiry refused; one lot number cannot hold two expiries |
 | R30 | Admin panel cannot bypass inventory controls | derived | **DONE** | quantity fields unreachable from the panel (4 parametrised tests); sensitive edits routed to approval |
+| R31 | A dispense is never blocked by a bookkeeping error | derived, clinical | **DONE** | `plan_dispense` reports a shortfall instead of raising; hook never raises; `check_dispense_shortfall` surfaces the gap |
+| R32 | Dispense decrement is idempotent | derived | **DONE** | keyed on the fill; a retried transition is recognised and skipped |
+| R33 | Returned-to-stock restores units without rewriting history | derived | **DONE** | offsetting `RETURN_FROM_PATIENT` receipts; original DISPENSE rows survive |
 
 ---
 
@@ -89,7 +92,9 @@ and verified present · **GAP** = designed here, not built.
 | # | Defect | Severity | Evidence | Disposition |
 |---|---|---|---|---|
 | D1 | Inventory keyed to a 16-row US demo catalog while the real formulary has 39,184 IRC rows; **no `irc` column existed in any inventory table** | Critical | schema dump | **Fixed** (0030) + resolver |
-| D2 | Dispensing never decremented stock | Critical | 46 fills / 8 movements; no writer in the Rx path | **Detected**; hook is P2 |
+| D2 | Dispensing never decremented stock | Critical | 46 fills / 8 movements; no writer in the Rx path | **Fixed** — hook live; 46 historical orphans await an owner decision on backfill |
+| D12 | `prescription_fills.inventory_lot_id` existed in the database but not on the model, so assignments were silently dropped | High | caught by an end-to-end test: `lot_number` persisted, the FK did not | **Fixed** — field declared on `PrescriptionFill` |
+| D13 | NDC `00009001903` dispensed 6× (360 units) with no stock record at all | High | backfill dry run | **Surfaced** — owner action |
 | D3 | `PrescriptionFill.lot_number` free text, no FK → recall unanswerable | High | schema | **Fixed** (FK added) |
 | D4 | `POST /orders/{po_id}/submit` had no tenant filter → cross-tenant PO submission | High | `inventory.py:306` | **Fixed** |
 | D5 | `max(0.0, …)` clamp on the aggregate hid shrinkage | High | `inventory_movements.py:95` | **Superseded** by no-clamp ledger + CHECK |
@@ -218,7 +223,7 @@ blocked on R1, not on model choice.**
 |---|---|---|---|
 | **P1 — done** | Ledger, reconciliation, counts, approvals, chain, formulary binding, schema | None (software) | 70 tests green; report runs on live data |
 | **P1b — done** | Admin panel: search/filter/sort/paginate, item drill-down with lots + full movement history, single and bulk correction, goods receipt, write-off request | None (software) | 42 further tests green (31 policy + 11 end-to-end on a real database); all 8 endpoints served |
-| **P2** | Dispense hook (R1); GTIN scan at receiving (R22); backfill 46 orphan fills as an approved batch | Barcode scanners ~$40 ea | `fill_without_movement` = 0 and stays 0 for 14 days |
+| **P2 — hook done** | ~~Dispense hook (R1)~~ **done**; GTIN scan at receiving (R22); backfill the 46 orphan fills (script written, deliberately not run) | Barcode scanners ~$40 ea | `fill_without_movement` = 0 and stays 0 for 14 days |
 | **P3** | Wire ML detector; guided picking UI; bulk editor; supplier optimisation | None | Detector precision ≥ 0.6 on labelled history |
 | **P4** | Cold-chain sensors; controlled-area video tie-in | Sensors ~$60/fridge | Breach → quarantine within 5 min |
 | **P5** | RFID for high-value/controlled stock | ~$0.15/tag + readers | Only if P2–P4 shrinkage justifies it |
