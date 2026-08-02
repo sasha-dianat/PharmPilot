@@ -135,6 +135,39 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6g. Strength recovered without a crawl (2026-08-01)
+
+`nfi_missing_strength` stood at **1,206** and looked like a source gap worth a
+re-harvest. It was not. **972** of those rows already carried
+`monograph.generic_full`, and **687** of those strings stated a dose:
+
+    GLICLAZIDE TABLET, EXTENDED RELEASE ORAL 60 mg
+    INTERFERON BETA-1A INJECTION PARENTERAL 12000000 [iU] 0.5MILLILITER
+
+The parser takes `strength` from the `composition` field and gives up when that
+field is missing, even though NFI's own «نام عمومی» states the dose. Re-crawling
+would have fetched the same bytes and produced the same empty column — the
+defect is downstream of the fetch.
+
+`backfill.strength_from_generic_full()` reads it structurally: cut past the
+dosage form, then the route word, drop a trailing pack size, take from the first
+dose token. It returns None rather than a guess whenever the parse loses a
+denominator.
+
+**Validated against ground truth before use** — run over the 33,366 rows that DO
+have a strength it reproduced the stored value exactly for 86.9% and to the same
+dose set for 11.1% more (98.0% agreement, 0.69% disagreement). That validation
+caught a real bug: the trailing-pack-size strip was eating the *denominator* of a
+per-gram concentration («100000 [iU]/1g 15GRAM» → «100000 [iU]/»), which alone
+accounted for 412 of the disagreements. Inspecting the residue showed most are
+rows whose STORED value is truncated at the column width or plainly wrong
+(«VITAMIN B12» stored with strength "12", taken from the name).
+
+Result: **730 strengths written**, `ingredient_key` recomputed for each in the
+same transaction (groups 4,299 → 4,348), `nfi_missing_strength` **1,206 → 476**.
+Of the remainder, 242 state no dose anywhere and **234 have no `generic_full` at
+all — those are the only ones a crawl would help.**
+
 ## 6f. The last 24 review rows (2026-08-01)
 
 Adjudicated by exhaustive catalog search on molecule + concentration +
