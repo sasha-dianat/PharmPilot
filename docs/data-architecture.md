@@ -135,6 +135,39 @@ lossless normalizations. `GET /pricing/data-quality/report`.
   decision with today's engine and classifies agree/moved/lost/stale/revived;
   revisions become training labels for the FS model.
 
+## 6e. Applying under the new grouping (2026-08-01)
+
+Both runs were restaged and re-applied with `remove_missing` after
+`coverage_backup_pre_regroup` (39,184 rows) was taken:
+
+| | salamat | tamin |
+|---|---|---|
+| coverage entries written | 27,507 | 21,884 |
+| stale links retired | 591 | 3,404 |
+| review rows left undecided | 321 | 393 |
+| links that MOVED | 1 | 0 |
+
+**A risk found and fixed before applying.** The first restage would have retired
+**6,030** entries. Classifying them showed why: keying a volume-less row to
+whichever volume-variant it happened to match drops coverage from every other
+size. 638 salamat rows and 23 tamin rows were in that position — salamat
+truncates names, so 90% of its rows state no volume at all.
+
+The insurers do price per volume: 153 tamin molecules and 70 salamat ones appear
+at several volumes, each its own code and reference price. So the narrowing is
+right *when the row names a volume* — and unfounded when it does not. The spread
+now applies the same rule the matcher already used: **volume constrains the
+group only when the row states one**; silence spreads across all sizes.
+
+That single change took retirements from 6,030 to 3,995 and salamat's from 2,595
+to 591, while keeping tamin's intended narrowing (3,435 → 3,404) intact. Of what
+remains, 1,480 are recoverable by accepting a review row; 2,515 are groups the
+formulary genuinely no longer covers.
+
+Afterwards the fresh references exposed 94 more stale announced prices on
+certain-identity matches; all were refreshed under the standing increase-only
+rule with provenance and SCD-2 history. 14 pack-basis rows were left alone.
+
 ## 6d. Volume joined `ingredient_key` (2026-08-01)
 
 The matcher fix stopped wrong-volume LINKS, but `ingredient_key` was still

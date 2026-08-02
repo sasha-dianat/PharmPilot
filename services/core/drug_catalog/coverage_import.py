@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from services.ai.clinical_decision_support.normalizer import normalize
-from .schema import CatalogRecord, canonical_ingredient
+from .schema import CatalogRecord, canonical_ingredient, volume_set
 
 _DIGIT_FIX = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
@@ -755,8 +755,12 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
     review, unmatched = [], []
     # coverage is per generic → spread to the whole ingredient group when we can
     group: dict[str, list[str]] = {}
+    base_group: dict[str, list[str]] = {}      # same key, volume segment dropped
     for r in (catalog or []):
         group.setdefault(r.ingredient_key, []).append(r.irc)
+        k = r.ingredient_key
+        base = k.rsplit("|", 1)[0] if k.endswith("ml") and k.count("|") >= 3 else k
+        base_group.setdefault(base, []).append(r.irc)
 
     for link in links:
         if not link.matched:
@@ -797,11 +801,24 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
                            "name": link.record.name_fa, "confidence": link.confidence,
                            "entry": entry})
             continue
-        # ingredient_key = generic|strength|form, so this group is ONLY the
-        # clinically interchangeable set (same product, different brands) — a
+        # ingredient_key = generic|strength|form[|volume], so this group is ONLY
+        # the clinically interchangeable set (same product, different brands) — a
         # 15 mg row's entry (incl. reference_price, which insurers define per
         # interchangeable group) can never reach the 30 mg sibling.
-        targets = group.get(link.record.ingredient_key, [link.record.irc]) or [link.record.irc]
+        #
+        # Volume constrains the spread ONLY when the ROW names one. Both insurers
+        # do price per volume (153 tamin molecules and 70 salamat ones are listed
+        # at several), so a row naming 5 mL must not pay for a 10 mL vial. But
+        # 90% of salamat rows are truncated and name no volume at all; keying
+        # those to whichever volume-variant they happened to match would drop
+        # coverage from every other size — 638 salamat rows, measured. Silence is
+        # not a claim about volume, here exactly as in the matcher.
+        _key = link.record.ingredient_key
+        if volume_set(str(link.row.get("drug_name") or "")):
+            targets = group.get(_key, [link.record.irc]) or [link.record.irc]
+        else:
+            _base = _key.rsplit("|", 1)[0] if _key.endswith("ml") and _key.count("|") >= 3 else _key
+            targets = base_group.get(_base, [link.record.irc]) or [link.record.irc]
         for irc in targets:
             applied.setdefault(irc, {})[insurer] = entry
 
