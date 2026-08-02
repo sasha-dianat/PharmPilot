@@ -25,6 +25,7 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "rx:read", "rx:write", "rx:verify", "rx:dispense",
         "patient:read", "patient:write",
         "inventory:read", "inventory:write", "inventory:order",
+        "inventory:approve",
         "claims:read", "claims:submit",
         "reports:read", "staff:read", "staff:write",
         "biometric:read", "audio:read",
@@ -34,7 +35,9 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "rx:override_dur", "rx:controlled_substance",
         "patient:read", "patient:write",
         "claims:read", "claims:submit",
-        "inventory:read", "reports:read",
+        # A pharmacist approves write-offs but does not request them: the
+        # maker-checker split only works if the two sets of people differ.
+        "inventory:read", "inventory:approve", "reports:read",
         "biometric:read", "audio:read",
         "clinical:read", "clinical:write",
     ],
@@ -56,6 +59,9 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "claims:read",
     ],
     StaffRole.INVENTORY_STAFF: [
+        # Deliberately NOT inventory:approve — inventory staff request stock
+        # write-offs, and a requester who can approve their own write-off is
+        # the control failing silently.
         "inventory:read", "inventory:write", "inventory:order",
         "rx:read",
     ],

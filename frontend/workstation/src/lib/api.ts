@@ -287,6 +287,28 @@ export const inventoryApi = {
   createOrder: (data: PurchaseOrderData) => apiClient.post('/inventory/orders', data),
 }
 
+// ── Inventory integrity: reconciliation, counts, approvals ────────────────
+export const inventoryIntegrityApi = {
+  reconciliation: () => apiClient.get('/inventory/reconciliation'),
+  verifyLedger: () => apiClient.get('/inventory/ledger/verify'),
+  bindingProposals: () => apiClient.get('/inventory/formulary-binding/proposals'),
+  applyBindings: (bindings: { ndc11: string; irc: string }[]) =>
+    apiClient.post('/inventory/formulary-binding/apply', { bindings }),
+  createCount: (body: { count_type?: string; blind?: boolean; irc?: string[]
+                        location?: string; notes?: string }) =>
+    apiClient.post('/inventory/counts', body),
+  getCount: (id: string) => apiClient.get(`/inventory/counts/${id}`),
+  submitCountLine: (id: string, body: { line_id: string; counted_quantity: number
+                                        note?: string }) =>
+    apiClient.post(`/inventory/counts/${id}/lines`, body),
+  postCount: (id: string) => apiClient.post(`/inventory/counts/${id}/post`),
+  approvals: (status = 'pending') =>
+    apiClient.get('/inventory/approvals', { params: { status } }),
+  decideApproval: (id: string, body: { approve: boolean; note?: string
+                                       witness_id?: string }) =>
+    apiClient.post(`/inventory/approvals/${id}/decide`, body),
+}
+
 // ── Depot → shelf dual-verification replenishment ─────────────────────────
 export const depotApi = {
   listShelves: () => apiClient.get('/inventory/shelves'),

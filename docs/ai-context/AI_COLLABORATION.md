@@ -72,6 +72,7 @@ At the end of every session:
 | CL-001 | Claude Code | ACTIVE | `master` (the `feat/darunameh-crawler` branch does NOT exist in this repo — 2026-07-29 verification; PR [#22](https://github.com/sasha-dianat/PharmPilot/pull/22) predates the current head) | Every file currently changed by PR #22, primarily drug catalog, coverage harvest/import, enrichment, catalog/coverage models and migrations, related workstation administration, and their tests | Freeze scope, refresh the PR description to the actual head, run evidenced release gates, then independent review |
 | CX-001 | Codex | READY_FOR_REVIEW | `agent/ai-collaboration-protocol` (stacked on CL-001) | `AGENTS.md`, `CLAUDE.md`, and `docs/ai-context/AI_COLLABORATION.md` only | Review and merge the coordination protocol into `feat/darunameh-crawler` |
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
+| CL-003 | Claude Code | READY_FOR_REVIEW | `feat/inventory-integrity` | `services/core/inventory/{ledger,reconciliation,formulary_binding}.py`, `routers/inventory_integrity.py`, `routers/inventory.py`, `shared/models/inventory.py`, `shared/models/auth.py` (permission table), migration `0030`, `InventoryIntegrity.tsx` + nav/api wiring, `docs/design/INVENTORY_SYSTEM.md`, three new test modules | Independent review of the maker-checker rules, the migration on a disposable DB, and the P2 dispense-hook design before it is built |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
@@ -261,6 +262,69 @@ incorrect one rather than silently rewriting history.
   - Claude: quote-path regression harness (pricing conservation vs golden
     quotes) and auto-running reconciliation after every apply/ingest — P3/P4 in
     `docs/data-architecture.md`.
+
+### 2026-08-02 — Claude Code — inventory integrity: conserving ledger, reconciliation, maker-checker
+
+- Workstream: `CL-003` (new). No overlap with CL-001/CX-00x: no drug-catalog,
+  coverage, enrichment or biometric path is touched.
+- Branch/commit: `feat/inventory-integrity` (from `master` @ `c0c534d`).
+- Changed:
+  - NEW `services/core/inventory/ledger.py` — FEFO allocation, conservation
+    (short stock raises rather than under-fills), Decimal quantities, no
+    clamping, SHA-256 movement chain mirroring `RxStateEvent.event_hash`.
+  - NEW `services/core/inventory/reconciliation.py` — 11 integrity checks with a
+    three-state verdict (healthy / trustworthy / blocking).
+  - NEW `services/core/inventory/formulary_binding.py` — GTIN→IRC ladder,
+    proposal-only, refuses to guess when ambiguous.
+  - NEW `routers/inventory_integrity.py` — 10 endpoints (reconciliation, ledger
+    verify, binding proposals/apply, counts create/line/get/post, approvals
+    list/decide).
+  - `routers/inventory.py` — **security fix**: `POST /orders/{po_id}/submit` had
+    no tenant filter (cross-tenant PO submission); `expiring_days` was accepted
+    and silently ignored.
+  - `shared/models/auth.py` — new `inventory:approve`; INVENTORY_STAFF
+    deliberately excluded so a requester cannot approve their own write-off.
+  - Frontend `InventoryIntegrity.tsx` + nav + `inventoryIntegrityApi`.
+  - `docs/design/INVENTORY_SYSTEM.md` — requirements matrix (27), gap analysis
+    (11 defects), architecture, rollout, production-readiness assessment.
+- Interfaces/schema/data: migration **0030** (head 0029→0030), additive and
+  nullable only: `irc` on 4 inventory tables; `prescription_fill_id`,
+  `approval_id`, `prev_hash`, `event_hash` on `inventory_movements`;
+  `inventory_lots.id` FK on `prescription_fills`; new `inventory_approvals`,
+  `stock_counts`, `stock_count_lines`; append-only trigger on
+  `inventory_movements`; non-negative CHECK on lot quantity. No existing value
+  rewritten.
+- Verification (all run this session):
+  - Migration exercised on `pharmpilot_test` first: upgrade → downgrade → upgrade,
+    each object confirmed created/removed. Append-only trigger confirmed to
+    BLOCK a live UPDATE and DELETE. Then applied to `pharmpilot`; head `0030`.
+  - `pytest tests/unit` → **1013 passed, 1 failed**. The failure is
+    `test_integrations_sandbox` caplog ordering — pre-existing (recorded in the
+    2026-07-29 entry), passes in isolation, untouched here.
+  - 70 new tests across `test_inventory_ledger.py` (23),
+    `test_inventory_reconciliation.py` (28), `test_inventory_integrity_guards.py` (19).
+  - `npx tsc --noEmit` clean. Backend restarted (launchd, PID 9208, single
+    listener :8001); all 10 routes confirmed in the served OpenAPI.
+  - Reconciliation run against **live data**: `blocking=true`, 4 of 11 checks
+    firing — 46 `fill_without_movement`, 46 `untraceable_fill`,
+    17 `unbound_from_formulary`, **2 expired lots (240 units) still sellable**.
+- Findings requiring an owner decision:
+  - **2 expired lots on the shelf** (`CEF250-OLD` exp 2026-07-02,
+    `MTP50-OLD` exp 2026-07-06) are sellable and unquarantined — act now.
+  - **IRC is a per-brand registration, not a molecule code.** Measured:
+    generic+strength+form resolves a unique IRC only 19.2% of the time (mean
+    11.3 candidates, worst 222), while GTIN covers 94.1% of the formulary.
+    Binding stock by name is structurally unsafe; goods-receipt GTIN scanning is
+    the only reliable path. This changes the P2 receiving design.
+  - ROADMAP:34 (`inventory decrement on dispense`) is confirmed open and is now
+    *detected* but not *fixed* — the hook itself is P2 and deliberately not
+    written blind into the dispensing path without review.
+- Risks/blockers: quantities in `stock_levels` are not trustworthy until the
+  dispense hook lands and a full count is posted; forecasting is fitted on a
+  ledger that only increases; the ML anomaly detector remains unwired.
+- Next action/owner: owner rules on the 2 expired lots and on the P2 scope
+  (dispense hook + GTIN receiving + backfilling the 46 orphan fills as one
+  approved reconciliation batch).
 
 ## Entry template
 

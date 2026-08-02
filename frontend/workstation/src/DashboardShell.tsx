@@ -16,6 +16,7 @@ import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
+import InventoryIntegrity    from './dashboards/InventoryIntegrity'
 import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
 import FinancialOperations   from './dashboards/FinancialOperations'
@@ -42,6 +43,7 @@ import MedReconciliationPage from './pages/MedReconciliationPage'
 const SECTIONS = [
   { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
+  { id:'inventory-integrity', key:'i', label:'Inventory Integrity', icon:ShieldCheck, description:'Reconciliation & write-off approvals', shortcut:'Alt+I' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
@@ -71,6 +73,7 @@ type SectionId = typeof SECTIONS[number]['id']
 const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
+  'inventory-integrity': InventoryIntegrity,
   clinical:  ClinicalIntelligence,
   cds:       ClinicalAssistant,
   adr:       ADRDetective,

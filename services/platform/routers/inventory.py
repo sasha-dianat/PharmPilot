@@ -123,6 +123,21 @@ async def get_stock_levels(
             StockLevel.quantity_on_hand < StockLevel.par_level_min,
         )
 
+    if expiring_days is not None:
+        # The parameter was accepted and silently ignored, so a caller asking
+        # for "items expiring within 30 days" got the whole stock list back and
+        # had no way to tell. Restrict to NDCs holding a lot that expires in the
+        # window.
+        from datetime import timedelta
+        cutoff = date.today() + timedelta(days=expiring_days)
+        stmt = stmt.where(StockLevel.ndc11.in_(
+            select(InventoryLot.ndc11).where(
+                InventoryLot.pharmacy_id == staff.pharmacy_id,
+                InventoryLot.expiry_date <= cutoff,
+                InventoryLot.quantity_on_hand > 0,
+            )
+        ))
+
     stmt = stmt.order_by(StockLevel.quantity_on_hand.desc()).limit(limit)
     rows = (await db.execute(stmt)).all()
 
@@ -303,7 +318,13 @@ async def submit_purchase_order(
 ):
     """Submit a draft PO to the wholesaler (EDI 850)."""
     from datetime import datetime, timezone
-    result = await db.execute(select(PurchaseOrder).where(PurchaseOrder.id == po_id))
+    # Tenant filter is part of the lookup, not a later check: without it, staff
+    # at one pharmacy could submit another pharmacy's draft order to a
+    # wholesaler, and the 404 below would never fire.
+    result = await db.execute(select(PurchaseOrder).where(
+        PurchaseOrder.id == po_id,
+        PurchaseOrder.pharmacy_id == staff.pharmacy_id,
+    ))
     po = result.scalar_one_or_none()
     if not po:
         raise HTTPException(404, "Purchase order not found")

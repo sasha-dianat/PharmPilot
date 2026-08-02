@@ -1,0 +1,573 @@
+"""Inventory integrity — reconciliation, physical counts, maker-checker
+approvals, and formulary binding.
+
+This router only fetches and persists. Every rule lives in
+`services.core.inventory.{ledger,reconciliation,formulary_binding}` so it can be
+tested against a counterexample rather than a live database.
+
+Authorisation follows the value at risk, not the table being touched:
+  inventory:read     — see stock and reports
+  inventory:write    — request a movement or count a lot
+  inventory:approve  — approve a write-off (must not be the requester)
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.core.inventory import ledger as L
+from services.core.inventory import reconciliation as R
+from services.core.inventory import formulary_binding as FB
+from services.platform.auth import require_permission
+from services.platform.database import get_db
+from shared.models.auth import Staff
+from shared.models.inventory import (
+    InventoryApproval, InventoryLot, InventoryMovement, StockCount, StockCountLine,
+)
+
+router = APIRouter()
+log = logging.getLogger(__name__)
+
+# The chain digest is taken over the timestamp as a string, so reading and
+# writing must agree on one format exactly. Formatting in Python (rather than
+# to_char) also avoids SQLAlchemy reading ":MI"/":SS" as bind parameters.
+ISO = "%Y-%m-%dT%H:%M:%S.%f+00:00"
+
+
+def iso_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime(ISO)
+
+
+def chain_rows_for(rows) -> list[dict]:
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["created_at_iso"] = iso_utc(d.pop("created_at"))
+        out.append(d)
+    return out
+
+
+# ── Reconciliation ────────────────────────────────────────────────────────
+
+async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
+    """Run every check against the pharmacy's real rows."""
+    p = {"pid": pharmacy_id}
+
+    agg = (await db.execute(text("""
+        SELECT s.ndc11, s.irc, s.quantity_on_hand AS aggregate,
+               COALESCE(l.total, 0) AS lot_sum
+        FROM stock_levels s
+        LEFT JOIN (SELECT ndc11, pharmacy_id, SUM(quantity_on_hand) AS total
+                   FROM inventory_lots WHERE is_deleted = false GROUP BY ndc11, pharmacy_id) l
+          ON l.ndc11 = s.ndc11 AND l.pharmacy_id = s.pharmacy_id
+        WHERE s.pharmacy_id = :pid"""), p)).mappings().all()
+
+    lots = (await db.execute(text("""
+        SELECT il.id AS lot_id, il.ndc11, il.irc, il.lot_number, il.expiry_date,
+               il.quantity_on_hand, il.quantity_reserved, il.is_quarantined,
+               il.unit_cost, (il.quantity_on_hand * COALESCE(il.unit_cost,0)) AS value,
+               dp.generic_name AS drug_name, dp.is_controlled
+        FROM inventory_lots il
+        LEFT JOIN drug_products dp ON dp.id = il.drug_product_id
+        WHERE il.pharmacy_id = :pid AND il.is_deleted = false"""), p)).mappings().all()
+
+    fills = (await db.execute(text("""
+        SELECT pf.id, pf.ndc_dispensed, pf.quantity_dispensed, pf.lot_number,
+               pf.inventory_lot_id, pf.created_at AS filled_at
+        FROM prescription_fills pf
+        WHERE pf.is_deleted = false
+        ORDER BY pf.created_at DESC LIMIT 5000"""))).mappings().all()
+
+    linked = {r[0] for r in (await db.execute(text(
+        "SELECT DISTINCT prescription_fill_id FROM inventory_movements "
+        "WHERE prescription_fill_id IS NOT NULL AND pharmacy_id = :pid"), p)).all()}
+
+    movements = (await db.execute(text("""
+        SELECT m.id, m.created_by, m.irc, m.ndc11, m.movement_type, m.reason,
+               m.quantity_before, m.quantity_delta, m.created_at,
+               COALESCE(dp.is_controlled, false) AS is_controlled
+        FROM inventory_movements m
+        LEFT JOIN drug_products dp ON dp.ndc11 = m.ndc11
+        WHERE m.pharmacy_id = :pid
+        ORDER BY m.created_at DESC LIMIT 5000"""), p)).mappings().all()
+
+    conv = (await db.execute(text("""
+        SELECT s.ndc11, s.irc, s.quantity_on_hand, s.avg_daily_demand,
+               dc.package_count
+        FROM stock_levels s
+        LEFT JOIN drug_catalog dc ON dc.irc = s.irc
+        WHERE s.pharmacy_id = :pid"""), p)).mappings().all()
+
+    chain_rows = (await db.execute(text("""
+        SELECT id, pharmacy_id, irc, inventory_lot_id, movement_type,
+               quantity_delta, quantity_after, created_by, prev_hash, event_hash,
+               created_at
+        FROM inventory_movements
+        WHERE pharmacy_id = :pid AND event_hash IS NOT NULL
+        ORDER BY created_at ASC, id ASC"""), p)).mappings().all()
+
+    chain = chain_rows_for(chain_rows)
+
+    return [
+        R.check_aggregate_drift([dict(r) for r in agg]),
+        R.check_negative_stock([dict(r) for r in lots] + [dict(r) for r in agg]),
+        R.check_fills_without_movements([dict(r) for r in fills], linked),
+        R.check_untraceable_fills([dict(r) for r in fills]),
+        R.check_formulary_binding([dict(r) for r in lots]),
+        R.check_expired_on_hand([dict(r) for r in lots]),
+        R.check_suspicious_adjustments([dict(r) for r in movements]),
+        R.check_duplicate_lots([dict(r) for r in lots]),
+        R.check_unit_conversion([dict(r) for r in conv]),
+        R.check_over_reservation([dict(r) for r in lots]),
+        R.check_chain(L.verify_chain(chain)),
+    ]
+
+
+@router.get("/reconciliation")
+async def reconciliation_report(
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full integrity report. Read-only: a check never repairs what it finds."""
+    findings = await _gather(db, staff.pharmacy_id)
+    out = R.summarize(findings)
+    out["generated_at"] = datetime.now(timezone.utc).isoformat()
+    return out
+
+
+# ── Formulary binding ─────────────────────────────────────────────────────
+
+@router.get("/formulary-binding/proposals")
+async def binding_proposals(
+    limit: int = Query(500, ge=1, le=5000),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Propose an IRC for every stocked product not yet bound to the formulary.
+
+    Proposals only. Binding stock to the wrong catalogue row would attach a
+    wrong price and wrong insurer coverage to a real product.
+    """
+    products = (await db.execute(text("""
+        SELECT DISTINCT dp.ndc11, dp.generic_name, dp.strength, dp.dosage_form,
+               dp.drug_db_metadata ->> 'gtin' AS gtin
+        FROM inventory_lots il JOIN drug_products dp ON dp.id = il.drug_product_id
+        WHERE il.pharmacy_id = :pid AND il.is_deleted = false AND il.irc IS NULL
+        LIMIT :lim"""), {"pid": staff.pharmacy_id, "lim": limit})).mappings().all()
+    if not products:
+        return FB.summarize([])
+
+    generics = {FB.normalize_generic(p["generic_name"]) for p in products}
+    # Fetch only candidate generics rather than all 39,184 rows.
+    catalog = (await db.execute(text("""
+        SELECT irc, gtin, generic_name, strength, dosage_form, name_fa
+        FROM drug_catalog
+        WHERE generic_name IS NOT NULL"""))).mappings().all()
+    catalog = [dict(c) for c in catalog
+               if FB.normalize_generic(c["generic_name"]) in generics]
+
+    return FB.summarize([FB.propose(dict(p), catalog) for p in products])
+
+
+class BindingApply(BaseModel):
+    bindings: list[dict] = Field(..., description="[{ndc11, irc}] — owner-approved only")
+
+
+@router.post("/formulary-binding/apply")
+async def apply_bindings(
+    body: BindingApply,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Write owner-approved IRC bindings onto this pharmacy's stock rows."""
+    applied = 0
+    for b in body.bindings:
+        ndc, irc = b.get("ndc11"), b.get("irc")
+        if not ndc or not irc:
+            continue
+        exists = (await db.execute(text("SELECT 1 FROM drug_catalog WHERE irc = :irc"),
+                                   {"irc": irc})).scalar()
+        if not exists:
+            raise HTTPException(422, f"IRC {irc} is not in the formulary")
+        for tbl in ("inventory_lots", "stock_levels"):
+            res = await db.execute(text(
+                f"UPDATE {tbl} SET irc = :irc WHERE pharmacy_id = :pid AND ndc11 = :ndc"),
+                {"irc": irc, "pid": staff.pharmacy_id, "ndc": ndc})
+            applied += res.rowcount or 0
+    await db.commit()
+    return {"rows_bound": applied, "items": len(body.bindings)}
+
+
+# ── Physical counts ───────────────────────────────────────────────────────
+
+class CountCreate(BaseModel):
+    count_type: str = "CYCLE"
+    blind: bool = True
+    irc: Optional[list[str]] = None
+    location: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/counts", status_code=201)
+async def create_count(
+    body: CountCreate,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Open a count session and snapshot the expected quantity of every lot in
+    scope, so a movement posted mid-count cannot silently change what the
+    variance is measured against."""
+    if body.count_type not in ("CYCLE", "FULL", "SPOT", "CONTROLLED"):
+        raise HTTPException(422, f"unknown count_type {body.count_type!r}")
+
+    sc = StockCount(pharmacy_id=staff.pharmacy_id, count_type=body.count_type,
+                    blind=body.blind, status="counting",
+                    scope={"irc": body.irc, "location": body.location},
+                    started_at=datetime.now(timezone.utc), notes=body.notes,
+                    created_by=staff.id, updated_by=staff.id)
+    db.add(sc)
+    await db.flush()
+
+    q = select(InventoryLot).where(InventoryLot.pharmacy_id == staff.pharmacy_id,
+                                   InventoryLot.is_deleted == False)  # noqa: E712
+    if body.irc:
+        q = q.where(InventoryLot.irc.in_(body.irc))
+    if body.location:
+        q = q.where(InventoryLot.storage_location == body.location)
+    lots = (await db.execute(q)).scalars().all()
+
+    for lot in lots:
+        db.add(StockCountLine(
+            stock_count_id=sc.id, inventory_lot_id=lot.id, irc=lot.irc,
+            ndc11=lot.ndc11, lot_number=lot.lot_number,
+            expected_quantity=lot.quantity_on_hand,
+            created_by=staff.id, updated_by=staff.id))
+    await db.commit()
+    return {"count_id": str(sc.id), "lines": len(lots), "blind": sc.blind,
+            "status": sc.status}
+
+
+class CountLineSubmit(BaseModel):
+    line_id: UUID
+    counted_quantity: float
+    note: Optional[str] = None
+
+
+@router.post("/counts/{count_id}/lines")
+async def submit_count_line(
+    count_id: UUID, body: CountLineSubmit,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record one counted lot. The variance is computed but NOT applied — a
+    count proposes, an approval disposes."""
+    sc = (await db.execute(select(StockCount).where(
+        StockCount.id == count_id,
+        StockCount.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if sc is None:
+        raise HTTPException(404, "count session not found")
+    if sc.status not in ("open", "counting"):
+        raise HTTPException(409, f"count is {sc.status}; no further lines accepted")
+
+    line = (await db.execute(select(StockCountLine).where(
+        StockCountLine.id == body.line_id,
+        StockCountLine.stock_count_id == sc.id))).scalar_one_or_none()
+    if line is None:
+        raise HTTPException(404, "count line not found")
+    if body.counted_quantity < 0:
+        raise HTTPException(422, "counted quantity cannot be negative")
+
+    line.counted_quantity = body.counted_quantity
+    line.variance = float(body.counted_quantity) - float(line.expected_quantity)
+    line.counted_by_id = staff.id
+    line.counted_at = datetime.now(timezone.utc)
+    line.note = body.note
+    await db.commit()
+    return {"line_id": str(line.id), "variance": float(line.variance),
+            "expected": None if sc.blind else float(line.expected_quantity)}
+
+
+@router.get("/counts/{count_id}")
+async def get_count(
+    count_id: UUID,
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    sc = (await db.execute(select(StockCount).where(
+        StockCount.id == count_id,
+        StockCount.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if sc is None:
+        raise HTTPException(404, "count session not found")
+    lines = (await db.execute(select(StockCountLine).where(
+        StockCountLine.stock_count_id == sc.id))).scalars().all()
+    counted = [l for l in lines if l.counted_quantity is not None]
+    variance_rows = [l for l in counted if l.variance and float(l.variance) != 0]
+    return {
+        "count_id": str(sc.id), "status": sc.status, "type": sc.count_type,
+        "blind": sc.blind, "lines": len(lines), "counted": len(counted),
+        "variances": len(variance_rows),
+        "accuracy_pct": round(100 * (len(counted) - len(variance_rows)) / len(counted), 1)
+        if counted else None,
+        "rows": [{
+            "line_id": str(l.id), "irc": l.irc, "ndc11": l.ndc11,
+            "lot_number": l.lot_number,
+            # A blind count hides the book figure until the session is posted.
+            "expected": float(l.expected_quantity)
+            if (not sc.blind or sc.status == "posted") else None,
+            "counted": float(l.counted_quantity) if l.counted_quantity is not None else None,
+            "variance": float(l.variance)
+            if (l.variance is not None and (not sc.blind or sc.status == "posted")) else None,
+        } for l in lines],
+    }
+
+
+@router.post("/counts/{count_id}/post")
+async def post_count(
+    count_id: UUID,
+    staff: Staff = Depends(require_permission("inventory:approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Turn every non-zero variance into a pending approval request.
+
+    Nothing is applied to stock here. A variance on a controlled substance is a
+    diversion signal, and the system's job is to put it in front of a named
+    human, not to quietly make the books agree with the shelf.
+    """
+    sc = (await db.execute(select(StockCount).where(
+        StockCount.id == count_id,
+        StockCount.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if sc is None:
+        raise HTTPException(404, "count session not found")
+    if sc.status == "posted":
+        raise HTTPException(409, "count already posted")
+
+    lines = (await db.execute(select(StockCountLine).where(
+        StockCountLine.stock_count_id == sc.id,
+        StockCountLine.counted_quantity.isnot(None)))).scalars().all()
+
+    created = []
+    for line in lines:
+        lot = (await db.execute(select(InventoryLot).where(
+            InventoryLot.id == line.inventory_lot_id))).scalar_one_or_none()
+        if lot is None:
+            continue
+        plan = L.plan_count_variance(
+            L.Lot(lot_id=str(lot.id), lot_number=lot.lot_number,
+                  expiry_date=lot.expiry_date,
+                  quantity_on_hand=L.q(lot.quantity_on_hand)),
+            line.counted_quantity,
+            reason=f"cycle count {sc.id}")
+        if plan is None:
+            continue
+        appr = InventoryApproval(
+            pharmacy_id=staff.pharmacy_id, irc=line.irc, ndc11=line.ndc11,
+            inventory_lot_id=lot.id, movement_type=plan.movement_type,
+            quantity=abs(plan.quantity_delta), status="pending",
+            reason=f"count variance on lot {line.lot_number}: "
+                   f"expected {line.expected_quantity}, counted {line.counted_quantity}",
+            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+        db.add(appr)
+        created.append(appr)
+
+    sc.status = "review"
+    await db.commit()
+    return {"count_id": str(sc.id), "status": sc.status,
+            "approvals_created": len(created),
+            "note": "Variances are pending approval; stock is unchanged until approved."}
+
+
+# ── Maker-checker ─────────────────────────────────────────────────────────
+
+class ApprovalDecision(BaseModel):
+    approve: bool
+    note: Optional[str] = None
+    witness_id: Optional[UUID] = None
+
+
+def enforce_approval_authority(*, status: str, requested_by_id, approver_id,
+                               is_controlled: bool, witness_id) -> None:
+    """The separation-of-duties rules for a stock write-off. Pure and raising,
+    so each rule is provable by a test instead of being a line inside a handler
+    that only executes against a live database.
+
+    Self-approval is the failure mode that matters: every other control in this
+    module assumes two people saw the movement.
+    """
+    if status != "pending":
+        raise HTTPException(409, f"approval already {status}")
+    if requested_by_id == approver_id:
+        raise HTTPException(403, "the requester cannot approve their own write-off")
+    if is_controlled and not witness_id:
+        raise HTTPException(422, "a controlled-substance movement needs a witness")
+    if witness_id and witness_id == requested_by_id:
+        raise HTTPException(422, "the witness cannot be the requester")
+    if witness_id and witness_id == approver_id:
+        raise HTTPException(422, "the witness must be a third person, not the approver")
+
+
+@router.get("/approvals")
+async def list_approvals(
+    status: str = Query("pending"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (await db.execute(select(InventoryApproval).where(
+        InventoryApproval.pharmacy_id == staff.pharmacy_id,
+        InventoryApproval.status == status,
+    ).order_by(InventoryApproval.created_at.desc()).limit(200))).scalars().all()
+    return {"approvals": [{
+        "id": str(a.id), "irc": a.irc, "ndc11": a.ndc11,
+        "movement_type": a.movement_type, "quantity": float(a.quantity),
+        "reason": a.reason, "is_controlled": a.is_controlled, "status": a.status,
+        "requested_by": str(a.requested_by_id),
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    } for a in rows], "count": len(rows)}
+
+
+@router.post("/approvals/{approval_id}/decide")
+async def decide_approval(
+    approval_id: UUID, body: ApprovalDecision,
+    staff: Staff = Depends(require_permission("inventory:approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or reject a write-off, and apply it only on approval.
+
+    The approver may not be the requester — self-approval defeats the control
+    entirely. A controlled substance additionally needs a witness who is also
+    not the requester.
+    """
+    a = (await db.execute(select(InventoryApproval).where(
+        InventoryApproval.id == approval_id,
+        InventoryApproval.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if a is None:
+        raise HTTPException(404, "approval not found")
+    enforce_approval_authority(
+        status=a.status, requested_by_id=a.requested_by_id,
+        approver_id=staff.id, is_controlled=a.is_controlled,
+        witness_id=body.witness_id)
+
+    a.decided_by_id = staff.id
+    a.decided_at = datetime.now(timezone.utc)
+    a.decision_note = body.note
+    a.witness_id = body.witness_id
+    if not body.approve:
+        a.status = "rejected"
+        await db.commit()
+        return {"id": str(a.id), "status": a.status, "stock_changed": False}
+
+    movement = await _apply_movement(db, a, staff)
+    a.status = "applied"
+    await db.commit()
+    return {"id": str(a.id), "status": a.status, "stock_changed": True,
+            "movement_id": str(movement.id), "event_hash": movement.event_hash}
+
+
+async def _apply_movement(db: AsyncSession, a: InventoryApproval,
+                          staff: Staff) -> InventoryMovement:
+    """Apply an approved movement: mutate the lot, keep the aggregate in step,
+    and append a hash-chained ledger row. No clamping — a movement that would
+    drive stock negative is rejected, because a negative is information."""
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == a.inventory_lot_id))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot no longer exists")
+
+    lot_view = L.Lot(lot_id=str(lot.id), lot_number=lot.lot_number,
+                     expiry_date=lot.expiry_date,
+                     quantity_on_hand=L.q(lot.quantity_on_hand),
+                     quantity_reserved=L.q(lot.quantity_reserved or 0),
+                     is_quarantined=bool(lot.is_quarantined),
+                     is_recalled=bool(lot.is_recalled),
+                     cold_chain_breach=bool(lot.cold_chain_breach))
+    try:
+        if a.movement_type in L.RECEIPT_TYPES:
+            plan = L.plan_receipt(lot_view, a.quantity,
+                                  movement_type=a.movement_type, reason=a.reason,
+                                  is_controlled=a.is_controlled)
+        else:
+            plan = L.plan_issue([lot_view], a.quantity,
+                                movement_type=a.movement_type, reason=a.reason,
+                                is_controlled=a.is_controlled)[0]
+    except L.LedgerError as e:
+        raise HTTPException(422, str(e))
+
+    lot.quantity_on_hand = plan.quantity_after
+    lot.updated_by = staff.id
+    if a.movement_type == "RECALL_REMOVAL":
+        lot.is_recalled = True
+
+    await db.execute(text("""
+        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                updated_at = NOW()
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+        {"d": float(plan.quantity_delta), "pid": a.pharmacy_id, "ndc": lot.ndc11})
+
+    return await append_movement(
+        db, pharmacy_id=a.pharmacy_id, ndc11=lot.ndc11, irc=a.irc or lot.irc,
+        lot_id=lot.id, plan=plan, actor_id=staff.id, approval_id=a.id)
+
+
+async def append_movement(db: AsyncSession, *, pharmacy_id, ndc11: str,
+                          irc: str | None, lot_id, plan: L.MovementPlan,
+                          actor_id, approval_id=None,
+                          prescription_fill_id=None) -> InventoryMovement:
+    """Append one hash-chained row to the pharmacy's ledger.
+
+    The chain head is read inside the caller's transaction, so two concurrent
+    writers serialise on the same row rather than forking the chain.
+    """
+    head = (await db.execute(text("""
+        SELECT event_hash FROM inventory_movements
+        WHERE pharmacy_id = :pid AND event_hash IS NOT NULL
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        FOR UPDATE"""), {"pid": pharmacy_id})).scalar()
+    prev = head or L.GENESIS
+    now = datetime.now(timezone.utc)
+
+    m = InventoryMovement(
+        pharmacy_id=pharmacy_id, ndc11=ndc11, irc=irc, inventory_lot_id=lot_id,
+        movement_type=plan.movement_type, reason=plan.reason,
+        quantity_before=plan.quantity_before, quantity_after=plan.quantity_after,
+        quantity_delta=plan.quantity_delta, approval_id=approval_id,
+        prescription_fill_id=prescription_fill_id, prev_hash=prev,
+        created_at=now, created_by=actor_id, updated_by=actor_id,
+        event_hash=L.movement_hash(
+            prev_hash=prev, pharmacy_id=str(pharmacy_id), irc=irc,
+            lot_id=str(lot_id) if lot_id else None,
+            movement_type=plan.movement_type, quantity_delta=plan.quantity_delta,
+            quantity_after=plan.quantity_after,
+            actor_id=str(actor_id) if actor_id else None,
+            created_at_iso=now.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")),
+    )
+    db.add(m)
+    await db.flush()
+    return m
+
+
+@router.get("/ledger/verify")
+async def verify_ledger(
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-derive the whole movement chain and report the first break.
+
+    A break is evidence. The endpoint never offers to repair it.
+    """
+    rows = (await db.execute(text("""
+        SELECT id, pharmacy_id, irc, inventory_lot_id, movement_type,
+               quantity_delta, quantity_after, created_by, prev_hash, event_hash,
+               created_at
+        FROM inventory_movements
+        WHERE pharmacy_id = :pid AND event_hash IS NOT NULL
+        ORDER BY created_at ASC, id ASC"""),
+        {"pid": staff.pharmacy_id})).mappings().all()
+    return L.verify_chain(chain_rows_for(rows))

@@ -1,0 +1,200 @@
+"""Reconciliation checks — each test is the counterexample the check exists to
+catch, plus proof it stays quiet on clean data (a check that always fires is
+noise, and noise is what gets reports switched off).
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+from services.core.inventory import reconciliation as R
+
+TODAY = date(2026, 8, 2)
+NOW = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+
+
+# ── C1 aggregate drift ────────────────────────────────────────────────────
+def test_aggregate_matching_its_lots_is_silent():
+    assert R.check_aggregate_drift([{"irc": "1", "aggregate": 10, "lot_sum": 10}]).count == 0
+
+
+def test_aggregate_drift_is_critical_and_reports_the_gap():
+    f = R.check_aggregate_drift([{"irc": "1", "aggregate": 10, "lot_sum": 7}])
+    assert (f.count, f.severity) == (1, "critical")
+    assert f.samples[0]["drift"] == 3.0
+
+
+def test_tiny_float_noise_is_not_a_drift():
+    """Reporting 1e-9 as a discrepancy would bury the real ones."""
+    assert R.check_aggregate_drift([{"irc": "1", "aggregate": 10.0004, "lot_sum": 10}]).count == 0
+
+
+# ── C2 negative stock ─────────────────────────────────────────────────────
+def test_negative_stock_is_critical():
+    f = R.check_negative_stock([{"irc": "1", "quantity_on_hand": -2},
+                                {"irc": "2", "quantity_on_hand": 5}])
+    assert (f.count, f.severity) == (1, "critical")
+
+
+# ── C3/C4 dispensing ──────────────────────────────────────────────────────
+def test_fill_without_a_movement_is_caught():
+    fills = [{"id": "f1", "ndc_dispensed": "N1", "quantity_dispensed": 30},
+             {"id": "f2", "ndc_dispensed": "N2", "quantity_dispensed": 10}]
+    f = R.check_fills_without_movements(fills, movements_by_fill={"f2"})
+    assert f.count == 1 and f.samples[0]["fill_id"] == "f1"
+    assert f.severity == "critical"
+
+
+def test_a_fill_naming_no_lot_cannot_be_recalled():
+    fills = [{"id": "f1", "lot_number": None, "inventory_lot_id": None},
+             {"id": "f2", "inventory_lot_id": "l9"}]
+    f = R.check_untraceable_fills(fills)
+    assert f.count == 1 and f.samples[0]["fill_id"] == "f1"
+
+
+# ── C5 formulary binding ──────────────────────────────────────────────────
+def test_stock_not_bound_to_the_formulary_is_reported():
+    f = R.check_formulary_binding([{"ndc11": "N1", "irc": None, "quantity_on_hand": 5},
+                                   {"ndc11": "N2", "irc": "123"}])
+    assert f.count == 1 and f.samples[0]["ndc11"] == "N1"
+
+
+# ── C6 expiry ─────────────────────────────────────────────────────────────
+def test_expired_sellable_stock_is_critical():
+    lots = [{"lot_number": "A", "expiry_date": TODAY - timedelta(days=10),
+             "quantity_on_hand": 5},
+            {"lot_number": "B", "expiry_date": TODAY + timedelta(days=10),
+             "quantity_on_hand": 5}]
+    f = R.check_expired_on_hand(lots, as_of=TODAY)
+    assert (f.count, f.severity) == (1, "critical")
+    assert f.samples[0]["days_expired"] == 10
+
+
+def test_quarantined_expired_stock_is_already_handled():
+    """It is off the shelf. Reporting it again trains people to ignore the check."""
+    lots = [{"lot_number": "A", "expiry_date": TODAY - timedelta(days=10),
+             "quantity_on_hand": 5, "is_quarantined": True}]
+    assert R.check_expired_on_hand(lots, as_of=TODAY).count == 0
+
+
+def test_expiry_accepts_iso_strings_from_json_payloads():
+    lots = [{"lot_number": "A", "expiry_date": "2026-07-01", "quantity_on_hand": 1}]
+    assert R.check_expired_on_hand(lots, as_of=TODAY).count == 1
+
+
+# ── C7 suspicious adjustments ─────────────────────────────────────────────
+def _mv(i, actor, pct_delta, before=100, controlled=False, mtype="ADJUSTMENT"):
+    return {"id": f"m{i}", "created_by": actor, "irc": "IRC1", "movement_type": mtype,
+            "quantity_before": before, "quantity_delta": -before * pct_delta / 100,
+            "is_controlled": controlled, "reason": "count fix", "created_at": NOW}
+
+
+def test_a_small_one_off_correction_is_not_suspicious():
+    assert R.check_suspicious_adjustments([_mv(1, "s1", 2)]).count == 0
+
+
+def test_a_large_write_down_is_flagged():
+    f = R.check_suspicious_adjustments([_mv(1, "s1", 40)])
+    assert f.count == 1 and f.samples[0]["pattern"] == "large_write_down"
+
+
+def test_any_controlled_write_down_is_flagged_however_small():
+    f = R.check_suspicious_adjustments([_mv(1, "s1", 1, controlled=True)])
+    assert f.count == 1 and f.samples[0]["pattern"] == "controlled_write_down"
+
+
+def test_repeat_write_downs_by_one_person_on_one_item_form_a_pattern():
+    ms = [_mv(i, "s1", 3) for i in range(3)]
+    patterns = [s["pattern"] for s in R.check_suspicious_adjustments(ms).samples]
+    assert "repeat_write_down" in patterns
+
+
+def test_the_same_write_downs_spread_across_people_are_not_a_pattern():
+    ms = [_mv(i, f"s{i}", 3) for i in range(3)]
+    assert R.check_suspicious_adjustments(ms).count == 0
+
+
+def test_old_movements_fall_outside_the_window():
+    old = _mv(1, "s1", 90)
+    old["created_at"] = NOW - timedelta(days=90)
+    assert R.check_suspicious_adjustments([old], window_days=30).count == 0
+
+
+def test_receipts_are_never_suspicious_write_downs():
+    m = _mv(1, "s1", 40)
+    m["quantity_delta"] = 40          # a gain
+    assert R.check_suspicious_adjustments([m]).count == 0
+
+
+# ── C8/C9/C10 ─────────────────────────────────────────────────────────────
+def test_duplicate_lot_numbers_are_reported():
+    lots = [{"irc": "1", "lot_number": "ab-1", "lot_id": "x"},
+            {"irc": "1", "lot_number": "AB-1", "lot_id": "y"},   # case/space variant
+            {"irc": "1", "lot_number": "OTHER", "lot_id": "z"}]
+    f = R.check_duplicate_lots(lots)
+    assert f.count == 1 and f.samples[0]["rows"] == 2
+
+
+def test_blank_lot_numbers_are_not_duplicates_of_each_other():
+    lots = [{"irc": "1", "lot_number": "", "lot_id": "x"},
+            {"irc": "1", "lot_number": None, "lot_id": "y"}]
+    assert R.check_duplicate_lots(lots).count == 0
+
+
+def test_packs_entered_as_units_are_suspected():
+    rows = [{"irc": "1", "quantity_on_hand": 3000, "package_count": 30,
+             "avg_daily_demand": 0.5}]
+    f = R.check_unit_conversion(rows)
+    assert f.count == 1 and f.samples[0]["hypothesis"] == "packs recorded as units"
+
+
+def test_a_genuinely_fast_moving_item_is_not_a_conversion_error():
+    rows = [{"irc": "1", "quantity_on_hand": 3000, "package_count": 30,
+             "avg_daily_demand": 40}]
+    assert R.check_unit_conversion(rows).count == 0
+
+
+def test_reserving_more_than_exists_is_high_severity():
+    f = R.check_over_reservation([{"irc": "1", "quantity_on_hand": 5, "quantity_reserved": 9}])
+    assert (f.count, f.severity) == (1, "high")
+
+
+# ── C11 chain + summary ───────────────────────────────────────────────────
+def test_intact_chain_reports_zero():
+    assert R.check_chain({"intact": True, "verified": 12}).count == 0
+
+
+def test_broken_chain_refuses_to_suggest_repair():
+    f = R.check_chain({"intact": False, "break_index": 3, "detail": "edited"})
+    assert f.count == 1 and f.severity == "critical"
+    assert "Do not repair" in f.remediation
+
+
+def test_a_single_critical_finding_makes_the_whole_report_unhealthy():
+    findings = [R.check_negative_stock([{"quantity_on_hand": -1}]),
+                R.check_duplicate_lots([])]
+    s = R.summarize(findings)
+    assert s["healthy"] is False and s["blocking"] is True and s["trustworthy"] is False
+
+
+def test_clean_data_is_reported_healthy():
+    findings = [R.check_negative_stock([]), R.check_duplicate_lots([]),
+                R.check_chain({"intact": True, "verified": 0})]
+    s = R.summarize(findings)
+    assert s["healthy"] is True and s["trustworthy"] is True and s["checks_firing"] == 0
+
+
+def test_findings_are_ordered_most_severe_first():
+    findings = [R.check_duplicate_lots([{"irc": "1", "lot_number": "A", "lot_id": "x"},
+                                        {"irc": "1", "lot_number": "A", "lot_id": "y"}]),
+                R.check_negative_stock([{"quantity_on_hand": -1}])]
+    order = [f["severity"] for f in R.summarize(findings)["findings"] if f["count"]]
+    assert order == ["critical", "medium"]
+
+
+def test_medium_findings_alone_do_not_block():
+    s = R.summarize([R.check_duplicate_lots(
+        [{"irc": "1", "lot_number": "A", "lot_id": "x"},
+         {"irc": "1", "lot_number": "A", "lot_id": "y"}])])
+    # medium-only: not blocking, still trustworthy for ordering decisions, but
+    # not "healthy" — something is firing and the report must say so
+    assert s["blocking"] is False and s["trustworthy"] is True and s["healthy"] is False

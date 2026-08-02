@@ -105,6 +105,7 @@ def create_app() -> FastAPI:
         intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx, physician_message,
         lab_safety, med_reconciliation, second_brain, drug_intelligence,
         depot_transfer, ai_settings, inventory_movements, procurement,
+        inventory_integrity,
         pricing,
     )
 
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(drug_intelligence.router, prefix="/api/v1/drug-intelligence",      tags=["drug intelligence"])
     app.include_router(depot_transfer.router,    prefix="/api/v1/inventory",              tags=["depot transfer"])
     app.include_router(inventory_movements.router, prefix="/api/v1/inventory",            tags=["inventory movements"])
+    app.include_router(inventory_integrity.router, prefix="/api/v1/inventory",            tags=["inventory integrity"])
     app.include_router(procurement.router,       prefix="/api/v1/intelligence/inventory", tags=["procurement"])
     app.include_router(ai_settings.router,       prefix="/api/v1/ai-settings",            tags=["ai settings"])
 
