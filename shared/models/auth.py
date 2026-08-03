@@ -26,6 +26,9 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "patient:read", "patient:write",
         "inventory:read", "inventory:write", "inventory:order",
         "inventory:approve",
+        # The owner administers the biometric gallery: enrolment, retirement and
+        # calibration. Read alone cannot change who the system can recognise.
+        "biometric:write",
         "claims:read", "claims:submit",
         "reports:read", "staff:read", "staff:write",
         "biometric:read", "audio:read",
