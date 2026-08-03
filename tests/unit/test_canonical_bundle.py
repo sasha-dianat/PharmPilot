@@ -8,8 +8,22 @@ import pytest
 
 
 def _db_or_skip():
+    """A live-database test, pointed at the TEST database and never the real one.
+
+    DATABASE_URL is honoured so CI can redirect these — but DATABASE_URL is also
+    what `.env` sets, to the PRODUCTION database. Reading it unguarded sent this
+    file's fixtures into the live decided layer on 2026-08-03: three formulary
+    snapshots for insurers `regtest_a`/`regtest_b` and a crosswalk row pointing
+    at IRC `__REGT__`, which fired the `crosswalk_dangling_irc` critical until
+    it was found and archived a day later. A test that writes must name the
+    database it is willing to write to.
+    """
     url = os.environ.get("DATABASE_URL",
         "postgresql+asyncpg://pharmpilot:pharmpilot_dev@127.0.0.1:5433/pharmpilot_test")
+    dbname = url.rsplit("/", 1)[-1].split("?")[0]
+    if not dbname.endswith("_test"):
+        pytest.skip(f"refusing to write fixtures to non-test database {dbname!r} — "
+                    "point DATABASE_URL at pharmpilot_test to run this")
     try:
         from sqlalchemy.ext.asyncio import create_async_engine
         eng = create_async_engine(url)
@@ -38,8 +52,10 @@ def test_snapshot_capture_and_bundle_roundtrip(tmp_path):
     async def run():
         eng = create_async_engine(url)
         S = async_sessionmaker(eng, expire_on_commit=False)
-        async with S() as db:
-            # clean slate for our markers
+
+        async def scrub(db):
+            """Remove this test's markers. Called before AND in a finally after,
+            so a failed assertion cannot leave fixtures in the database."""
             await db.execute(delete(FormularySnapshot).where(
                 FormularySnapshot.insurer == "testins"))
             await db.execute(delete(CrosswalkEntry).where(
@@ -48,6 +64,9 @@ def test_snapshot_capture_and_bundle_roundtrip(tmp_path):
                 FieldOverride.irc == "__XTEST__"))
             await db.commit()
 
+        async with S() as db:
+          await scrub(db)
+          try:
             # X4: snapshots keep code, price, share, covered + the raw row
             n = await save_snapshots(db, run_id, "testins", [
                 {"drug_name": "METFORMIN 500", "drug_code": "01211",
@@ -91,12 +110,8 @@ def test_snapshot_capture_and_bundle_roundtrip(tmp_path):
                 CrosswalkEntry.insurer == "testins"))).scalar_one()
             assert back.irc == "__XTEST__" and back.status == "confirmed"
             assert back.source_code == "01211"
-
-            # cleanup
-            await db.execute(delete(FormularySnapshot).where(FormularySnapshot.insurer == "testins"))
-            await db.execute(delete(CrosswalkEntry).where(CrosswalkEntry.insurer == "testins"))
-            await db.execute(delete(FieldOverride).where(FieldOverride.irc == "__XTEST__"))
-            await db.commit()
+          finally:
+            await scrub(db)
         await eng.dispose()
 
     asyncio.get_event_loop().run_until_complete(run())
@@ -144,17 +159,21 @@ def test_code_registry_richest_name_and_confirmed_irc_only():
                                   reason="wrong_product")
             await db.commit()
 
-            reg = await build_code_registry(db)
-            assert reg["90287"]["name"].startswith("CICLOSPORIN 100 mg")  # richest wins
-            assert "irc" not in reg["90287"]                    # rejected ≠ confirmed
-            assert reg["90001"] == {"name": "PLAIN ITEM", "irc": "__REGT__"}
-
-            for ins in ("regtest_a", "regtest_b"):
-                await db.execute(delete(FormularySnapshot).where(
-                    FormularySnapshot.insurer == ins))
-                await db.execute(delete(CrosswalkEntry).where(
-                    CrosswalkEntry.insurer == ins))
-            await db.commit()
+            # The cleanup is in `finally` because it used not to be: when an
+            # assertion below failed, the fixtures stayed behind in whatever
+            # database this ran against.
+            try:
+                reg = await build_code_registry(db)
+                assert reg["90287"]["name"].startswith("CICLOSPORIN 100 mg")  # richest wins
+                assert "irc" not in reg["90287"]                # rejected ≠ confirmed
+                assert reg["90001"] == {"name": "PLAIN ITEM", "irc": "__REGT__"}
+            finally:
+                for ins in ("regtest_a", "regtest_b"):
+                    await db.execute(delete(FormularySnapshot).where(
+                        FormularySnapshot.insurer == ins))
+                    await db.execute(delete(CrosswalkEntry).where(
+                        CrosswalkEntry.insurer == ins))
+                await db.commit()
         await eng.dispose()
 
     asyncio.get_event_loop().run_until_complete(run())
