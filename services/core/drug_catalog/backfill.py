@@ -32,9 +32,18 @@ _ROUTES = ("PARENTERAL", "INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS", "ORAL",
            "INTRAVESICAL", "EPIDURAL", "INTRATHECAL", "BUCCAL", "DENTAL")
 
 # A dose: number + unit, optionally "per" a denominator («10 mg/1mL», «1 g/5mL»).
+# Radioactivity belongs in this vocabulary: a radiopharmaceutical is labelled by
+# its activity at calibration («FLUDEOXYGLUCOSE F-18 10 mCi»), which is that
+# product's strength in exactly the sense mg is a tablet's.
+# mEq/mmol/mOsm matter more than their rarity suggests: they are how every
+# electrolyte and dialysis concentrate states its FIRST component. Omitting them
+# does not make such a row unparseable — it makes the reader skip past sodium to
+# whatever later component does carry a familiar unit, and emit that as the
+# product's strength. A missing unit here is a wrong answer, not a blank one.
 _DOSE = re.compile(
-    r"\d+(?:[.,]\d+)?\s*(?:mcg|microgram|µg|ug|mg|kg|gr|g|%|\[\s*iU\s*\]|IU|units?)"
-    r"(?:\s*/\s*\d+(?:[.,]\d+)?\s*(?:mcg|µg|ug|mg|g|mL|ml|L)\b)?", re.I)
+    r"\d+(?:[.,]\d+)?\s*(?:mcg|microgram|µg|ug|mg|kg|gr|g|%|\[\s*iU\s*\]|IU|units?"
+    r"|mCi|µCi|uCi|Ci|MBq|GBq|kBq|mEq|meq|mmol|mol|mOsm|mosm)"
+    r"(?:\s*/\s*\d+(?:[.,]\d+)?\s*(?:mcg|µg|ug|mg|g|mL|ml|L|kg)\b)?", re.I)
 
 # A trailing PACK SIZE, e.g. "0.5MILLILITER", "110GRAM", "1LITER".
 # It must be preceded by whitespace: in «100000 [iU]/1g 15GRAM» the "1g" is the
@@ -78,8 +87,52 @@ def strength_from_generic_full(generic_full: str, dosage_form: str = "") -> str 
     return out
 
 
+def strength_from_composition(composition: str) -> str | None:
+    """The dose stated in NFI's «ترکیبات» string, or None.
+
+    `nfi.parse_detail` split this field with a name pattern of
+    ``[A-Za-z \\-/+.]*`` — which admits no comma, bracket, colon, parenthesis or
+    digit. Every substance whose printed name contains one of those lost its
+    dose at parse time even though the page stated it plainly:
+
+        GONADOTROPHIN, CHORIONIC 5000 [iU]      comma
+        Brigatinib [USAN:INN] 180 mg            bracket + colon
+        Follitropin Alfa (alpha-subunit) 600 [iU]/1mL   parentheses
+        Vitamin K1 10 mg                        digit in the name
+
+    Locating the dose instead of the name removes the whole class: read from the
+    first number-with-a-unit to the end. Substances printed with no dose at all
+    («AMYL NITRITE», «Immune Globulin» on antivenoms, «APREMILAST mg» where the
+    page carries a unit and no number) return None — an antivenom's potency is
+    not expressible in this column, and inventing one would be worse than the
+    gap it fills.
+    """
+    s = re.sub(r"\s+", " ", str(composition or "")).strip()
+    if not s:
+        return None
+    hits = [m.group(0) for m in _DOSE.finditer(s)]
+    if not hits:
+        return None
+    out = s[s.upper().index(hits[0].upper()):].strip()
+    if not out or out.rstrip().endswith(("/", "+", "-")):
+        return None
+    return out
+
+
 async def backfill_strength(db, *, dry_run: bool = True, limit: int | None = None) -> dict:
-    """Fill an empty `strength` from `monograph.generic_full`.
+    """Fill an empty `strength` from what NFI already published for the row.
+
+    Two sources, in this order of trust:
+
+    1. `monograph.composition` («ترکیبات») — printed on the PRODUCT's own page.
+    2. `monograph.generic_full` («نام عمومی») — the shared monograph title.
+
+    Composition goes first because it is per-product where the title is
+    per-monograph: two brigatinib rows carry «180 mg» and «90 mg» in
+    composition, while a monograph title is exactly the field the spliced-page
+    audit found attached to the wrong drug 204 times. Preferring the narrower
+    source is the difference between reading this row's dose and inheriting a
+    neighbour's.
 
     Never overwrites a stated strength, and writes nothing whose extraction
     yields no parseable dose. `ingredient_key` is recomputed in the same
@@ -97,21 +150,28 @@ async def backfill_strength(db, *, dry_run: bool = True, limit: int | None = Non
 
     filled, no_dose, no_source, samples = 0, 0, 0, []
     regrouped = 0
+    from_composition = 0
     for r in rows:
-        gf = (r.monograph or {}).get("generic_full")
-        if not gf:
+        mono = r.monograph or {}
+        comp, gf = mono.get("composition"), mono.get("generic_full")
+        if not comp and not gf:
             no_source += 1
             continue
-        got = strength_from_generic_full(gf, r.dosage_form or "")
+        got, src = strength_from_composition(comp or ""), "composition"
+        if not got or not sm.dose_set(got):
+            got, src = strength_from_generic_full(gf or "", r.dosage_form or ""), "generic_full"
         if not got or not sm.dose_set(got):
             no_dose += 1
             continue
+        if src == "composition":
+            from_composition += 1
         if len(samples) < 12:
-            samples.append({"irc": r.irc, "name_fa": r.name_fa,
-                            "generic_full": gf[:70], "strength": got})
+            samples.append({"irc": r.irc, "name_fa": r.name_fa, "source": src,
+                            "from": str((comp if src == "composition" else gf) or "")[:70],
+                            "strength": got})
         if not dry_run:
             r.strength = got[:80]                     # DB column width
-            vol = " ".join(x for x in (got, gf) if x)
+            vol = " ".join(x for x in (got, gf or "") if x)
             new_key = ingredient_key(r.generic_name or "", r.strength,
                                      r.dosage_form or "",
                                      volume=vol if volume_set(vol) else "")
@@ -123,6 +183,7 @@ async def backfill_strength(db, *, dry_run: bool = True, limit: int | None = Non
             break
     if not dry_run:
         await db.commit()
-    return {"candidates": len(rows), "filled": filled, "no_dose_in_source": no_dose,
+    return {"candidates": len(rows), "filled": filled, "from_composition": from_composition,
+            "no_dose_in_source": no_dose,
             "no_generic_full": no_source, "ingredient_key_changed": regrouped,
             "dry_run": dry_run, "samples": samples}

@@ -303,6 +303,104 @@ def components(text) -> list[str]:
     return out
 
 
+# Words that appear inside a strength string and are never an ingredient.
+_UNIT_WORDS = frozenset((
+    "mg", "gr", "kg", "ug", "mcg", "microgram", "ml", "iu", "dose", "doses",
+    "puff", "puffs", "actuation", "actuations", "unit", "units", "hr", "hour",
+    "mmol", "mol", "meq", "mosm", "ci", "mci", "uci", "bq", "mbq", "gbq",
+    "as", "and", "per", "each", "in", "of", "the", "sterile", "water", "usp"))
+
+
+def doses_agree_all(a: set, b: set, tol: float = 0.01) -> bool:
+    """Every dose on each side has a partner on the other.
+
+    `doses_agree` asks whether the two sides share ANY dose, which is the right
+    question for a single-ingredient row that may carry stray numbers. For a
+    combination it is far too weak: «EMPAGLIFLOZIN / LINAGLIPTIN 10 mg/5 mg»
+    and a 25 mg/5 mg record share the 5, and matching on that alone offers the
+    patient a 25 mg tablet against a 10 mg entitlement. A combination is
+    identified by its whole dose vector, not by one component of it."""
+    if not a or not b:
+        return True                      # silence is not disagreement
+    one = lambda x, ys: any(
+        (x[0] == y[0] and abs(x[1] - y[1]) <= tol * max(x[1], y[1], 1e-9))
+        if isinstance(x, tuple) and isinstance(y, tuple)
+        else (not isinstance(x, tuple) and not isinstance(y, tuple)
+              and abs(x - y) <= tol * max(x, y, 1e-9))
+        for y in ys)
+    return all(one(x, b) for x in a) and all(one(y, a) for y in b)
+
+
+def record_components(rec, known: set[str]) -> list[str]:
+    """Every active ingredient of a catalog record.
+
+    `generic_name` alone understates a fixed-dose combination — NFI puts the
+    first ingredient there and the rest in the dose. Two further sources say
+    what the product actually contains:
+
+      * `monograph.generic_full` — «PIPERACILLIN (AS SODIUM) / TAZOBACTAM (AS
+        SODIUM) INJECTION, POWDER…» names every ingredient ahead of the form,
+        and needs no vocabulary to be believed.
+      * `strength` — «10 mg/LINAGLIPTIN 5 mg», gated on the known vocabulary
+        because that field also carries units and packaging words.
+
+    Only ever ADDS ingredients, which is the fail-safe direction: an extra
+    component makes the record harder to match (the ingredient sets must agree
+    exactly), so a bad reading withholds a link rather than inventing one.
+    """
+    comps = components(getattr(rec, "generic_name", "") or "")
+    if not comps:
+        return comps
+    gf = str((getattr(rec, "monograph", None) or {}).get("generic_full") or "")
+    if gf:
+        form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
+        head = gf[:gf.upper().index(form)] if form and form in gf.upper() else gf
+        head = re.split(r"\d", head)[0]          # never read past the first dose
+        for c in components(head):
+            if c not in comps:
+                comps.append(c)
+    for c in embedded_components(getattr(rec, "strength", "") or "", known):
+        if c not in comps:
+            comps.append(c)
+    return comps
+
+
+def embedded_components(strength, known: set[str]) -> list[str]:
+    """Ingredient names NFI buried inside a strength string.
+
+    For a fixed-dose combination NFI states only the FIRST ingredient in
+    «نام ژنریک» and writes the others into the dose:
+
+        generic_name = 'empagliflozin'
+        strength     = '10 mg/LINAGLIPTIN 5 mg'
+
+    The record therefore advertises one ingredient while being a two-ingredient
+    product, and `match()`'s ingredient-set guard — which is right to demand
+    agreement in both directions — refuses candidates that agree on molecule
+    set, form AND dose. Reading the buried names back makes the record describe
+    itself honestly.
+
+    A token counts only if it canonicalizes to an ingredient the catalog
+    already knows, so unit words and packaging noise can never be promoted to
+    an active ingredient by accident.
+    """
+    out: list[str] = []
+    for part in re.split(r"[/+]", str(strength or "")):
+        p = re.sub(r"\([^)]*\)|\{[^}]*\}", " ", part)
+        p = re.sub(r"[^A-Za-z\s-]", " ", p)
+        words = [w for w in p.split() if len(w) > 2 and w.lower() not in _UNIT_WORDS]
+        while words:
+            name = re.sub(r"\s+", " ", " ".join(words).lower()).strip()
+            cg = (canonical_ingredient(normalize(name)) or name).strip()
+            cg = re.sub(r"\s+", " ", cg)
+            if cg in known:
+                if cg not in out:
+                    out.append(cg)
+                break
+            words.pop()            # «fluticasone propionate» → «fluticasone»
+    return out
+
+
 def build_index(catalog) -> dict:
     """(canonical generic, exact form) → [(record, doses, component set)], plus a
     form-family index. Component sets let a combination match only another
@@ -310,8 +408,12 @@ def build_index(catalog) -> dict:
     exact: dict[tuple, list] = {}
     family: dict[tuple, list] = {}
     salt: dict[tuple, list] = {}
+    # Vocabulary first: an ingredient buried in a strength string is only
+    # believed if some record states it as its own generic name.
+    known = {c for rec in catalog
+             for c in components(getattr(rec, "generic_name", "") or "")}
     for rec in catalog:
-        comps = components(getattr(rec, "generic_name", "") or "")
+        comps = record_components(rec, known)
         if not comps:
             continue
         form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
@@ -361,7 +463,11 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
                 # combination that merely contains it.
                 if comps != want:
                     continue
-                if doses and cat_doses and not doses_agree(doses, cat_doses):
+                # A combination is identified by its whole dose vector: sharing
+                # one component's dose is not agreement (10 mg/5 mg is not
+                # 25 mg/5 mg).
+                agree = doses_agree_all if combo else doses_agree
+                if doses and cat_doses and not agree(doses, cat_doses):
                     continue
                 # a 10 mL vial is not a 100 mL vial, however well the dose agrees
                 if not volumes_agree(vols, cat_vols):

@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import urllib.request
 
+from .backfill import strength_from_composition, strength_from_generic_full
+
 BASE = "https://irc.fda.gov.ir"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/148.0 Safari/537.36")
@@ -151,6 +153,18 @@ def parse_detail(html: str, page_id: int | None = None) -> dict | None:
         out["strength"] = m.group(2).strip()
     elif raw.get("generic_full"):
         out["generic_name"] = raw["generic_full"].split()[0].lower()
+    if not out.get("strength"):
+        # The pattern above reads the NAME to find where the dose starts, and
+        # its name class admits no comma, bracket, colon, parenthesis or digit —
+        # so «GONADOTROPHIN, CHORIONIC 5000 [iU]», «Brigatinib [USAN:INN] 180
+        # mg» and «Vitamin K1 10 mg» all dropped a dose the page stated plainly.
+        # Locating the DOSE instead recovers those without touching
+        # generic_name, for which the name pattern is still the better reader
+        # (it would otherwise hand «brigatinib [usan:inn]» to ingredient_key).
+        got = strength_from_composition(comp) or strength_from_generic_full(
+            raw.get("generic_full") or "", raw.get("dosage_form") or "")
+        if got:
+            out["strength"] = got
     if raw.get("generic_full"):
         out["generic_full"] = raw["generic_full"]
 

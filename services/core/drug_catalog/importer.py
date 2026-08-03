@@ -170,8 +170,13 @@ def _clamp(field: str, v):
 # page that simply omits a price would otherwise null a good value: the 2026-07-25
 # re-crawl wiped 728 prices this way, including gap-fills the owner had just
 # approved. A stale price with a visible announced_price_at beats no price.
+# `strength` is sticky for the same reason a price is, and with less ambiguity:
+# a dose that a page stops printing has not stopped existing. It is also part of
+# `ingredient_key`, so erasing it silently regroups the row away from the
+# coverage matched to it — a blank arriving from one crawl would undo every dose
+# recovered by `backfill`, which reads fields NFI already published.
 _STICKY_FIELDS = ("coverage", "monograph", "country", "license_owner",
-                  "brand_owner", "license_valid_until",
+                  "brand_owner", "license_valid_until", "strength",
                   "announced_price", "last_invoice_price")
 # sticky fields where a literal 0 means "no value", not "the value is zero"
 _ZERO_IS_ABSENT = ("announced_price", "last_invoice_price")
@@ -220,6 +225,8 @@ def upsert_values(r: CatalogRecord, *, source: str) -> tuple[dict, dict]:
         prices even after None was already guarded."""
         if v is None:
             return True
+        if isinstance(v, str) and not v.strip():
+            return True          # a blank string is a gap in the page, not a claim
         return field in _ZERO_IS_ABSENT and not v
 
     update_cols = {k: v for k, v in values.items()

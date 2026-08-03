@@ -448,3 +448,78 @@ incorrect one rather than silently rewriting history.
 For a transfer, add `HANDOFF from <model> to <model>` and list the exact paths,
 base commit, accepted behavior, failed checks, and unresolved risks. The receiving
 model must append an acceptance entry before editing.
+
+### 2026-08-04 00:20 +0330 — Claude (Opus 5) — 861 open incompatibilities → 582, by fixing three engines rather than filing 861 rulings
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`, uncommitted at time of writing
+- Changed:
+  - `services/core/drug_catalog/backfill.py` — new `strength_from_composition`;
+    `backfill_strength` now prefers «ترکیبات» (per-product) over «نام عمومی»
+    (per-monograph, the field the spliced-page audit found misattached 204×).
+    Dose vocabulary widened with radioactivity (mCi/µCi/MBq/GBq) and
+    electrolyte units (mEq/mmol/mOsm) — the latter is not a nicety: without it
+    the reader skipped past «SODIUM 3710 meq» to a later component and emitted
+    THAT as the product's strength.
+  - `services/core/drug_catalog/nfi.py` — `parse_detail` recovers a strength
+    when its name-first regex fails. That regex's name class admits no comma,
+    bracket, colon, parenthesis or digit, so «GONADOTROPHIN, CHORIONIC 5000
+    [iU]», «Brigatinib [USAN:INN] 180 mg» and «Vitamin K1 10 mg» all dropped a
+    dose the page stated plainly. generic_name still comes from the old regex —
+    the new reader would hand «brigatinib [usan:inn]» to `ingredient_key`.
+  - `services/core/drug_catalog/importer.py` — `strength` is now sticky, and a
+    blank string counts as absent for every sticky field. Without this a single
+    crawl that parsed no dose would erase the 730 strengths recovered in
+    8f3f9ce and the 86 recovered here.
+  - `services/core/drug_catalog/structural_match.py` — `record_components` +
+    `embedded_components` + `doses_agree_all`.
+  - `services/core/drug_catalog/issue_registry.py` — `ruled_subjects`; a row
+    ruled individually now leaves its count.
+- Interfaces/schema/data: no migration (head stays 0033). Data written:
+  86 strengths + their recomputed `ingredient_key`; 12 `issue_dispositions`;
+  5 `crosswalk_entries`. Snapshots `catalog_backup_pre_composition` and
+  `crosswalk_backup_regtest_20260804`.
+- Verification:
+  - `pytest tests/unit` → 1170 passed, 1 failed. The failure is
+    `test_integrations_sandbox.py::test_notifications_sandbox_...`, which fails
+    identically with every change of mine stashed and passes in isolation — a
+    pre-existing caplog/ordering artifact, not a regression here.
+  - Composition extractor validated against 38,552 rows that already carry a
+    strength: 98.2% agreement (97.6% exact). The widened vocabulary left the
+    generic_full path at 98.1%.
+  - New `tests/unit/test_combination_matching.py` (12 tests).
+- Two defects found and closed that were NOT on the board:
+  - **«PIPERACILLIN 4 g» matched a piperacillin/tazobactam record at 0.93** —
+    above the auto-apply line — because a combination understates itself
+    (`generic_name` holds only the first ingredient). A patient entitled to
+    piperacillin alone would have been quoted Tazocin.
+  - **`doses_agree` accepts a single shared dose**, so «EMPAGLIFLOZIN /
+    LINAGLIPTIN 10 mg/5 mg» matched a 25 mg/5 mg record on the shared 5.
+    Combinations now require the whole dose vector (`doses_agree_all`).
+- Judgement lane cleared to 0: 12 price gaps ruled pack-basis (in every one the
+  reference/announced ratio equals `package_count`), 5 conflicts adjudicated —
+  3 confirmed (Madopar, Sinemet, naphazoline+antazoline), 2 rejected as
+  clinically wrong: **PGF2α matched to dinoprostone (PGE2)** and **CEPHALEXIN
+  matched to cefazolin injection** (oral vs parenteral). Full rationale in
+  `docs/review-2026-08-04-incompatibility-adjudication.json`.
+- A hypothesis worth recording because it was WRONG: the pack-basis pattern
+  looked general, but measured across all 45,797 priced coverage entries the
+  insurer reference agrees with the UNIT price (47.5% within ±11%) and with the
+  package price only 0.3% of the time. The 12 are per-row exceptions, so each
+  was ruled individually rather than by a blanket rule that would have silenced
+  genuinely wrong prices.
+- Risks/blockers:
+  - 179 formulary rows moved from "unmatched" into the review queue at 0.70.
+    They are correct pairings on inspection (Symbicort, Tazocin, Seretide,
+    Tienam, Cosopt, Azarga) but they are **evidence, not decisions** — none is
+    applied until the owner confirms.
+  - `crosswalk_dangling_irc` was firing on `PLAIN ITEM / __REGT__`, a
+    regression-test fixture living in the production decided layer since
+    2026-08-03 18:20. Removed (backed up first). **Whatever test writes to the
+    live database should be found and pointed at `pharmpilot_test`.**
+  - The CEPHALEXIN→cefazolin link arrived via the national-code join at 0.72,
+    which suggests a code collision that deserves its own look.
+- Next action/owner: owner to confirm the 254 review-queue rows (they are now
+  mostly correct combination pairings); then the ~27,000 uncrawled NFI ids,
+  which is what the remaining 390 missing strengths and 79 absent presentations
+  actually need.

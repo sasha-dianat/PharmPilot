@@ -215,42 +215,86 @@ async def set_disposition(db, *, issue_type: str, subject_key: str,
 
 
 # ── counting ────────────────────────────────────────────────────────────────
-async def _nfi_counts(db) -> dict[str, int]:
+def ruled_subjects(disp: dict) -> dict[str, set[str]]:
+    """Individually-ruled subjects, by cause.
+
+    A cause is closed only by a `*` ruling, which is right: `price_gap_extreme`
+    must never be blanket-silenced, or a genuinely wrong price would stop being
+    reported. But the counts are pure SQL, so a row the owner HAS ruled on went
+    on being counted forever — both spliced monographs were accepted
+    individually and the board still read 2, and the pack-basis price gaps
+    resurfaced after every ruling. A decided row is not an open incompatibility.
+
+    `deferred` is deliberately not here: it records that work is postponed, not
+    that the question is settled.
+    """
+    out: dict[str, set[str]] = {}
+    for key, val in disp.items():
+        cause, _, subject = key.partition("|")
+        if not subject or subject == "*" or subject.startswith("cause:"):
+            continue
+        if val.get("disposition") in ("accepted", "resolved", "wont_fix"):
+            out.setdefault(cause, set()).add(subject)
+    return out
+
+
+async def _nfi_counts(db, ruled: dict[str, set[str]] | None = None) -> dict[str, int]:
     from sqlalchemy import text
     cutoff = licence_cutoff()
+    ruled = ruled or {}
 
-    async def n(cond: str) -> int:
-        return (await db.execute(text(
-            f"SELECT count(*) FROM drug_catalog WHERE {cond}"))).scalar() or 0
+    async def n(cond: str, cause: str = "") -> int:
+        excl = sorted(ruled.get(cause, ()))
+        sql = f"SELECT count(*) FROM drug_catalog WHERE {cond}"
+        if excl:
+            sql += " AND irc <> ALL(:excl)"
+        return (await db.execute(text(sql),
+                                 {"excl": excl} if excl else {})).scalar() or 0
     return {
         "nfi_spliced": await n("monograph->'integrity'->>'spliced_page'='true' "
-                               "AND coalesce(monograph->'integrity'->>'repaired','')<>'true'"),
-        "nfi_missing_country": await n("country IS NULL OR country=''"),
+                               "AND coalesce(monograph->'integrity'->>'repaired','')<>'true'",
+                               "nfi_spliced"),
+        "nfi_missing_country": await n("country IS NULL OR country=''",
+                                       "nfi_missing_country"),
         "nfi_price_expired_registration": await n(
             "coalesce(announced_price,0)=0 AND license_valid_until IS NOT NULL "
-            f"AND license_valid_until <> '' AND left(license_valid_until,7) < '{cutoff}'"),
+            f"AND license_valid_until <> '' AND left(license_valid_until,7) < '{cutoff}'",
+            "nfi_price_expired_registration"),
         "nfi_missing_price_active": await n(
             "coalesce(announced_price,0)=0 AND (license_valid_until IS NULL "
             "OR license_valid_until = '' "
-            f"OR left(license_valid_until,7) >= '{cutoff}')"),
-        "nfi_missing_atc": await n("atc IS NULL OR atc=''"),
-        "nfi_missing_strength": await n("strength IS NULL OR strength=''"),
+            f"OR left(license_valid_until,7) >= '{cutoff}')", "nfi_missing_price_active"),
+        "nfi_missing_atc": await n("atc IS NULL OR atc=''", "nfi_missing_atc"),
+        "nfi_missing_strength": await n("strength IS NULL OR strength=''",
+                                        "nfi_missing_strength"),
     }
 
 
-async def _price_counts(db, extreme_pct: int = 1000) -> dict[str, int]:
+async def _price_counts(db, extreme_pct: int = 1000,
+                        ruled: dict[str, set[str]] | None = None) -> dict[str, int]:
     from sqlalchemy import text
+    ruled = ruled or {}
     sql = """
       SELECT count(*) FROM drug_catalog dc
       WHERE dc.announced_price > 0 AND jsonb_typeof(dc.coverage)='object'
+        {excl}
         AND EXISTS (SELECT 1 FROM jsonb_each(dc.coverage) e
               WHERE jsonb_typeof(e.value)='object'
                 AND coalesce((e.value->>'reference_price')::numeric, 0) > 0
                 AND abs((e.value->>'reference_price')::numeric - dc.announced_price)
                     {op} :pct/100.0 * dc.announced_price)"""
-    extreme = (await db.execute(text(sql.format(op=">")),
-                                {"pct": extreme_pct})).scalar() or 0
-    any_gap = (await db.execute(text(sql.format(op=">")), {"pct": 50})).scalar() or 0
+    ex_x = sorted(ruled.get("price_gap_extreme", ()))
+    ex_m = sorted(ruled.get("price_gap_moderate", ()))
+    extreme = (await db.execute(
+        text(sql.format(op=">", excl="AND dc.irc <> ALL(:excl)" if ex_x else "")),
+        {"pct": extreme_pct, **({"excl": ex_x} if ex_x else {})})).scalar() or 0
+    # `moderate` is derived as any_gap - extreme, so a row ruled at the extreme
+    # tier must leave BOTH counts — otherwise ruling it merely demotes it into
+    # the moderate bucket and the total never falls.
+    ex_a = sorted(set(ex_x) | set(ex_m))
+    any_gap = (await db.execute(
+        text(sql.format(op=">", excl="AND dc.irc <> ALL(:excl)" if ex_a else "")),
+        {"pct": 50, **({"excl": ex_a} if ex_a else {})})).scalar() or 0
     return {"price_gap_extreme": extreme,
             "price_gap_moderate": max(0, any_gap - extreme)}
 
@@ -319,11 +363,12 @@ async def board(db, *, include_closed: bool = False) -> dict:
     """The triage board: every cause with its count, lane, action and ruling.
 
     → {causes: [...], totals: {open, acknowledged, by_lane}, lanes: {...}}"""
-    counts: dict[str, int] = {}
-    counts.update(await _nfi_counts(db))
-    counts.update(await _price_counts(db))
-    counts.update(await _coverage_counts(db))
     disp = await load_dispositions(db)
+    ruled = ruled_subjects(disp)
+    counts: dict[str, int] = {}
+    counts.update(await _nfi_counts(db, ruled))
+    counts.update(await _price_counts(db, ruled=ruled))
+    counts.update(await _coverage_counts(db))
 
     causes = []
     for key, meta in CAUSES.items():
