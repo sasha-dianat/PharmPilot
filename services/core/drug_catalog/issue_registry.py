@@ -310,8 +310,19 @@ async def _coverage_counts(db) -> dict[str, int]:
     from .enrichment import load_approved
 
     BULK = re.compile(r"\bBULK\b|فله|ترکيبي|ترکیبی", re.I)
+    # Consumables and appliances the insurer lists beside medicines. The Persian
+    # terms matter as much as the English: ostomy appliances, insulin pens and
+    # cartridge needles, blood-glucose strips and elastomeric pumps were all
+    # sitting in the RESEARCH lane, waiting for a molecule they will never have.
+    # Deliberately NOT matched here: «GELATIN MODIFIED 500 ML INFUSION» (a plasma
+    # volume expander), C1-esterase inhibitor and gaseous gangrene antitoxin are
+    # medicines that happen to sit next to this group in the list.
     DEV = re.compile(r"\bROLL|GAUZE|SYRINGE|CATHETER|BANDAGE|SET\b|CONTAINER|"
-                     r"BAG\b|STRIP|GLOVE|MASK", re.I)
+                     r"BAG\b|STRIP|GLOVE|MASK|DROPPER|GELATIN CAPSUL|"
+                     r"CREAM BASE|COLD CREAM|OSTOMY|"
+                     r"استومي|استومی|کيسه يورستومي|سرسوزن|"
+                     r"قلم تزريق|کارتريج انسولين|كارتريج انسولين|"
+                     r"نوار تست|پمپ تزريق|چسب کانوکس|چسب كانوkس|چسب كانوکس", re.I)
     catalog = await repo.fetch_all(db)
     vocab = sm.build_form_vocab(catalog)
     known = {c for r in catalog for c in sm.components(r.generic_name or "")}

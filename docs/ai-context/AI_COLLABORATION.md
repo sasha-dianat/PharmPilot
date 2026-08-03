@@ -523,3 +523,46 @@ model must append an acceptance entry before editing.
   mostly correct combination pairings); then the ~27,000 uncrawled NFI ids,
   which is what the remaining 390 missing strengths and 79 absent presentations
   actually need.
+
+### 2026-08-04 01:40 +0330 — Claude (Opus 5) — 582 → 462: closing what no source can fill
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Why this follow-up: the owner asked why 582 still showed after the previous
+  entry claimed the incompatibilities were treated. The answer had two parts and
+  only one of them was a labelling issue.
+  - The «ناسازگاری‌ها» tab counts every open CAUSE, and those are two different
+    kinds of thing: contradictions (two sources disagreeing) and absences (data
+    nobody published). The contradictions were at zero. Everything left was an
+    absence — but the tab gives them one word.
+  - The other part was a fair hit: some of those absences can never be filled by
+    any action, and had no business sitting in a research queue.
+- Changed:
+  - `issue_registry.py` — the device/consumable regex named no Persian terms, so
+    ostomy appliances, insulin pens and cartridge needles, blood-glucose strips
+    and elastomeric infusion pumps sat in the RESEARCH lane waiting for a
+    molecule they will never have. Deliberately NOT swept in: «GELATIN MODIFIED
+    500 ML INFUSION» (a plasma volume expander), C1-esterase inhibitor and
+    gaseous gangrene antitoxin are medicines that merely sit next to that group.
+  - 100 `nfi_missing_strength` rows dispositioned `accepted` per IRC — 62 blood
+    products (a unit of plasma or platelets has no mg/mL), 25 gases and volatiles
+    (the number on a nitrous oxide cylinder is its weight), 12 antivenoms and
+    antitoxins (potency is venom neutralised per vial), 1 cream base. These are
+    closed because no NFI page will ever carry the number, not because the
+    number stopped mattering.
+- Verification: `pytest tests/unit` → 1203 passed, 1 skipped, 1 failed
+  (`test_integrations_sandbox`, the same pre-existing ordering artifact). Board
+  read twice in one session and identical both times: open 462, judgement 0.
+- Two data-quality findings for the owner, neither a drug problem:
+  - **«نام ژنريک» is in the formulary data as a row.** That is the spreadsheet's
+    own column header ingested as a product. Worth finding in the upload parser.
+  - **«حق فني (غير بيمه اي)…»** — a professional-fee line, also ingested as a
+    product row.
+- Risks/blockers: the remaining 462 are 290 strengths and 172 unmatched rows
+  that genuinely need the ~27,000 uncrawled NFI ids. Of the 172, 95 are insurer
+  rows that state no dose at all («DEXTROSE», «BUDESONIDE/FORMOTEROL») — no
+  external research pins a doseless heading to one presentation, so these are
+  arguably an owner group-level decision rather than a research item, and the
+  registry has no lane that says so.
+- Next action/owner: owner to confirm the 251 review-queue rows; then the NFI
+  re-crawl, which is what everything remaining actually waits on.
