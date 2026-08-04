@@ -309,6 +309,20 @@ export const inventoryIntegrityApi = {
     apiClient.post(`/inventory/approvals/${id}/decide`, body),
 }
 
+// ── Exception Register: the operator's board ──────────────────────────────
+export const inventoryExceptionsApi = {
+  run: () => apiClient.post('/inventory/reconciliation/run', {}),
+  list: (params: { status?: string; check?: string; assigned_to_me?: boolean
+                   controlled_only?: boolean; limit?: number; offset?: number }) =>
+    apiClient.get('/inventory/exceptions', { params }),
+  get: (id: string) => apiClient.get(`/inventory/exceptions/${id}`),
+  assign: (id: string, body: { assignee_id: string | null; note?: string }) =>
+    apiClient.post(`/inventory/exceptions/${id}/assign`, body),
+  dispose: (id: string, body: { disposition: string; reason: string }) =>
+    apiClient.post(`/inventory/exceptions/${id}/disposition`, body),
+  simulate: (id: string) => apiClient.post(`/inventory/exceptions/${id}/simulate`, {}),
+}
+
 // ── Inventory administration: search, view, correct, receive ──────────────
 export const inventoryAdminApi = {
   items: (params: { q?: string; filter?: string; sort?: string

@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryIntegrityApi, apiErrorText } from '../lib/api'
+import ExceptionRegister from '../components/ExceptionRegister'
 
 interface Finding {
   check: string; severity: 'critical' | 'high' | 'medium' | 'info'
@@ -40,7 +41,6 @@ const SEV: Record<string, { chip: string; dot: string; label: string }> = {
 
 export default function InventoryIntegrity() {
   const qc = useQueryClient()
-  const [open, setOpen] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -100,58 +100,30 @@ export default function InventoryIntegrity() {
             <Metric label="در انتظار تأیید" value={fa(approvals?.count ?? 0)} />
           </div>
 
-          {/* ── Findings ─────────────────────────────────────────────────── */}
-          <div className="space-y-2">
-            {report.findings.map(f => {
-              const sev = SEV[f.severity] ?? SEV.info
-              const expanded = open === f.check
-              return (
-                <div key={f.check}
-                     className={`border rounded-lg ${f.count ? 'border-slate-700 bg-slate-800/50' : 'border-slate-800 bg-slate-900/40'}`}>
-                  <button onClick={() => setOpen(expanded ? null : f.check)}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-right">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${f.count ? sev.dot : 'bg-emerald-500/60'}`} />
-                    <span className="font-medium text-sm">{f.title_fa}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${sev.chip}`}>{sev.label}</span>
-                    <span className="mr-auto font-mono text-sm tabular-nums">
-                      {f.count ? <span className="text-slate-200">{fa(f.count)}</span>
-                               : <span className="text-emerald-400">۰</span>}
-                    </span>
-                    <span className="text-slate-500 text-xs">{expanded ? '▲' : '▼'}</span>
-                  </button>
-                  {expanded && (
-                    <div className="px-4 pb-3 space-y-2 border-t border-slate-700/60 pt-2">
-                      <p className="text-[12px] text-slate-400">{f.detail}</p>
-                      {f.remediation && (
-                        <p className="text-[12px] text-indigo-300">
-                          <span className="text-slate-500">اقدام پیشنهادی: </span>{f.remediation}
-                        </p>)}
-                      {f.samples.length > 0 && (
-                        <div className="overflow-x-auto">
-                          <table className="text-[11px] font-mono w-full">
-                            <thead className="text-slate-500">
-                              <tr>{Object.keys(f.samples[0]).map(k =>
-                                <th key={k} className="text-right pl-4 pb-1 font-normal">{k}</th>)}</tr>
-                            </thead>
-                            <tbody className="text-slate-300">
-                              {f.samples.map((s, i) => (
-                                <tr key={i} className="border-t border-slate-800">
-                                  {Object.keys(f.samples[0]).map(k =>
-                                    <td key={k} className="pl-4 py-1 whitespace-nowrap">
-                                      {s[k] === null || s[k] === undefined ? '—' : String(s[k])}
-                                    </td>)}
-                                </tr>))}
-                            </tbody>
-                          </table>
-                          {f.count > f.samples.length && (
-                            <p className="text-[10px] text-slate-500 pt-1">
-                              نمایش {fa(f.samples.length)} از {fa(f.count)} ردیف
-                            </p>)}
-                        </div>)}
-                    </div>)}
-                </div>)
-            })}
+          {/* ── Check health: which of the twelve fire, at a glance ────────── */}
+          <div className="bg-slate-800/40 border border-slate-700 rounded-lg px-4 py-3">
+            <p className="text-[11px] text-slate-500 pb-2">
+              سلامت بررسی‌ها — جزئیات و ردیف‌های درگیر در دفتر مغایرت‌ها زیر همین بخش
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {report.findings.map(f => {
+                const sev = SEV[f.severity] ?? SEV.info
+                return (
+                  <span key={f.check} title={f.detail}
+                    className={`text-[11px] px-2 py-1 rounded-full border ${
+                      f.count ? sev.chip : 'bg-slate-900 border-slate-700 text-slate-500'}`}>
+                    {f.title_fa} <span className="font-mono">
+                      {f.count ? fa(f.count) : '۰'}</span>
+                  </span>)
+              })}
+            </div>
           </div>
+
+          {/* ── The working surface ─────────────────────────────────────────── */}
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <ExceptionRegister />
+          </div>
+
         </>
       )}
 
