@@ -1,6 +1,6 @@
 {
   "_comment": "INN/BAN → USAN ingredient synonyms, plus qualifier drops. Every mapping was verified against the NFI catalog: the TARGET exists as an NFI generic_name and the SOURCE does not, so each entry converts an unmatchable formulary row into a real product. Same molecule, different naming authority — never a therapeutic substitution. Extend only with equivalences you can cite.",
-  "_verified": "2026-07-25 against 1,353 distinct NFI generics",
+  "_verified": "2026-07-25 against 1,353 distinct NFI generics; later additions (aluminium spellings 2026-08-04, hydrochlorthiazide/refampicin 2026-08-04) each re-checked the same way — target present in drug_catalog.generic_name, source absent",
   "synonyms": {
     "ciclosporin": "cyclosporine",
     "aciclovir": "acyclovir",
@@ -27,6 +27,8 @@
     "noradrenaline": "norepinephrine",
     "aluminium hydroxide": "aluminum hydroxide",
     "aluminium": "aluminum",
-    "aluminium phosphate": "aluminum phosphate"
+    "aluminium phosphate": "aluminum phosphate",
+    "hydrochlorthiazide": "hydrochlorothiazide",
+    "refampicin": "rifampin"
   }
 }

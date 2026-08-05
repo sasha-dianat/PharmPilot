@@ -147,6 +147,34 @@ def test_a_stripped_salt_resolves_in_the_exact_lane_not_the_tolerant_one():
     assert rec is not None and rec.irc == "AML" and conf == sm.CONF_EXACT_DOSE
 
 
+def test_a_trailing_mineral_counter_ion_is_stripped_but_a_leading_one_is_not():
+    """«losartan potassium» is losartan; «calcium carbonate» is not carbonate.
+
+    Position decides. Before this, stripping happened only by accident — for
+    «diclofenac sodium» and «warfarin sodium», whose base is in GENERIC_CLASSES —
+    while «losartan potassium» and «pantoprazole sodium» kept the counter-ion and
+    could never meet the formulary's bare name.
+    """
+    for salt, base in (("losartan potassium", "losartan"),
+                       ("pantoprazole sodium", "pantoprazole"),
+                       ("atorvastatin calcium", "atorvastatin"),
+                       ("omeprazole magnesium", "omeprazole")):
+        assert sm.normalize(salt) == base
+    for whole in ("calcium carbonate", "calcium citrate", "sodium chloride",
+                  "sodium valproate", "potassium chloride", "magnesium oxide",
+                  "sodium polystyrene sulfonate", "zinc sulfate"):
+        assert sm.normalize(whole) == whole
+
+
+def test_the_insurer_spelling_reaches_the_nfi_name():
+    """salamat drops the «o» from hydrochlorothiazide and writes REFAMPICIN.
+    Both targets exist as NFI generics and neither source does, which is the
+    synonym file's own admission rule."""
+    from services.core.drug_catalog.schema import canonical_ingredient
+    assert canonical_ingredient("hydrochlorthiazide") == "hydrochlorothiazide"
+    assert canonical_ingredient("refampicin") == "rifampin"
+
+
 def test_two_spellings_of_one_salt_meet():
     """NFI writes «betahistine hydrochloride», the insurer «BETAHISTINE
     DIHYDROCHLORIDE». One stripped and the other did not, so the two spellings

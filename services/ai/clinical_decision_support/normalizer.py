@@ -104,6 +104,21 @@ _SALT_TOKENS = {
     # unreachable from the insurer list.
     "dihydrochloride", "dihydrobromide", "besilate", "xinafoate",
     "trihydrate", "pentahydrate",
+    # Mineral counter-ions in the TRAILING position. Safe only because the
+    # guard below keeps the whole name when the mineral comes FIRST, which is
+    # when it is the active: calcium carbonate stays calcium carbonate, while
+    # «losartan potassium» becomes losartan and «atorvastatin calcium» becomes
+    # atorvastatin. Without these, stripping happened only by accident — for
+    # «diclofenac sodium» and «warfarin sodium», which reduce because the base
+    # is in GENERIC_CLASSES, while «pantoprazole sodium» and «losartan
+    # potassium» kept their counter-ion and could never meet the formulary's
+    # bare name.
+    "sodium", "potassium", "calcium", "magnesium", "zinc",
+    # A transposition salamat prints for sodium. It is not a word, so folding it
+    # can only help: without it «VALPROATE SODUIM SR» and NFI's «valproate
+    # sodium» normalize to different strings and the correct link is reported as
+    # an ingredient CONFLICT.
+    "soduim",
 }
 # NOT stripped, deliberately: «propionate» and «furoate» pick out DIFFERENT
 # products (fluticasone propionate is Flixotide, fluticasone furoate is Avamys),
