@@ -147,20 +147,75 @@ def test_a_stripped_salt_resolves_in_the_exact_lane_not_the_tolerant_one():
     assert rec is not None and rec.irc == "AML" and conf == sm.CONF_EXACT_DOSE
 
 
-def test_a_trailing_mineral_counter_ion_is_stripped_but_a_leading_one_is_not():
-    """«losartan potassium» is losartan; «calcium carbonate» is not carbonate.
+def test_different_salts_of_one_molecule_are_different_products():
+    """Diclofenac potassium is Cataflam — rapid onset, acute pain and migraine.
+    Diclofenac sodium is Voltaren — enteric-coated and sustained-release, for
+    chronic inflammatory disease. In the Iranian catalog they are 24 products at
+    23,000–39,000 rial and 222 at 3,300–1,350,000. They are not interchangeable
+    and must never match each other's formulary row.
 
-    Position decides. Before this, stripping happened only by accident — for
-    «diclofenac sodium» and «warfarin sodium», whose base is in GENERIC_CLASSES —
-    while «losartan potassium» and «pantoprazole sodium» kept the counter-ion and
-    could never meet the formulary's bare name.
+    normalize() folds both to «diclofenac», because it exists for the interaction
+    engine and answers with the drug CLASS. That is right for a DUR lookup and
+    wrong for identity, so the matcher keeps the salt whenever the catalog sells
+    more than one of them.
     """
-    for salt, base in (("losartan potassium", "losartan"),
-                       ("pantoprazole sodium", "pantoprazole"),
-                       ("atorvastatin calcium", "atorvastatin"),
-                       ("omeprazole magnesium", "omeprazole")):
-        assert sm.normalize(salt) == base
-    for whole in ("calcium carbonate", "calcium citrate", "sodium chloride",
+    cat = [
+        _rec("DNA", "diclofenac sodium", "100 mg", "TABLET, DELAYED RELEASE"),
+        _rec("DK", "diclofenac potassium", "50 mg", "TABLET"),
+        _rec("MS", "metoprolol succinate", "47.5 mg", "TABLET, EXTENDED RELEASE"),
+        _rec("MT", "metoprolol tartrate", "50 mg", "TABLET"),
+    ]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+
+    assert "diclofenac" in sm.identity_bearing_bases(cat)
+    assert hit("DICLOFENAC POTASSIUM TABLET ORAL 50 mg") == "DK"
+    assert hit("DICLOFENAC SODIUM TABLET, DELAYED RELEASE ORAL 100 mg") == "DNA"
+    assert hit("METOPROLOL SUCCINATE TABLET, EXTENDED RELEASE ORAL 47.5 mg") == "MS"
+    assert hit("METOPROLOL TARTRATE TABLET ORAL 50 mg") == "MT"
+
+
+def test_a_row_naming_no_salt_reaches_none_of_them():
+    """The salt-tolerant lane applies at 0.76, ABOVE the 0.75 line. A bare
+    «DICLOFENAC 50 mg TABLET» would otherwise resolve to the potassium salt just
+    because it is the only PLAIN tablet, silently choosing between a 23,000 and a
+    1,350,000 rial product. Withhold it for review instead."""
+    cat = [_rec("DNA", "diclofenac sodium", "50 mg", "TABLET"),
+           _rec("DK", "diclofenac potassium", "50 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("DICLOFENAC TABLET ORAL 50 mg", vocab), idx)
+    assert rec is None and conf == 0.0
+
+
+def test_a_hydration_state_is_not_a_second_salt():
+    """«azithromycin anhydrous» and «azithromycin dihydrate» are one substance
+    dried two ways — folding them is correct and must keep working."""
+    cat = [_rec("A1", "azithromycin anhydrous", "500 mg", "TABLET"),
+           _rec("A2", "azithromycin dihydrate", "250 mg", "TABLET")]
+    assert "azithromycin" not in sm.identity_bearing_bases(cat)
+
+
+def test_a_single_salt_base_still_folds():
+    """Only one losartan salt is marketed, so «LOSARTAN» must still reach it."""
+    cat = [_rec("L", "losartan potassium", "50 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, _c, _w = sm.match(sm.parse_name("LOSARTAN TABLET ORAL 50 mg", vocab), idx)
+    assert rec is not None and rec.irc == "L"
+
+
+def test_a_mineral_counter_ion_is_never_folded_away():
+    """A mineral counter-ion stays in the name, whichever position it holds.
+
+    Adding sodium/potassium/calcium/magnesium to the salt vocabulary on
+    2026-08-04 made «losartan potassium» reach a row naming the base — and made
+    diclofenac sodium indistinguishable from diclofenac potassium, which are two
+    products at 3,300–1,350,000 and 23,000–39,000 rial. It was reverted the same
+    day. Where a base really has one marketed salt, the salt-tolerant lane
+    resolves it by consulting the CATALOG, which a fixed word list cannot do.
+    """
+    for whole in ("losartan potassium", "pantoprazole sodium",
+                  "calcium carbonate", "calcium citrate", "sodium chloride",
                   "sodium valproate", "potassium chloride", "magnesium oxide",
                   "sodium polystyrene sulfonate", "zinc sulfate"):
         assert sm.normalize(whole) == whole

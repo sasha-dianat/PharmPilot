@@ -104,22 +104,19 @@ _SALT_TOKENS = {
     # unreachable from the insurer list.
     "dihydrochloride", "dihydrobromide", "besilate", "xinafoate",
     "trihydrate", "pentahydrate",
-    # Mineral counter-ions in the TRAILING position. Safe only because the
-    # guard below keeps the whole name when the mineral comes FIRST, which is
-    # when it is the active: calcium carbonate stays calcium carbonate, while
-    # «losartan potassium» becomes losartan and «atorvastatin calcium» becomes
-    # atorvastatin. Without these, stripping happened only by accident — for
-    # «diclofenac sodium» and «warfarin sodium», which reduce because the base
-    # is in GENERIC_CLASSES, while «pantoprazole sodium» and «losartan
-    # potassium» kept their counter-ion and could never meet the formulary's
-    # bare name.
-    "sodium", "potassium", "calcium", "magnesium", "zinc",
-    # A transposition salamat prints for sodium. It is not a word, so folding it
-    # can only help: without it «VALPROATE SODUIM SR» and NFI's «valproate
-    # sodium» normalize to different strings and the correct link is reported as
-    # an ingredient CONFLICT.
-    "soduim",
 }
+# NOT here, and never to be added: the mineral counter-ions sodium, potassium,
+# calcium and magnesium. They were added on 2026-08-04 to make «losartan
+# potassium» meet a formulary row naming the base, and that was wrong — the
+# counter-ion often IS the product. Diclofenac is sold in Iran as four distinct
+# products (potassium 23,000–39,000 rial, sodium 3,300–1,350,000, diethylamine,
+# epolamine); potassium is the rapid-onset salt for acute pain and migraine
+# while sodium is the enteric-coated and sustained-release salt for chronic
+# inflammatory disease. Folding them let one match the other's formulary row and
+# inherit its price. Where a base really does have only ONE marketed salt, the
+# salt-tolerant lane in structural_match resolves it — that lane checks the
+# catalog and accepts only when exactly one candidate extends the row's name,
+# which is the safe, data-aware version of what this list cannot know.
 # NOT stripped, deliberately: «propionate» and «furoate» pick out DIFFERENT
 # products (fluticasone propionate is Flixotide, fluticasone furoate is Avamys),
 # and «hydrate» alone would turn chloral hydrate into chloral.

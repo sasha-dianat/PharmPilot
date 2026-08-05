@@ -648,3 +648,53 @@ model must append an acceptance entry before editing.
   them, so nothing can tell the patch strengths apart).
 - Next action/owner: no code change will resolve those two groups — the first
   needs the NFI crawl, the second needs the insurer to publish a dose.
+
+### 2026-08-04 05:30 +0330 — Claude (Opus 5) — a counter-ion is often the product
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- **Owner correction, and it was right.** Adding sodium/potassium/calcium/
+  magnesium to the salt vocabulary earlier today (to make «losartan potassium»
+  meet a row naming the base) was a clinical error: different cations of one
+  molecule are frequently different products at different prices. Reverted.
+  In this catalog diclofenac is sold as FOUR products — potassium (24 items,
+  23,000–39,000 rial; Cataflam, rapid onset, acute pain and migraine), sodium
+  (222 items, 3,300–1,350,000; Voltaren, enteric-coated and SR for chronic
+  disease), diethylamine and epolamine (both topical).
+- **The revert was not sufficient, and the rest predates me.** `normalize()`
+  returns early on GENERIC_CLASSES, so it answers with the drug CLASS —
+  «diclofenac sodium» and «diclofenac potassium» both come back «diclofenac»
+  regardless of the salt list. That is correct for the interaction engine and
+  wrong for catalog identity. Already colliding before today: metoprolol
+  succinate vs tartrate (Toprol-XL once daily vs Lopressor twice daily),
+  hydrocortisone base vs acetate vs sodium phosphate (oral, intra-articular,
+  IV), ibuprofen vs ibuprofen lysine (the IV neonatal PDA product).
+- Changed, in `structural_match` only — the clinical normalizer is untouched:
+  - `components_full()` — canonicalization WITHOUT the class-folding.
+  - `identity_bearing_bases(catalog)` — bases the catalog sells under more than
+    one salt, decided from the data so future imports classify themselves.
+    Hydration states are excluded: «azithromycin anhydrous» and «dihydrate» are
+    one substance dried two ways.
+  - `build_index` and `match` both switch to the unfolded name for those bases,
+    so salt matches salt and base matches base.
+  - The salt-tolerant lane is WITHHELD for them. It applies at 0.76, above the
+    0.75 line, and a bare «DICLOFENAC 50 mg TABLET» was resolving to the
+    potassium salt merely because it is the only PLAIN tablet — silently
+    choosing between a 23,000 and a 1,350,000 rial product.
+- Found 31 identity-bearing bases covering 2,444 catalog rows. Beyond the ones
+  above they include tenofovir (disoproxil vs alafenamide — different dose and
+  different renal safety), isosorbide (mononitrate vs dinitrate), fluticasone
+  (propionate vs furoate), testosterone (enanthate vs cypionate vs undecanoate),
+  triamcinolone, penicillin, sevelamer, fluphenazine. Three are name-quality
+  artifacts («children», «flixotide», «spray») and merely decline to fold.
+- Verification: `pytest tests/unit` → 1273 passed, 1 failed
+  (`test_integrations_sandbox`, the same pre-existing ordering artifact).
+  Six new tests. Code-only change; no rows written, so the healthy/firing=0
+  reconciliation from 03:10 still stands.
+- **Cost, stated plainly:** board 436 → 481 open. `coverage_review_agrees` fell
+  286 → 233 and those ~45 rows moved to unmatched. They name a base whose
+  catalog holds several salts and cannot be pinned to one — review is where they
+  belong, not on a salt the engine picked.
+- Known limitation: a base with exactly ONE non-hydrate variant still folds, so
+  «ibuprofen» vs «ibuprofen lysine» is not separated. Splitting it needs a
+  pharmacological call rather than a count.

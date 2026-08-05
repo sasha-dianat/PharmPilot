@@ -177,6 +177,59 @@ def ingredient_agrees(a: str, b: str) -> bool:
 _INHALATION_FORMS = {"AEROSOL, METERED", "INHALANT", "POWDER, METERED"}
 
 
+# Hydration states. «azithromycin anhydrous» and «azithromycin dihydrate» are
+# the same substance dried differently; they must not be mistaken for two salts.
+_HYDRATION = frozenset(("anhydrous", "hydrous", "dihydrate", "monohydrate",
+                        "hemihydrate", "trihydrate", "pentahydrate", "sesquihydrate"))
+
+
+def components_full(text) -> list[str]:
+    """Ingredients WITHOUT the clinical class-folding — the salt is kept.
+
+    `components()` runs each part through `normalize()`, which exists for the
+    interaction engine and deliberately answers with the drug CLASS: it returns
+    early on GENERIC_CLASSES, so «diclofenac sodium» and «diclofenac potassium»
+    both come back «diclofenac». That is the right answer for a DUR lookup and
+    the wrong one for identity — in Iran those are two products at 3,300–1,350,000
+    and 23,000–39,000 rial, the potassium salt being the rapid-onset form for
+    acute pain and the sodium salt the enteric-coated one for chronic disease.
+    """
+    out: list[str] = []
+    for part in re.split(r"[/+]|\band\b", str(text or "")):
+        p = re.sub(r"\([^)]*\)", " ", part)
+        p = re.sub(r"[^A-Za-z\s-]", " ", p).strip()
+        if len(p) < 3:
+            continue
+        cg = re.sub(r"\s+", " ", canonical_ingredient(p.lower()) or p.lower()).strip()
+        if cg and cg not in out:
+            out.append(cg)
+    return out
+
+
+def identity_bearing_bases(catalog) -> frozenset:
+    """Bases the catalog sells under MORE THAN ONE salt, where the salt is part
+    of the product's identity and must never be folded away.
+
+    Decided from the data, not from a hand-kept list: whatever the insurer or
+    NFI adds next is classified the same way. A base with a single salt form
+    («losartan potassium», «atorvastatin calcium») is NOT here — the
+    salt-tolerant lane resolves those, and it already refuses when more than one
+    candidate extends the row's name.
+    """
+    forms: dict[str, set] = {}
+    for rec in catalog or []:
+        raw = re.sub(r"[^a-z\s-]", " ", str(getattr(rec, "generic_name", "") or "").lower())
+        raw = re.sub(r"\s+", " ", raw).strip()
+        if not raw:
+            continue
+        head, _, rest = raw.partition(" ")
+        rest = " ".join(w for w in rest.split() if w not in _HYDRATION)
+        forms.setdefault(head, set())
+        if rest:
+            forms[head].add(rest)
+    return frozenset(h for h, s in forms.items() if len(s) > 1)
+
+
 def salt_base(name: str) -> str:
     """An ingredient with its salt and hydrate words removed.
 
@@ -302,7 +355,8 @@ def parse_name(name: str, form_vocab: list[str]) -> dict:
         cg = re.sub(r"\s+", " ", cg).strip()
         if cg and cg not in generics:
             generics.append(cg)
-    return {"generics": generics, "form": form, "route": route,
+    return {"generics": generics, "generics_full": components_full(head),
+            "form": form, "route": route,
             "doses": dose_set(raw), "volumes": volume_set(raw),
             "combo": len(generics) > 1}
 
@@ -465,10 +519,18 @@ def build_index(catalog) -> dict:
     # believed if some record states it as its own generic name.
     known = {c for rec in catalog
              for c in components(getattr(rec, "generic_name", "") or "")}
+    ambiguous = identity_bearing_bases(catalog)
     for rec in catalog:
         comps = record_components(rec, known)
         if not comps:
             continue
+        # Where the catalog sells several salts of this base, the salt is the
+        # product. Index under the UNFOLDED name so a potassium row can only
+        # reach the potassium product — and so a row naming no salt at all
+        # reaches neither, falling to the salt lane, which refuses when more
+        # than one candidate extends it.
+        if any(c.split()[0] in ambiguous for c in comps):
+            comps = components_full(getattr(rec, "generic_name", "") or "") or comps
         form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
         doses = dose_set(getattr(rec, "strength", "") or "")
         entry = (rec, doses, frozenset(comps), record_volumes(rec))
@@ -482,7 +544,7 @@ def build_index(catalog) -> dict:
             head = cg.split()[0]
             if head != cg:
                 salt.setdefault((head, form), []).append((cg, entry))
-    return {"exact": exact, "family": family, "salt": salt}
+    return {"exact": exact, "family": family, "salt": salt, "ambiguous": ambiguous}
 
 
 # confidence tiers — an exact controlled-vocabulary hit is strong evidence, but
@@ -501,6 +563,12 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     generics = parsed.get("generics") or []
     if not generics or not parsed.get("form"):
         return None, 0.0, ""
+    # Same switch the index made: for a base sold under several salts, compare
+    # the unfolded names, so «DICLOFENAC POTASSIUM» reaches only the potassium
+    # product and a bare «DICLOFENAC» reaches none of them.
+    ambiguous = index.get("ambiguous") or frozenset()
+    if any(g.split()[0] in ambiguous for g in generics):
+        generics = parsed.get("generics_full") or generics
     form = parsed["form"]
     doses = parsed.get("doses") or set()
     vols = parsed.get("volumes") or set()
@@ -540,7 +608,13 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     # prints the base and NFI keeps the salt. Accepted ONLY when exactly one
     # NFI ingredient extends the row's name — otherwise "INSULIN" would silently
     # pick one of insulin glargine / aspart / lispro.
-    if not combo:
+    if not combo and generics[0].split()[0] not in ambiguous:
+        # Withheld for a base sold under several salts. The row named no salt,
+        # the catalog holds more than one, and this lane auto-applies at 0.76 —
+        # above the 0.75 line. A bare «DICLOFENAC 50 mg TABLET» would otherwise
+        # resolve to the potassium salt merely because it is the only PLAIN
+        # tablet (the sodium ones are enteric-coated), quietly choosing between
+        # a 23,000 and a 1,350,000 rial product. That belongs in review.
         g = generics[0]
         cands = index.get("salt", {}).get((g.split()[0], form)) or []
         widened = {cg for cg, _e in cands if cg.startswith(g + " ")}
