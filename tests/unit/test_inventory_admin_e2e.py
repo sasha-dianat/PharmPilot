@@ -444,3 +444,124 @@ async def test_returning_to_stock_puts_the_units_back_without_erasing_history(en
         "SELECT movement_type FROM inventory_movements WHERE ndc11=:n ORDER BY created_at"),
         {"n": ndc})).all()]
     assert kinds == ["RECEIPT", "DISPENSE", "RETURN_FROM_PATIENT"]
+
+
+# ── damage moves stock into the bucket, end to end ────────────────────────
+async def test_damage_relocates_units_rather_than_deleting_them(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    out = await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=20,
+        reason="carton crushed in transit"), staff=alice, db=db)
+
+    assert out["on_hand"] == 80.0 and out["damaged"] == 20.0
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_damaged FROM inventory_lots WHERE id=:i"),
+        {"i": r["lot_id"]})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 80.0
+    assert float(row["quantity_damaged"]) == 20.0
+    # the lot still physically holds 100
+    assert float(row["quantity_on_hand"]) + float(row["quantity_damaged"]) == 100.0
+
+
+async def test_the_sellable_aggregate_falls_when_stock_is_damaged(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=50)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=15, reason="water damage"),
+        staff=alice, db=db)
+    agg = (await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar()
+    assert float(agg) == 35.0          # damaged units are not sellable
+
+
+async def test_damaged_stock_cannot_be_dispensed(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=30)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=30, reason="all crushed"),
+        staff=alice, db=db)
+    from services.core.inventory import dispense as D, ledger as L
+    lots = await D._lots_for(db, pid, ndc)
+    alloc = L.plan_dispense(lots, 5, reason="rx")
+    assert alloc.plans == [] and float(alloc.shortfall) == 5.0
+
+
+async def test_damage_is_immediate_but_writing_it_off_needs_two_people(env):
+    db, alice, bob, carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    lot_id = uuid.UUID(r["lot_id"])
+    # immediate, no approval
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=lot_id, quantity=20, reason="crushed"), staff=alice, db=db)
+
+    req = await AD.request_write_off(AD.WriteOffRequest(
+        lot_id=lot_id, movement_type="RETURN_TO_SUPPLIER", quantity=20,
+        reason="supplier credit note", from_bucket="damaged"), staff=alice, db=db)
+    assert req["stock_changed"] is False
+
+    still = (await db.execute(text(
+        "SELECT quantity_damaged FROM inventory_lots WHERE id=:i"),
+        {"i": lot_id})).scalar()
+    assert float(still) == 20.0        # untouched until approved
+
+    await IG.decide_approval(uuid.UUID(req["approval_id"]),
+                             IG.ApprovalDecision(approve=True, witness_id=carl),
+                             staff=bob, db=db)
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_damaged FROM inventory_lots WHERE id=:i"),
+        {"i": lot_id})).mappings().one()
+    assert float(row["quantity_damaged"]) == 0.0
+    # sellable stock was never touched by the write-off — it left when damaged
+    assert float(row["quantity_on_hand"]) == 80.0
+
+
+async def test_a_bucket_write_off_does_not_move_the_sellable_aggregate(env):
+    """The units stopped being sellable when they were damaged; deducting the
+    aggregate again would double-count."""
+    db, alice, bob, carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=60)
+    lot_id = uuid.UUID(r["lot_id"])
+    await AD.record_damage(AD.RecordDamage(lot_id=lot_id, quantity=10,
+                                           reason="dented"), staff=alice, db=db)
+    before = float((await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar())
+
+    req = await AD.request_write_off(AD.WriteOffRequest(
+        lot_id=lot_id, movement_type="WASTE", quantity=10,
+        reason="unsalvageable", from_bucket="damaged"), staff=alice, db=db)
+    await IG.decide_approval(uuid.UUID(req["approval_id"]),
+                             IG.ApprovalDecision(approve=True, witness_id=carl),
+                             staff=bob, db=db)
+    after = float((await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar())
+    assert after == before == 50.0
+
+
+async def test_more_cannot_be_written_off_than_the_bucket_holds(env):
+    db, alice, _bob, _carl, _pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=40)
+    lot_id = uuid.UUID(r["lot_id"])
+    await AD.record_damage(AD.RecordDamage(lot_id=lot_id, quantity=5,
+                                           reason="chipped"), staff=alice, db=db)
+    with pytest.raises(Exception) as e:
+        await AD.request_write_off(AD.WriteOffRequest(
+            lot_id=lot_id, movement_type="WASTE", quantity=25,
+            reason="claimed", from_bucket="damaged"), staff=alice, db=db)
+    assert getattr(e.value, "status_code", None) == 422
+
+
+async def test_damage_is_chained_into_the_ledger_like_any_other_movement(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=25)
+    out = await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=5, reason="broken seal"),
+        staff=alice, db=db)
+    assert out["event_hash"] and len(out["event_hash"]) == 64
+    kinds = [x[0] for x in (await db.execute(text(
+        "SELECT movement_type FROM inventory_movements WHERE ndc11=:n "
+        "ORDER BY created_at"), {"n": ndc})).all()]
+    assert kinds == ["RECEIPT", "DAMAGE"]

@@ -252,3 +252,106 @@ def test_allocation_conserves_across_many_lots():
     a = L.plan_dispense(lots, 33, as_of=TODAY, reason="rx")
     assert a.allocated + a.shortfall == a.requested
     assert sum(abs(p.quantity_delta) for p in a.plans) == a.allocated
+
+
+# ── buckets: damage relocates units, it does not delete them ──────────────
+def test_damage_moves_units_into_the_bucket_and_conserves_the_lot():
+    """The defect this replaces: DAMAGE decremented on-hand and the units
+    ceased to exist — uncountable, unvaluable, unclaimable from the supplier."""
+    l = lot("a", 100)
+    p = L.plan_bucket_transfer(l, 20, movement_type="DAMAGE", reason="crushed carton")
+    assert p.quantity_before == Decimal("100.000")
+    assert p.quantity_after == Decimal("80.000")
+    assert (p.to_bucket, p.bucket_before, p.bucket_after) == (
+        "damaged", Decimal("0.000"), Decimal("20.000"))
+    # the lot still physically holds 100
+    assert p.quantity_after + p.bucket_after == p.quantity_before + p.bucket_before
+
+
+def test_damage_needs_no_approval():
+    """Taking stock out of use must never wait for a signature — the same rule
+    that lets anyone quarantine a lot."""
+    p = L.plan_bucket_transfer(lot("a", 10), 1, movement_type="DAMAGE", reason="x")
+    assert p.requires_approval is False
+
+
+def test_damage_accumulates_across_incidents():
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+              quantity_on_hand=Decimal("80"), quantity_damaged=Decimal("20"))
+    p = L.plan_bucket_transfer(l, 5, movement_type="DAMAGE", reason="second breakage")
+    assert p.bucket_after == Decimal("25.000") and p.quantity_after == Decimal("75.000")
+
+
+def test_more_cannot_be_damaged_than_is_on_the_shelf():
+    with pytest.raises(L.LedgerError, match="only"):
+        L.plan_bucket_transfer(lot("a", 5), 10, movement_type="DAMAGE", reason="x")
+
+
+def test_damage_still_demands_a_reason_and_a_positive_quantity():
+    with pytest.raises(L.LedgerError, match="reason"):
+        L.plan_bucket_transfer(lot("a", 10), 1, movement_type="DAMAGE", reason=" ")
+    for bad in (0, -1):
+        with pytest.raises(L.LedgerError):
+            L.plan_bucket_transfer(lot("a", 10), bad, movement_type="DAMAGE", reason="x")
+
+
+def test_an_ordinary_removal_is_not_a_bucket_transfer():
+    with pytest.raises(L.LedgerError, match="not a bucket transfer"):
+        L.plan_bucket_transfer(lot("a", 10), 1, movement_type="WASTE", reason="x")
+
+
+# ── the way out of the bucket ─────────────────────────────────────────────
+def _damaged_lot(on_hand=80, damaged=20):
+    return L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+                 quantity_on_hand=Decimal(str(on_hand)),
+                 quantity_damaged=Decimal(str(damaged)))
+
+
+def test_writing_off_from_a_bucket_leaves_sellable_stock_untouched():
+    """The units left on-hand when they entered the bucket; deducting them
+    again is exactly the double-count the bucket prevents."""
+    p = L.plan_bucket_writeoff(_damaged_lot(), 20,
+                               movement_type="RETURN_TO_SUPPLIER",
+                               from_bucket="damaged", reason="supplier claim")
+    assert p.quantity_before == p.quantity_after == Decimal("80.000")
+    assert (p.from_bucket, p.bucket_after) == ("damaged", Decimal("0.000"))
+
+
+def test_a_bucket_write_off_always_needs_approval():
+    """This is the step that turns a recoverable asset into a loss."""
+    p = L.plan_bucket_writeoff(_damaged_lot(), 5, movement_type="WASTE",
+                               from_bucket="damaged", reason="unsalvageable")
+    assert p.requires_approval is True
+
+
+def test_more_cannot_be_written_off_than_the_bucket_holds():
+    with pytest.raises(L.LedgerError, match="only"):
+        L.plan_bucket_writeoff(_damaged_lot(damaged=5), 10, movement_type="WASTE",
+                               from_bucket="damaged", reason="x")
+
+
+def test_an_unknown_bucket_is_rejected():
+    with pytest.raises(L.LedgerError, match="unknown bucket"):
+        L.plan_bucket_writeoff(_damaged_lot(), 1, movement_type="WASTE",
+                               from_bucket="somewhere", reason="x")
+
+
+def test_damaged_stock_is_never_dispensable():
+    """It is off the shelf by construction: FEFO only ever sees on-hand."""
+    l = _damaged_lot(on_hand=0, damaged=50)
+    a = L.plan_dispense([l], 10, reason="rx")
+    assert a.plans == [] and a.shortfall == Decimal("10.000")
+
+
+def test_the_full_lifecycle_conserves_from_receipt_to_write_off():
+    """100 received, 20 damaged, 20 returned to supplier: 80 sellable, 0 held,
+    and nothing silently vanished along the way."""
+    after_damage = L.plan_bucket_transfer(lot("a", 100), 20,
+                                          movement_type="DAMAGE", reason="crushed")
+    mid = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+                quantity_on_hand=after_damage.quantity_after,
+                quantity_damaged=after_damage.bucket_after)
+    out = L.plan_bucket_writeoff(mid, 20, movement_type="RETURN_TO_SUPPLIER",
+                                 from_bucket="damaged", reason="credit note")
+    assert out.quantity_after == Decimal("80.000")
+    assert out.bucket_after == Decimal("0.000")

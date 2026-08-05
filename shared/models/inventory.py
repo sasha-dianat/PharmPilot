@@ -73,6 +73,17 @@ class InventoryLot(AuditedBase):
     quantity_reserved: Mapped[float] = mapped_column(Numeric(10, 3), default=0.0)
     # reserved = committed to fills not yet dispensed
 
+    # Holding buckets (migration 0035). Units still physically present but not
+    # sellable. DAMAGE used to decrement on-hand outright, so a broken carton
+    # ceased to exist — uncountable, unvaluable, and unclaimable from the
+    # supplier. These hold them instead until an approved write-off removes them.
+    quantity_in_transit: Mapped[float] = mapped_column(
+        Numeric(10, 3), default=0.0, nullable=False)
+    quantity_damaged: Mapped[float] = mapped_column(
+        Numeric(10, 3), default=0.0, nullable=False)
+    quantity_returned: Mapped[float] = mapped_column(
+        Numeric(10, 3), default=0.0, nullable=False)
+
     unit_cost: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
     storage_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # e.g., "SHELF-A3", "REFRIGERATOR-1", "VAULT-CS"

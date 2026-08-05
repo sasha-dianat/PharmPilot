@@ -564,6 +564,75 @@ async def receive_stock(
             "movement_id": str(movement.id), "event_hash": movement.event_hash}
 
 
+# ── Damage ────────────────────────────────────────────────────────────────
+
+class RecordDamage(BaseModel):
+    lot_id: UUID
+    quantity: float = Field(..., gt=0)
+    reason: str = Field(..., min_length=3, max_length=240)
+
+
+@router.post("/admin/damage", status_code=201)
+async def record_damage(
+    body: RecordDamage,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move units out of sellable stock and into the damaged bucket.
+
+    Applies immediately and needs no approval, on the same principle as
+    quarantine: taking stock *out of use* must never wait for a signature, and
+    a technician holding a crushed carton should not have to keep it on the
+    shelf until someone countersigns.
+
+    The units are not gone. They stay on the lot, countable and valuable,
+    awaiting either a supplier claim or an approved write-off — which is the
+    step that does need two people.
+    """
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == body.lot_id,
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot not found")
+
+    view = L.Lot(lot_id=str(lot.id), lot_number=lot.lot_number,
+                 expiry_date=lot.expiry_date,
+                 quantity_on_hand=L.q(lot.quantity_on_hand),
+                 quantity_damaged=L.q(lot.quantity_damaged or 0),
+                 quantity_returned=L.q(lot.quantity_returned or 0),
+                 quantity_in_transit=L.q(lot.quantity_in_transit or 0))
+    try:
+        plan = L.plan_bucket_transfer(view, body.quantity,
+                                      movement_type="DAMAGE", reason=body.reason)
+    except L.LedgerError as e:
+        raise HTTPException(422, str(e))
+
+    lot.quantity_on_hand = plan.quantity_after
+    lot.quantity_damaged = plan.bucket_after
+    lot.updated_by = staff.id
+
+    # The aggregate tracks sellable stock, so it falls with on-hand.
+    await db.execute(text("""
+        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                updated_at = NOW()
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+        {"d": float(plan.quantity_delta), "pid": staff.pharmacy_id,
+         "ndc": lot.ndc11})
+
+    movement = await append_movement(
+        db, pharmacy_id=staff.pharmacy_id, ndc11=lot.ndc11, irc=lot.irc,
+        lot_id=lot.id, plan=plan, actor_id=staff.id)
+    await db.commit()
+    return {"lot_id": str(lot.id), "moved": float(abs(plan.quantity_delta)),
+            "on_hand": float(plan.quantity_after),
+            "damaged": float(plan.bucket_after),
+            "movement_id": str(movement.id), "event_hash": movement.event_hash,
+            "note": "units are held, not written off — request a write-off from "
+                    "the damaged bucket when the supplier claim is settled"}
+
+
 # ── Write-off request ─────────────────────────────────────────────────────
 
 class WriteOffRequest(BaseModel):
@@ -571,6 +640,9 @@ class WriteOffRequest(BaseModel):
     movement_type: str          # WASTE | EXPIRY_REMOVAL | RECALL_REMOVAL | RETURN_TO_SUPPLIER
     quantity: float = Field(..., gt=0)
     reason: str = Field(..., min_length=3)
+    from_bucket: Optional[str] = Field(
+        None, description="damaged | returned | in_transit — draw from a holding "
+                          "bucket instead of sellable stock")
 
 
 @router.post("/admin/write-off", status_code=201)
@@ -597,7 +669,15 @@ async def request_write_off(
     ))).scalar_one_or_none()
     if lot is None:
         raise HTTPException(404, "lot not found")
-    if L.q(body.quantity) > L.q(lot.quantity_on_hand):
+    if body.from_bucket:
+        if body.from_bucket not in L.BUCKETS:
+            raise HTTPException(422, f"unknown bucket {body.from_bucket!r}")
+        held = L.q(getattr(lot, L.BUCKETS[body.from_bucket], 0) or 0)
+        if L.q(body.quantity) > held:
+            raise HTTPException(422,
+                f"cannot write off {body.quantity} from {body.from_bucket} — "
+                f"only {float(held)} held there")
+    elif L.q(body.quantity) > L.q(lot.quantity_on_hand):
         raise HTTPException(422,
             f"cannot write off {body.quantity} — only {float(lot.quantity_on_hand)} on hand")
 
@@ -609,6 +689,7 @@ async def request_write_off(
         inventory_lot_id=lot.id, movement_type=body.movement_type,
         quantity=body.quantity, is_controlled=bool(drug and drug.is_controlled),
         status="pending", reason=body.reason[:240],
+        payload={"from_bucket": body.from_bucket} if body.from_bucket else None,
         requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
     db.add(appr)
     await db.commit()

@@ -70,7 +70,22 @@ RECEIPT_TYPES = {
     "COUNT_GAIN",       # physical count found more than the books said
 }
 ISSUE_ONLY_COUNT = {"COUNT_LOSS"}   # count found less — an issue, but not a supply event
-ALL_TYPES = ISSUE_TYPES | RECEIPT_TYPES | ISSUE_ONLY_COUNT
+
+# Movements that relocate units between states *inside* a lot rather than
+# taking them out of the pharmacy. `DAMAGE` used to be an ordinary removal, so
+# a broken carton simply decremented on-hand and the units ceased to exist —
+# they could not be counted, valued, claimed from the supplier, or produced
+# during an audit. A transfer conserves them instead: on-hand falls, the
+# destination bucket rises, and the lot's physical total is unchanged.
+BUCKET_TRANSFER_TYPES = {"DAMAGE": "damaged"}
+# Buckets a write-off may draw from, so damaged stock has a way out of the
+# bucket. Without this it would accumulate for ever, which is a worse trap than
+# the vanishing it replaced.
+BUCKETS = {"damaged": "quantity_damaged", "returned": "quantity_returned",
+           "in_transit": "quantity_in_transit"}
+
+ALL_TYPES = (ISSUE_TYPES | RECEIPT_TYPES | ISSUE_ONLY_COUNT
+             | set(BUCKET_TRANSFER_TYPES))
 
 # Movements a pharmacist must approve before they take effect, regardless of
 # amount. Every one of them destroys or exports value without a patient on the
@@ -88,6 +103,13 @@ class Lot:
     expiry_date: date | None
     quantity_on_hand: Decimal
     quantity_reserved: Decimal = Decimal("0")
+    # Units still physically in the pharmacy but not sellable. They are held
+    # apart rather than deducted, because damaged stock is money awaiting a
+    # supplier claim and returned stock is money awaiting a credit note — both
+    # are reportable assets until someone writes them off.
+    quantity_damaged: Decimal = Decimal("0")
+    quantity_returned: Decimal = Decimal("0")
+    quantity_in_transit: Decimal = Decimal("0")
     is_quarantined: bool = False
     is_recalled: bool = False
     cold_chain_breach: bool = False
@@ -111,6 +133,13 @@ class MovementPlan:
     expiry_date: date | None = None
     reason: str = ""
     requires_approval: bool = False
+    # Set when the movement relocates units rather than removing them.
+    # `to_bucket` receives them; `from_bucket` is the bucket a write-off draws
+    # from instead of sellable on-hand.
+    to_bucket: str | None = None
+    from_bucket: str | None = None
+    bucket_before: Decimal | None = None
+    bucket_after: Decimal | None = None
     meta: dict = field(default_factory=dict)
 
 
@@ -277,6 +306,77 @@ def plan_dispense(lots: list[Lot], quantity, *, reason: str,
     return DispenseAllocation(plans=plans, requested=want, allocated=allocated,
                               shortfall=remaining,
                               lots_used=[p.lot_id for p in plans])
+
+
+def bucket_quantity(lot: Lot, bucket: str) -> Decimal:
+    attr = BUCKETS.get(bucket)
+    if attr is None:
+        raise LedgerError(f"unknown bucket {bucket!r}")
+    return q(getattr(lot, attr, 0) or 0)
+
+
+def plan_bucket_transfer(lot: Lot, quantity, *, movement_type: str,
+                         reason: str) -> MovementPlan:
+    """Move units out of sellable stock and into a holding bucket.
+
+    Deliberately needs no approval. The rule the whole module follows is that
+    taking stock *out of use* is immediate — a technician who finds a crushed
+    carton must be able to pull it from the shelf at once, exactly as they can
+    quarantine a lot. What needs two signatures is removing it from the books,
+    which is a later write-off drawn `from_bucket`.
+    """
+    dest = BUCKET_TRANSFER_TYPES.get(movement_type)
+    if dest is None:
+        raise LedgerError(f"{movement_type!r} is not a bucket transfer")
+    if not reason or not reason.strip():
+        raise LedgerError("every movement needs a reason")
+    move = q(quantity)
+    if move <= 0:
+        raise LedgerError("transfer quantity must be positive")
+
+    before = q(lot.quantity_on_hand)
+    if move > before:
+        raise LedgerError(
+            f"cannot move {move} to {dest} — only {before} on hand")
+    b_before = bucket_quantity(lot, dest)
+    return MovementPlan(
+        lot_id=lot.lot_id, movement_type=movement_type,
+        quantity_delta=q(-move), quantity_before=before,
+        quantity_after=q(before - move), lot_number=lot.lot_number,
+        expiry_date=lot.expiry_date, reason=reason, requires_approval=False,
+        to_bucket=dest, bucket_before=b_before, bucket_after=q(b_before + move),
+        meta={"conserved": True, "location": lot.storage_location})
+
+
+def plan_bucket_writeoff(lot: Lot, quantity, *, movement_type: str,
+                         from_bucket: str, reason: str,
+                         is_controlled: bool = False) -> MovementPlan:
+    """Remove units from a holding bucket — the way damaged stock finally
+    leaves. This one always needs approval: it is the step that turns a
+    recoverable asset into a loss.
+    """
+    if movement_type not in ISSUE_TYPES:
+        raise LedgerError(f"{movement_type!r} cannot write off a bucket")
+    if not reason or not reason.strip():
+        raise LedgerError("every movement needs a reason")
+    take = q(quantity)
+    if take <= 0:
+        raise LedgerError("write-off quantity must be positive")
+    held = bucket_quantity(lot, from_bucket)
+    if take > held:
+        raise LedgerError(
+            f"cannot write off {take} from {from_bucket} — only {held} held")
+    # On-hand is untouched: these units left sellable stock when they entered
+    # the bucket, and deducting them twice is exactly the double-count the
+    # bucket exists to prevent.
+    on_hand = q(lot.quantity_on_hand)
+    return MovementPlan(
+        lot_id=lot.lot_id, movement_type=movement_type,
+        quantity_delta=q(-take), quantity_before=on_hand, quantity_after=on_hand,
+        lot_number=lot.lot_number, expiry_date=lot.expiry_date, reason=reason,
+        requires_approval=True, from_bucket=from_bucket,
+        bucket_before=held, bucket_after=q(held - take),
+        meta={"drawn_from_bucket": from_bucket, "controlled": is_controlled})
 
 
 def plan_receipt(lot: Lot, quantity, *, movement_type: str, reason: str,

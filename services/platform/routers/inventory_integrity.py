@@ -557,11 +557,23 @@ async def _apply_movement(db: AsyncSession, a: InventoryApproval,
                      expiry_date=lot.expiry_date,
                      quantity_on_hand=L.q(lot.quantity_on_hand),
                      quantity_reserved=L.q(lot.quantity_reserved or 0),
+                     quantity_damaged=L.q(lot.quantity_damaged or 0),
+                     quantity_returned=L.q(lot.quantity_returned or 0),
+                     quantity_in_transit=L.q(lot.quantity_in_transit or 0),
                      is_quarantined=bool(lot.is_quarantined),
                      is_recalled=bool(lot.is_recalled),
                      cold_chain_breach=bool(lot.cold_chain_breach))
+    # A write-off drawn from a holding bucket takes its units from there, not
+    # from sellable on-hand; deducting both would double-count exactly what the
+    # bucket exists to prevent.
+    from_bucket = (a.payload or {}).get("from_bucket")
     try:
-        if a.movement_type in L.RECEIPT_TYPES:
+        if from_bucket:
+            plan = L.plan_bucket_writeoff(
+                lot_view, a.quantity, movement_type=a.movement_type,
+                from_bucket=from_bucket, reason=a.reason,
+                is_controlled=a.is_controlled)
+        elif a.movement_type in L.RECEIPT_TYPES:
             plan = L.plan_receipt(lot_view, a.quantity,
                                   movement_type=a.movement_type, reason=a.reason,
                                   is_controlled=a.is_controlled)
@@ -576,12 +588,21 @@ async def _apply_movement(db: AsyncSession, a: InventoryApproval,
     lot.updated_by = staff.id
     if a.movement_type == "RECALL_REMOVAL":
         lot.is_recalled = True
+    if plan.from_bucket:
+        setattr(lot, L.BUCKETS[plan.from_bucket], plan.bucket_after)
+    if plan.to_bucket:
+        setattr(lot, L.BUCKETS[plan.to_bucket], plan.bucket_after)
 
-    await db.execute(text("""
-        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
-                                updated_at = NOW()
-        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
-        {"d": float(plan.quantity_delta), "pid": a.pharmacy_id, "ndc": lot.ndc11})
+    # The aggregate tracks SELLABLE stock, so it only moves when on-hand does.
+    # A bucket write-off leaves on-hand alone and must leave the aggregate alone
+    # too — the units stopped being sellable when they entered the bucket.
+    if plan.quantity_after != plan.quantity_before:
+        await db.execute(text("""
+            UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                    updated_at = NOW()
+            WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+            {"d": float(plan.quantity_after - plan.quantity_before),
+             "pid": a.pharmacy_id, "ndc": lot.ndc11})
 
     return await append_movement(
         db, pharmacy_id=a.pharmacy_id, ndc11=lot.ndc11, irc=a.irc or lot.irc,
