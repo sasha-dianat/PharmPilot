@@ -103,8 +103,12 @@ async def test_every_affected_row_is_stored_not_a_preview(env):
         pytest.skip("no orphan fills in this database")
     e = board["exceptions"][0]
     detail = await EX.get_exception(uuid.UUID(e["id"]), staff=staff, db=db)
-    assert len(detail["affected_rows"]) == e["row_count"]
-    assert e["row_count"] > 10          # the API preview would have shown 10
+    # Compare against the detail's own row_count, not the board's: the board was
+    # fetched earlier and the register is shared mutable state, so another test
+    # creating a fill between the two calls would make a cross-response
+    # comparison flake without anything being wrong.
+    assert len(detail["affected_rows"]) == detail["row_count"]
+    assert detail["row_count"] > 10     # the API preview would have shown 10
 
 
 async def test_ranking_shows_its_arithmetic(env):

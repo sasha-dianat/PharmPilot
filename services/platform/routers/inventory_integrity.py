@@ -80,12 +80,16 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         LEFT JOIN drug_products dp ON dp.id = il.drug_product_id
         WHERE il.pharmacy_id = :pid AND il.is_deleted = false"""), p)).mappings().all()
 
+    # Scoped through the prescription: prescription_fills carries no
+    # pharmacy_id of its own, and an unscoped count here would let one
+    # tenant's dispensing inflate another's orphan-fill finding.
     fills = (await db.execute(text("""
         SELECT pf.id, pf.ndc_dispensed, pf.quantity_dispensed, pf.lot_number,
                pf.inventory_lot_id, pf.created_at AS filled_at
         FROM prescription_fills pf
-        WHERE pf.is_deleted = false
-        ORDER BY pf.created_at DESC LIMIT 5000"""))).mappings().all()
+        JOIN prescriptions p ON p.id = pf.prescription_id
+        WHERE pf.is_deleted = false AND p.pharmacy_id = :pid
+        ORDER BY pf.created_at DESC LIMIT 5000"""), p)).mappings().all()
 
     linked = {r[0] for r in (await db.execute(text(
         "SELECT DISTINCT prescription_fill_id FROM inventory_movements "
