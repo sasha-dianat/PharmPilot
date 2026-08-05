@@ -309,6 +309,24 @@ export const inventoryIntegrityApi = {
     apiClient.post(`/inventory/approvals/${id}/decide`, body),
 }
 
+// ── Recall cases: the pharmacy's response, not the notice ─────────────────
+export const inventoryRecallApi = {
+  list: (status?: string) =>
+    apiClient.get('/inventory/recalls', { params: { status } }),
+  open: (body: { reference: string; scope_type: string; scope_value: string
+                 severity: string; reason: string; source?: string
+                 lookback_days?: number }) =>
+    apiClient.post('/inventory/recalls', body),
+  get: (id: string) => apiClient.get(`/inventory/recalls/${id}`),
+  quarantine: (id: string) =>
+    apiClient.post(`/inventory/recalls/${id}/quarantine`, {}),
+  patients: (id: string) => apiClient.get(`/inventory/recalls/${id}/patients`),
+  lineAction: (id: string, lineId: string, body: { action: string; note?: string }) =>
+    apiClient.post(`/inventory/recalls/${id}/lines/${lineId}/action`, body),
+  close: (id: string, body: { force_reason?: string }) =>
+    apiClient.post(`/inventory/recalls/${id}/close`, body),
+}
+
 // ── Exception Register: the operator's board ──────────────────────────────
 export const inventoryExceptionsApi = {
   run: () => apiClient.post('/inventory/reconciliation/run', {}),

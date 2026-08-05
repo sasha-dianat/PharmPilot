@@ -18,6 +18,7 @@ import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
 import InventoryIntegrity    from './dashboards/InventoryIntegrity'
 import InventoryAdmin        from './dashboards/InventoryAdmin'
+import RecallCenter          from './dashboards/RecallCenter'
 import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
 import SecuritySurveillance  from './dashboards/SecuritySurveillance'
 import FinancialOperations   from './dashboards/FinancialOperations'
@@ -46,6 +47,7 @@ const SECTIONS = [
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
   { id:'inventory-admin', key:'v', label:'Inventory Admin',   icon:Boxes,       description:'Search, view, correct, receive', shortcut:'Alt+V' },
   { id:'inventory-integrity', key:'i', label:'Inventory Integrity', icon:ShieldCheck, description:'Reconciliation & write-off approvals', shortcut:'Alt+I' },
+  { id:'recall',     key:'w', label:'Drug Recall',       icon:AlertTriangle, description:'Recall response & patient tracing', shortcut:'Alt+W' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
   { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
@@ -77,6 +79,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   inventory: InventoryIntelligence,
   'inventory-integrity': InventoryIntegrity,
   'inventory-admin': InventoryAdmin,
+  'recall': RecallCenter,
   clinical:  ClinicalIntelligence,
   cds:       ClinicalAssistant,
   adr:       ADRDetective,
