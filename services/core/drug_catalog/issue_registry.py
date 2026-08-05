@@ -309,7 +309,17 @@ async def _coverage_counts(db) -> dict[str, int]:
     from .crosswalk import build_code_registry, load_crosswalk
     from .enrichment import load_approved
 
-    BULK = re.compile(r"\bBULK\b|فله|ترکيبي|ترکیبی", re.I)
+    # Arabic and Persian letterforms differ for the same sound, and the two
+    # insurers do not agree on which to use: «چسب كانوكس» arrives with Arabic
+    # kaf where the pattern is written with Persian keheh, and every Persian
+    # pattern silently fails to fire. Fold before matching rather than trying to
+    # spell each term twice.
+    _AR2FA = str.maketrans({"ي": "ی", "ك": "ک", "ة": "ه", "أ": "ا", "إ": "ا", "ؤ": "و"})
+
+    def _fa(s: str) -> str:
+        return str(s or "").translate(_AR2FA)
+
+    BULK = re.compile(r"\bBULK\b|فله|ترکیبی", re.I)
     # Consumables and appliances the insurer lists beside medicines. The Persian
     # terms matter as much as the English: ostomy appliances, insulin pens and
     # cartridge needles, blood-glucose strips and elastomeric pumps were all
@@ -320,9 +330,10 @@ async def _coverage_counts(db) -> dict[str, int]:
     DEV = re.compile(r"\bROLL|GAUZE|SYRINGE|CATHETER|BANDAGE|SET\b|CONTAINER|"
                      r"BAG\b|STRIP|GLOVE|MASK|DROPPER|GELATIN CAPSUL|"
                      r"CREAM BASE|COLD CREAM|OSTOMY|"
-                     r"استومي|استومی|کيسه يورستومي|سرسوزن|"
-                     r"قلم تزريق|کارتريج انسولين|كارتريج انسولين|"
-                     r"نوار تست|پمپ تزريق|چسب کانوکس|چسب كانوkس|چسب كانوکس", re.I)
+                     # …ostomy: colostomy/ileostomy/urostomy do NOT contain the
+                     # substring «استومی», so the stem alone matched none of them.
+                     r"ستومی|سرسوزن|قلم تزریق|کارتریج انسولین|"
+                     r"نوار تست|پمپ تزریق|کانوکس|کیسه ادرار", re.I)
     catalog = await repo.fetch_all(db)
     vocab = sm.build_form_vocab(catalog)
     known = {c for r in catalog for c in sm.components(r.generic_name or "")}
@@ -357,9 +368,9 @@ async def _coverage_counts(db) -> dict[str, int]:
                              for c in sm.components(l.record.generic_name or ""))
                 out["coverage_review_agrees" if agrees
                     else "coverage_review_conflict"] += 1
-            elif BULK.search(nm):
+            elif BULK.search(_fa(nm)):
                 out["coverage_unmatched_bulk"] += 1
-            elif DEV.search(nm):
+            elif DEV.search(_fa(nm)):
                 out["coverage_unmatched_device"] += 1
             else:
                 p = sm.parse_name(nm, vocab)

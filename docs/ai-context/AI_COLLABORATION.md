@@ -615,3 +615,36 @@ model must append an acceptance entry before editing.
   queue (`coverage_review_agrees` 251 → 267).
 - Next action/owner: the 169 that remain are not an ID problem — 131 of them
   exist in one insurer's list only.
+
+### 2026-08-04 04:05 +0330 — Claude (Opus 5) — showing the list found two more defects
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- The owner asked to SEE the 131 single-insurer rows. Printing them with their
+  parsed doses exposed two defects that no aggregate count would have shown.
+- **A regression of mine.** «CLOTRIMAZOLE / BETAMETHASONE 1 %/0.05 % 15 g CREAM»
+  parses to doses {1%, 0.05%, 15000} — the TUBE SIZE read as a 15,000 mg dose.
+  `doses_agree_all`, added this morning, demanded a partner for every dose on
+  BOTH sides, so that phantom rejected a correct match; the old lenient rule had
+  tolerated it. Fixed by making the rule asymmetric: every dose the CATALOG
+  states must appear in the row, not the reverse. The catalog's `strength` is
+  clean where a formulary product name is noisy. The 10/5-is-not-25/5 protection
+  survives — 25 is still absent from the row — and is covered by its test.
+- **Persian letterforms.** The device filter never fired on the ostomy rows for
+  two independent reasons: «کلستومی» and «یورستومی» do not contain the substring
+  «استومی», and «چسب كانوكس» arrives with ARABIC kaf where the pattern was
+  written with Persian keheh. Folding ي/ك/ة/أ/إ/ؤ before matching is the fix;
+  spelling every term twice is not.
+- Verification: `pytest tests/unit` → 1248 passed, 1 failed
+  (`test_integrations_sandbox`, the same pre-existing ordering artifact).
+- Net: board 459 → 439 open. `coverage_review_agrees` 267 → 285, device 55 → 59.
+- The remaining single-insurer set is 66 rows, exported to
+  `docs/unmatched-single-insurer-20260804.csv`: 63 salamat-only, 3 tamin-only.
+  salamat lists 3,575 codes against tamin's 2,600, so the asymmetry is expected.
+  They divide into real presentations we do not stock (isotretinoin 8/30/40 mg,
+  mometasone inhalers, fentanyl patch 75 and 100 ug/h, oxycodone ER 80 mg,
+  omalizumab 75 mg, Stalevo 125) and salamat's legacy dose-less entries
+  («RIVASTIGMINE (EXELON)» appears under FOUR codes with no dose on any of
+  them, so nothing can tell the patch strengths apart).
+- Next action/owner: no code change will resolve those two groups — the first
+  needs the NFI crawl, the second needs the insurer to publish a dose.

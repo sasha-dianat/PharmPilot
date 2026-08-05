@@ -334,24 +334,38 @@ _UNIT_WORDS = frozenset((
     "as", "and", "per", "each", "in", "of", "the", "sterile", "water", "usp"))
 
 
-def doses_agree_all(a: set, b: set, tol: float = 0.01) -> bool:
-    """Every dose on each side has a partner on the other.
+def doses_agree_all(row: set, catalog: set, tol: float = 0.01) -> bool:
+    """Every dose the CATALOG states appears in the row. Asymmetric on purpose.
 
     `doses_agree` asks whether the two sides share ANY dose, which is the right
     question for a single-ingredient row that may carry stray numbers. For a
     combination it is far too weak: «EMPAGLIFLOZIN / LINAGLIPTIN 10 mg/5 mg»
     and a 25 mg/5 mg record share the 5, and matching on that alone offers the
     patient a 25 mg tablet against a 10 mg entitlement. A combination is
-    identified by its whole dose vector, not by one component of it."""
-    if not a or not b:
+    identified by its whole dose vector, not by one component of it.
+
+    But it must not be symmetric. A formulary name is noisy where a catalog
+    `strength` is clean: «CLOTRIMAZOLE / BETAMETHASONE 1 %/0.05 % 15 g CREAM»
+    parses to {1%, 0.05%, 15000} — the TUBE SIZE read as a dose — and demanding
+    a partner for that phantom rejected a correct match. Requiring only that the
+    catalog's doses be present keeps the 10/5-is-not-25/5 protection (25 is
+    absent from the row, so it still fails) while tolerating the extra tokens
+    an insurer's product name always carries.
+    """
+    if not row or not catalog:
         return True                      # silence is not disagreement
-    one = lambda x, ys: any(
-        (x[0] == y[0] and abs(x[1] - y[1]) <= tol * max(x[1], y[1], 1e-9))
-        if isinstance(x, tuple) and isinstance(y, tuple)
-        else (not isinstance(x, tuple) and not isinstance(y, tuple)
-              and abs(x - y) <= tol * max(x, y, 1e-9))
-        for y in ys)
-    return all(one(x, b) for x in a) and all(one(y, a) for y in b)
+    def has_partner(y, xs) -> bool:
+        for x in xs:
+            if isinstance(x, tuple) != isinstance(y, tuple):
+                continue
+            if isinstance(x, tuple) and isinstance(y, tuple):
+                if x[0] == y[0] and abs(x[1] - y[1]) <= tol * max(x[1], y[1], 1e-9):
+                    return True
+            elif not isinstance(x, tuple) and not isinstance(y, tuple):
+                if abs(x - y) <= tol * max(x, y, 1e-9):
+                    return True
+        return False
+    return all(has_partner(y, row) for y in catalog)
 
 
 def record_components(rec, known: set[str]) -> list[str]:
