@@ -95,7 +95,19 @@ _SALT_TOKENS = {
     "mesylate", "maleate", "tartrate", "besylate", "succinate", "fumarate", "tosylate",
     "citrate", "acetate", "carbonate", "phosphate", "gluconate", "bromide", "chloride",
     "dihydrate", "monohydrate", "hemihydrate", "anhydrous",
+    # The di- forms, and two counter-ions with only one marketed salt each.
+    # Their absence was an asymmetry, not a judgement: «hydrochloride» was
+    # stripped and «dihydrochloride» was not, so NFI's «betahistine
+    # hydrochloride» normalized to «betahistine» while the formulary's
+    # «BETAHISTINE DIHYDROCHLORIDE» stayed whole — the two spellings of one
+    # substance could never meet, and all 30 betahistine tablets were
+    # unreachable from the insurer list.
+    "dihydrochloride", "dihydrobromide", "besilate", "xinafoate",
+    "trihydrate", "pentahydrate",
 }
+# NOT stripped, deliberately: «propionate» and «furoate» pick out DIFFERENT
+# products (fluticasone propionate is Flixotide, fluticasone furoate is Avamys),
+# and «hydrate» alone would turn chloral hydrate into chloral.
 
 
 def normalize(name: str | None) -> str:

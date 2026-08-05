@@ -168,11 +168,34 @@ def ingredient_agrees(a: str, b: str) -> bool:
     return False
 
 
+# The three ways NFI spells a respiratory inhaler. Splitting on the comma puts
+# them in three different families — «AEROSOL», «INHALANT», «POWDER» — so a
+# formulary row saying INHALANT could never reach a pMDI, and beclomethasone
+# 250 ug/dose failed to match the beclomethasone 250 ug/dose we hold.
+# SPRAY, SPRAY METERED and SPRAY SUSPENSION are deliberately NOT here: those are
+# nasal and topical, and fluticasone nasal is not fluticasone inhaled.
+_INHALATION_FORMS = {"AEROSOL, METERED", "INHALANT", "POWDER, METERED"}
+
+
+def salt_base(name: str) -> str:
+    """An ingredient with its salt and hydrate words removed.
+
+    Returns the name unchanged when nothing would be left — an ingredient may
+    BE a salt («aluminum hydroxide», «magnesium oxide»), and reducing those to
+    an empty string would make them equal to each other and to everything else.
+    """
+    words = [w for w in str(name or "").lower().split() if w not in FILLER_TOKENS]
+    return " ".join(words) or str(name or "").strip().lower()
+
+
 def form_family(form: str) -> str:
     """Coarse family of an exact form string: 'INJECTION, POWDER, LYOPHILIZED,
     FOR SOLUTION' → 'INJECTION'. Lets a row that states only the family still
     reach the specific product, at lower confidence than an exact form hit."""
-    return re.split(r"[,;(]", str(form or "").upper(), maxsplit=1)[0].strip()
+    f = str(form or "").upper().strip()
+    if f in _INHALATION_FORMS:
+        return "INHALATION"
+    return re.split(r"[,;(]", f, maxsplit=1)[0].strip()
 
 
 def family_index(catalog) -> dict:
@@ -351,17 +374,33 @@ def record_components(rec, known: set[str]) -> list[str]:
     comps = components(getattr(rec, "generic_name", "") or "")
     if not comps:
         return comps
+
+    def add(c: str) -> None:
+        """Add an ingredient unless it is the SAME substance under another name.
+
+        `generic_name` and `generic_full` routinely spell one substance two
+        ways — «betahistine dihydrochloride» and «betahistine». Counting both
+        turned a mono product into a two-ingredient combination, which made the
+        ingredient-set guard reject its own formulary row (all 30 betahistine
+        tablets became unreachable). A salt variant of an ingredient already
+        present is not a second ingredient.
+        """
+        if c in comps:
+            return
+        b = salt_base(c)
+        if any(salt_base(e) == b for e in comps):
+            return
+        comps.append(c)
+
     gf = str((getattr(rec, "monograph", None) or {}).get("generic_full") or "")
     if gf:
         form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
         head = gf[:gf.upper().index(form)] if form and form in gf.upper() else gf
         head = re.split(r"\d", head)[0]          # never read past the first dose
         for c in components(head):
-            if c not in comps:
-                comps.append(c)
+            add(c)
     for c in embedded_components(getattr(rec, "strength", "") or "", known):
-        if c not in comps:
-            comps.append(c)
+        add(c)
     return comps
 
 
@@ -491,6 +530,17 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
         g = generics[0]
         cands = index.get("salt", {}).get((g.split()[0], form)) or []
         widened = {cg for cg, _e in cands if cg.startswith(g + " ")}
+        if not widened:
+            # Both sides name a salt, but not the SAME word: the formulary says
+            # «BETAHISTINE DIHYDROCHLORIDE» where NFI says «betahistine
+            # hydrochloride». A prefix test cannot see that; comparing what is
+            # left once the salt words go can. Still gated on exactly one
+            # catalog ingredient reducing to the row's base, so «INSULIN» cannot
+            # reach insulin glargine (glargine is not a salt word) and
+            # metoprolol succinate cannot reach metoprolol tartrate (two
+            # candidates reduce to «metoprolol», so neither is chosen).
+            gb = salt_base(g)
+            widened = {cg for cg, _e in cands if salt_base(cg) == gb}
         if len(widened) == 1:
             for cg, (rec, cat_doses, comps, cat_vols) in cands:
                 if cg not in widened or len(comps) != 1:

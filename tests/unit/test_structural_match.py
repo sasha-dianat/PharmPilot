@@ -113,22 +113,72 @@ def test_link_rows_uses_structural_and_code_join_stays_review_first():
 
 
 def test_salt_tolerant_lane_resolves_base_name_but_refuses_ambiguity():
-    """NFI keeps the salt in the generic ("amlodipine besilate" — normalize()
-    strips maleate/hydrochloride but not besilate) while a formulary prints the
-    base. Widening is allowed only when exactly ONE NFI ingredient extends the
-    row's name."""
+    """NFI keeps the salt in the generic while a formulary prints the base.
+    Widening is allowed only when exactly ONE NFI ingredient extends the row's
+    name — «INSULIN» must never silently become one particular insulin.
+
+    The lane is exercised here with «dipropionate», which normalize() does NOT
+    strip and must not: «propionate» and «furoate» pick out different fluticasone
+    products. `besilate` used to serve this role and no longer does — it was
+    added to the salt vocabulary, so amlodipine now resolves in the exact lane
+    (see the test below), which is the better answer.
+    """
     cat = [
-        _rec("AML", "amlodipine besilate", "5 mg", "TABLET"),
+        _rec("BEC", "beclomethasone dipropionate", "250 ug", "AEROSOL, METERED"),
         _rec("GLA", "insulin glargine", "100 iu/1mL", "INJECTION"),
         _rec("ASP", "insulin aspart", "100 iu/1mL", "INJECTION"),
     ]
     idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
-    rec, conf, why = sm.match(sm.parse_name("AMLODIPINE 5 mg TABLET ORAL", vocab), idx)
-    assert rec is not None and rec.irc == "AML"
+    rec, conf, why = sm.match(
+        sm.parse_name("BECLOMETHASONE 250 ug AEROSOL, METERED RESPIRATORY", vocab), idx)
+    assert rec is not None and rec.irc == "BEC"
     assert conf == sm.CONF_SALT < sm.CONF_EXACT_DOSE and "salt-tolerant" in why
     # ambiguous: two insulins extend "INSULIN" → refuse rather than pick one
     rec2, conf2, _ = sm.match(sm.parse_name("INSULIN 100 iu/1mL INJECTION PARENTERAL", vocab), idx)
     assert rec2 is None and conf2 == 0.0
+
+
+def test_a_stripped_salt_resolves_in_the_exact_lane_not_the_tolerant_one():
+    """«amlodipine besilate» IS amlodipine, so once besilate joined the salt
+    vocabulary the row lands at full confidence rather than the widened 0.76."""
+    cat = [_rec("AML", "amlodipine besilate", "5 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("AMLODIPINE 5 mg TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "AML" and conf == sm.CONF_EXACT_DOSE
+
+
+def test_two_spellings_of_one_salt_meet():
+    """NFI writes «betahistine hydrochloride», the insurer «BETAHISTINE
+    DIHYDROCHLORIDE». One stripped and the other did not, so the two spellings
+    of a single substance could never meet and all 30 betahistine tablets were
+    unreachable from the insurer list."""
+    cat = [_rec("BET", "betahistine hydrochloride", "8 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(
+        sm.parse_name("BETAHISTINE DIHYDROCHLORIDE 8 mg TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "BET" and conf == sm.CONF_EXACT_DOSE
+
+
+def test_an_inhaler_reaches_its_own_form_family():
+    """NFI spells a respiratory inhaler three ways — AEROSOL METERED, INHALANT,
+    POWDER METERED — and splitting on the comma put them in three families, so a
+    row saying INHALANT could not reach a pMDI. Nasal SPRAY stays out: fluticasone
+    nasal is not fluticasone inhaled."""
+    assert sm.form_family("INHALANT") == sm.form_family("AEROSOL, METERED")
+    assert sm.form_family("POWDER, METERED") == sm.form_family("INHALANT")
+    assert sm.form_family("SPRAY, METERED") != sm.form_family("INHALANT")
+    assert sm.form_family("POWDER, FOR SOLUTION") != sm.form_family("POWDER, METERED")
+
+
+def test_one_substance_under_two_names_is_not_a_combination():
+    """generic_name and generic_full routinely spell one substance two ways.
+    Counting both made a mono product look like a two-ingredient combination,
+    and the ingredient-set guard then rejected its own formulary row."""
+    import dataclasses
+    r = dataclasses.replace(
+        _rec("BET", "betahistine hydrochloride", "8 mg", "TABLET"),
+        monograph={"generic_full": "BETAHISTINE DIHYDROCHLORIDE TABLET ORAL 8 mg"})
+    assert len(sm.record_components(r, {"betahistine"})) == 1
 
 
 def test_inn_synonyms_bridge_to_the_usan_name_nfi_uses():

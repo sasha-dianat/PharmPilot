@@ -566,3 +566,52 @@ model must append an acceptance entry before editing.
   registry has no lane that says so.
 - Next action/owner: owner to confirm the 251 review-queue rows; then the NFI
   re-crawl, which is what everything remaining actually waits on.
+
+### 2026-08-04 03:10 +0330 — Claude (Opus 5) — the shared national code, and a regression it exposed
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Question from the owner: can the 172 unmatched rows be solved by joining
+  salamat and tamin on their shared ID?
+- Answer, measured: the join already exists (`link_rows` Tier 2 substitutes the
+  richest name observed for a code) and it is real — 2,300 codes appear in BOTH
+  insurers and 2,002 of those have a meaningfully richer name on one side
+  (`01072`: salamat «PROPYL THIOURACIL», tamin «PROPYLTHIOURACIL 50 mg TABLET
+  ORAL»). But for THESE 172 it is mostly not available:
+  - 131 — no other insurer carries that code, so there is no richer name
+  - 43 — a richer name exists and IS substituted; the match failed anyway
+  - 1 — recovered immediately
+- The 43 failed for three causes, none of them about the ID:
+  1. **`normalize` was asymmetric.** It strips «hydrochloride» but not
+     «dihydrochloride», so NFI's «betahistine hydrochloride» became
+     «betahistine» while the insurer's «BETAHISTINE DIHYDROCHLORIDE» stayed
+     whole. Fixed in `services/ai/clinical_decision_support/normalizer.py` —
+     a SHARED clinical module, so note that the change also improves DUR
+     lookups (that spelling previously missed the interaction table entirely).
+     Deliberately NOT added: «propionate»/«furoate» (fluticasone propionate is
+     Flixotide, furoate is Avamys) and bare «hydrate» (chloral hydrate).
+  2. **`form_family` split «AEROSOL, METERED», «INHALANT» and «POWDER,
+     METERED» into three families**, so a row saying INHALANT could not reach a
+     pMDI. SPRAY forms deliberately excluded — nasal is not inhaled.
+  3. **«ALUMINIUM» vs NFI's «aluminum»** — added to the file-backed synonym
+     table, which already required that the target exist as an NFI generic and
+     the source not.
+- **A regression of mine, caught here:** `record_components` (added earlier
+  today) read ingredients from BOTH `generic_name` and `generic_full`, and those
+  two routinely spell one substance two ways. That turned mono products into
+  false two-ingredient combinations, which the ingredient-set guard then refused
+  to match. Measured blast radius: **425 catalog records**. It failed safe
+  (withholding links rather than inventing them), which is exactly why it was
+  invisible. `record_components` now refuses to add a salt variant of an
+  ingredient it already holds.
+- Verification: `pytest tests/unit` → 1207 passed, 1 skipped, 1 failed
+  (`test_integrations_sandbox`, the same pre-existing ordering artifact). Five
+  new tests in `test_structural_match.py`. One existing test was rewritten, not
+  patched: it asserted amlodipine resolves via the salt-TOLERANT lane at 0.76,
+  which stopped being true once «besilate» joined the salt vocabulary — it now
+  resolves in the exact lane at 0.93, which is the better answer, and the lane
+  is exercised with «dipropionate» instead.
+- Net: board 462 → 459 open; 16 rows moved from unmatched into the confirm
+  queue (`coverage_review_agrees` 251 → 267).
+- Next action/owner: the 169 that remain are not an ID problem — 131 of them
+  exist in one insurer's list only.

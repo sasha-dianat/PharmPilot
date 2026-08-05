@@ -24,6 +24,9 @@
     "phenobarbitone": "phenobarbital",
     "sodium valproate": "valproate sodium",
     "adrenaline": "epinephrine",
-    "noradrenaline": "norepinephrine"
+    "noradrenaline": "norepinephrine",
+    "aluminium hydroxide": "aluminum hydroxide",
+    "aluminium": "aluminum",
+    "aluminium phosphate": "aluminum phosphate"
   }
 }
