@@ -595,6 +595,7 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     for level in ("exact", "family"):
         lookup_form = form if level == "exact" else form_family(form)
         for cg in generics:
+            viable = []
             for rec, cat_doses, comps, cat_vols in index[level].get((cg, lookup_form), []):
                 # Ingredient sets must agree in BOTH directions: a combination
                 # never lands on a mono product, and a mono row never lands on a
@@ -610,6 +611,20 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
                 # a 10 mL vial is not a 100 mL vial, however well the dose agrees
                 if not volumes_agree(vols, cat_vols):
                     continue
+                viable.append((rec, cat_doses))
+            if not viable:
+                continue
+            # A row that names NO dose must not be handed one. This tier applies
+            # at 0.80, above the 0.75 line, and returns whichever candidate the
+            # index happens to reach first. «IBUPROFEN INJECTION» resolved to the
+            # 100 mg/mL adult product while the catalog also holds PEDEA at
+            # 5 mg/mL — the preterm-neonate dose for closing a ductus, a
+            # twenty-fold difference decided by iteration order. Where the
+            # strengths differ, the row is genuinely ambiguous and belongs to a
+            # human.
+            if not doses and len({frozenset(cd) for _, cd in viable if cd}) > 1:
+                return None, 0.0, ""
+            for rec, cat_doses in viable[:1]:
                 if doses and cat_doses:
                     conf = CONF_EXACT_DOSE if level == "exact" else CONF_FAMILY_DOSE
                     why = f"{level} form + dose"

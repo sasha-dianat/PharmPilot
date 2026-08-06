@@ -733,3 +733,36 @@ model must append an acceptance entry before editing.
   says «IBUPROFEN», not «IBUPROFEN LYSINE», so the catalog is faithful to the
   source — but the presentation is the neonatal one and it may be worth
   checking the pages. No change made; this is a pharmacological call.
+
+### 2026-08-04 06:40 +0330 — Claude (Opus 5) — a dose-less row must not be handed a dose
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Confirming the owner's ruling on ibuprofen lysine turned up the brand column,
+  which settles the seven rows flagged in the previous entry: they are **PEDEA**
+  — the European neonatal product for closing a patent ductus arteriosus,
+  ibuprofen 5 mg/mL in a 2 mL ampoule. Pedea uses PLAIN ibuprofen where
+  NeoProfen uses the lysine salt, so NFI's labelling is correct and the earlier
+  suspicion of a mislabel was wrong. No change needed; the question is closed.
+- **But it exposed a live safety gap, and this one is pre-existing.**
+  «IBUPROFEN INJECTION» naming no strength matched the 100 mg/mL ADULT product
+  at CONF_EXACT_NO_DOSE = 0.80 — above the 0.75 auto-apply line — while the
+  catalog holds three IV ibuprofen products: PEDEA 5 mg/mL (neonate),
+  FENOFEN 100 mg/mL (adult) and ibuprofen lysine 10 mg/mL (neonate). A
+  twenty-fold dose difference between a preterm neonate and an adult, decided by
+  index iteration order, applied without a human seeing it.
+- Fixed in `match()`: candidates are now collected before one is chosen, and
+  when the row states NO dose and the surviving candidates hold more than one
+  distinct dose set, the match is refused. Ambiguity is the trigger, not the
+  missing dose — a form with a single strength still resolves at 0.80, which the
+  test asserts.
+- Verification: `pytest tests/unit` → 1276 passed, 1 failed
+  (`test_integrations_sandbox`, the pre-existing ordering artifact). Board 482
+  open, judgement 0; the refusal cost one row.
+- **For the inventory workstream, not touched by me:**
+  `tests/unit/test_exception_register_e2e.py` now has 1 failure and 1 error —
+  `test_recurrence_is_counted_not_duplicated` asserts every exception has
+  `occurrences >= 2`, and `test_a_scheduled_run_is_idempotent` errors. It
+  imports `services.core.inventory.exceptions`, is stateful against the live
+  database and depends on run order; my changes are confined to `drug_catalog`.
+  Flagging rather than editing, per the ownership rule.

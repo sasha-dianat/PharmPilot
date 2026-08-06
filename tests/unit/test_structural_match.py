@@ -188,6 +188,35 @@ def test_a_row_naming_no_salt_reaches_none_of_them():
     assert rec is None and conf == 0.0
 
 
+def test_a_row_naming_no_dose_will_not_be_handed_one():
+    """«IBUPROFEN INJECTION» with no strength resolved to the 100 mg/mL adult
+    product at 0.80 — ABOVE the 0.75 line — while the catalog also holds PEDEA at
+    5 mg/mL, the preterm-neonate dose for closing a ductus arteriosus. A
+    twenty-fold difference settled by index iteration order. Where the strengths
+    differ the row is genuinely ambiguous and belongs to a human.
+    """
+    cat = [_rec("ADULT", "ibuprofen", "100 mg/1mL", "INJECTION"),
+           _rec("PEDEA", "ibuprofen", "5 mg/1mL", "INJECTION")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("IBUPROFEN INJECTION INTRAVENOUS", vocab), idx)
+    assert rec is None and conf == 0.0
+
+    # naming the strength resolves it precisely, both ways
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+    assert hit("IBUPROFEN INJECTION INTRAVENOUS 5 mg/1mL") == "PEDEA"
+    assert hit("IBUPROFEN INJECTION PARENTERAL 100 mg/1mL") == "ADULT"
+
+
+def test_one_strength_still_matches_without_a_dose():
+    """The refusal is about AMBIGUITY, not about missing doses: when the catalog
+    holds a single strength for that form there is nothing to choose between."""
+    cat = [_rec("ONLY", "acetazolamide", "250 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("ACETAZOLAMIDE TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "ONLY" and conf == sm.CONF_EXACT_NO_DOSE
+
+
 def test_a_single_variant_can_still_be_identity_bearing_by_judgement():
     """«ibuprofen lysine» is the intravenous neonatal product for closing a
     patent ductus arteriosus. It shares a molecule with the oral analgesic and
