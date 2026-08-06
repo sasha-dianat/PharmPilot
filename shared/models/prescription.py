@@ -153,6 +153,10 @@ class PrescriptionFill(AuditedBase):
     inventory_lot_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("inventory_lots.id"), nullable=True, index=True
     )
+    # Jalali fill date (migration 0003). In the database since 0003 but never
+    # mapped — a Persian-calendar deployment could not read its own fill dates
+    # through the ORM.
+    fill_date_jalali: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     # Patient pickup
     pickup_confirmed_by_biometric: Mapped[bool] = mapped_column(default=False)

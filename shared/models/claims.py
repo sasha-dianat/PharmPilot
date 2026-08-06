@@ -81,6 +81,13 @@ class ClaimTransaction(AuditedBase):
 
     fill: Mapped["PrescriptionFill"] = relationship()
 
+    # Back-office agent counters (migration 0005). In the database since 0005
+    # but never mapped, so the agent's raw-SQL writes were invisible to the ORM.
+    auto_rebill_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False)
+    pa_initiated: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False)
+
 
 class ERA835Record(AuditedBase):
     """Electronic Remittance Advice — posted payments from PBMs."""
