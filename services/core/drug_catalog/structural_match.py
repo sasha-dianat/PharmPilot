@@ -44,6 +44,16 @@ _MASS_RE = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*(mcg|microgram|µg|ug|mg|kg|gr|g)\b", re.I)
 _PCT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 _IU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:\[?\s*i\.?u\.?\s*\]?|units?)\b", re.I)
+# Radioactivity, folded to mCi (1 GBq = 27.027 mCi). A radiopharmaceutical is
+# labelled by its activity at calibration — «FLUDEOXYGLUCOSE F-18 10 mCi» is that
+# product's strength in the sense mg is a tablet's — and it needs its own
+# namespace for the same reason IU does: 10 mCi is neither 10 mg nor 10 IU.
+# Without it `dose_set` returned an empty set for every radiopharmaceutical, and
+# `backfill_strength` — which validates its extraction through `dose_set` —
+# discarded 51 activities it had read correctly out of NFI's own composition.
+_ACT_MCI = {"ci": 1000.0, "mci": 1.0, "uci": 0.001, "µci": 0.001,
+            "gbq": 27.027, "mbq": 0.027027, "kbq": 2.7027e-5, "bq": 2.7027e-8}
+_ACT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(mci|µci|uci|ci|gbq|mbq|kbq|bq)\b", re.I)
 
 
 def record_volumes(rec) -> set:
@@ -76,6 +86,11 @@ def dose_set(text) -> set:
         try:
             out.add(("iu", round(float(num.replace(",", ".")), 4)))
         except ValueError:
+            continue
+    for num, unit in _ACT_RE.findall(s):
+        try:
+            out.add(("act", round(float(num.replace(",", ".")) * _ACT_MCI[unit.lower()], 6)))
+        except (ValueError, KeyError):
             continue
     return out
 

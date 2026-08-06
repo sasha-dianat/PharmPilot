@@ -766,3 +766,52 @@ model must append an acceptance entry before editing.
   imports `services.core.inventory.exceptions`, is stateful against the live
   database and depends on run order; my changes are confined to `drug_catalog`.
   Flagging rather than editing, per the ownership rule.
+
+### 2026-08-06 — Claude (Opus 5) — the 290 missing potencies: 58 we already had, 21 researched
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner asked for a search on each of the 290 and enrichment of the database.
+  Classifying them first changed the task substantially:
+
+  | class | n | is there a potency to find? |
+  |---|---|---|
+  | vaccines | 91 | no — antigen content per dose, not mg/mL |
+  | radiopharmaceuticals | 51 | yes — activity at calibration |
+  | formula / multi-ingredient | 39 | only as a compound formula |
+  | biological / diagnostic | 4 | potency units, not concentration |
+  | ordinary drugs | 105 | for a subset |
+
+- **58 needed no research at all — a defect was discarding them.** `dose_set()`
+  knows three namespaces (mass folded to mg, percent, IU) and had none for
+  radioactivity, so it returned an empty set for «10 mCi». `backfill_strength`
+  validates its extraction THROUGH `dose_set`, so every activity it read
+  correctly out of NFI's own composition field was then thrown away. Added an
+  `("act", …)` namespace folded to mCi (1 GBq = 27.027 mCi); activity now
+  compares equal across SI and conventional units and never equal to mass, IU or
+  percent. Recovered sodium iodide I-131, technetium Tc-99m pertechnetate /
+  pentetate / succimer / medronate, gallium-67 citrate, lutetium-177 PSMA,
+  samarium-153 EDTMP, sodium fluoride F-18.
+- **21 researched and verified**, each against a regulator or manufacturer
+  document, written as a per-IRC `strength` value AND a durable field override
+  so the next crawl cannot erase them: CellCept capsule 250 mg / tablet 500 mg /
+  suspension 200 mg/mL (the FORM fixes it), Orap Forte 4 mg, GlucaGen HypoKit
+  1 mg, Naglazyme 1 mg/mL, Potaba 500 mg, Cerezyme 400 units, Panadol Extra
+  500 mg + caffeine 65 mg, Humira 40 mg/0.8 mL.
+- **Deliberately NOT written** — the product is marketed at several strengths and
+  the row names none, so any value would be a guess: Esbriet (267/801),
+  Sandostatin LAR (10/20/30), Prograf (0.5/1/5), Rapamune (0.5/1/2), Amitiza
+  (8/24 µg), Desferal (500 mg/2 g), oxaliplatin (50/100 mg). The apremilast rows
+  are starter packs and say so in their own names («AMALTA 10/20/30»).
+- Note the enrichment table is UNIQUE on `key` alone and `apply_enrichment_gaps`
+  takes `strengths[0]` regardless of form, so it cannot express «capsule 250,
+  tablet 500» for one Persian name («سلسپت»). That is why these went through
+  field overrides, which are IRC-keyed. Worth knowing before anyone tries to
+  route form-dependent findings through enrichment.
+- Verification: `pytest tests/unit` → 1282 passed, 1 failed
+  (`test_integrations_sandbox`, the pre-existing ordering artifact). Snapshot
+  `catalog_backup_pre_activity` taken before the backfill.
+- Result: missing strength 290 → 211; board 482 → 403 open, judgement 0.
+- Remaining 211 are overwhelmingly vaccines, formula products and pure
+  substances. A vaccine has no mg/mL potency to find; the honest close for that
+  class is a disposition, not a search.

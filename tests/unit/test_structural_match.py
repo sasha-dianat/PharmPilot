@@ -147,6 +147,25 @@ def test_a_stripped_salt_resolves_in_the_exact_lane_not_the_tolerant_one():
     assert rec is not None and rec.irc == "AML" and conf == sm.CONF_EXACT_DOSE
 
 
+def test_radioactivity_is_a_dose_in_its_own_namespace():
+    """A radiopharmaceutical is labelled by its activity at calibration —
+    «FLUDEOXYGLUCOSE F-18 10 mCi» is that product's strength in the sense mg is
+    a tablet's. dose_set knew mass, percent and IU but not activity, so it
+    returned an empty set for every one of them; `backfill_strength` validates
+    its extraction through dose_set and therefore DISCARDED 58 activities it had
+    already read correctly out of NFI's own composition field.
+    """
+    assert sm.dose_set("10 mCi") == {("act", 10.0)}
+    assert sm.dose_set("1 Ci") == {("act", 1000.0)}
+    assert sm.dose_set("1 uCi") == {("act", 0.001)}
+    # SI and conventional units compare equal: 1 GBq = 27.027 mCi
+    assert sm.doses_agree(sm.dose_set("1 GBq"), sm.dose_set("27.027 mCi"))
+    # and activity is none of the other namespaces
+    for other in ("10 mg", "10 [iU]", "10 %"):
+        assert not sm.doses_agree(sm.dose_set("10 mCi"), sm.dose_set(other))
+    assert not sm.doses_agree(sm.dose_set("5 mCi"), sm.dose_set("10 mCi"))
+
+
 def test_different_salts_of_one_molecule_are_different_products():
     """Diclofenac potassium is Cataflam — rapid onset, acute pain and migraine.
     Diclofenac sodium is Voltaren — enteric-coated and sustained-release, for
