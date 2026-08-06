@@ -188,6 +188,23 @@ def test_a_row_naming_no_salt_reaches_none_of_them():
     assert rec is None and conf == 0.0
 
 
+def test_a_single_variant_can_still_be_identity_bearing_by_judgement():
+    """«ibuprofen lysine» is the intravenous neonatal product for closing a
+    patent ductus arteriosus. It shares a molecule with the oral analgesic and
+    nothing else — different route, indication, patient and price — but the
+    catalog lists only ONE variant, so the count rule cannot see it. Owner's
+    ruling, recorded in _IDENTITY_BEARING_MODIFIERS.
+    """
+    cat = [_rec("IBU", "ibuprofen", "400 mg", "TABLET"),
+           _rec("LYS", "ibuprofen lysine", "10 mg/1mL", "INJECTION")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    assert "ibuprofen" in sm.identity_bearing_bases(cat)
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+    assert hit("IBUPROFEN TABLET ORAL 400 mg") == "IBU"
+    assert hit("IBUPROFEN LYSINE INJECTION INTRAVENOUS 10 mg/1mL") == "LYS"
+
+
 def test_a_hydration_state_is_not_a_second_salt():
     """«azithromycin anhydrous» and «azithromycin dihydrate» are one substance
     dried two ways — folding them is correct and must keep working."""

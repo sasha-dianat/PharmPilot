@@ -182,6 +182,20 @@ _INHALATION_FORMS = {"AEROSOL, METERED", "INHALANT", "POWDER, METERED"}
 _HYDRATION = frozenset(("anhydrous", "hydrous", "dihydrate", "monohydrate",
                         "hemihydrate", "trihydrate", "pentahydrate", "sesquihydrate"))
 
+# Modifiers that make a DIFFERENT product even when the catalog lists only one
+# of them, so the count rule below cannot see it. This is a pharmacological
+# judgement and the place to record more of them.
+#
+#   lysine — «ibuprofen lysine» is the intravenous neonatal product used to
+#   close a patent ductus arteriosus (NeoProfen). It shares a molecule with the
+#   oral analgesic and nothing else: different route, different indication,
+#   different patient, different price. Owner's ruling, 2026-08-04.
+#
+#   arginine — «ibuprofen arginine» is the same class of case (a salt chosen to
+#   change onset, sold as its own product); listed here so it is separated on
+#   the day it appears rather than after it has mis-matched.
+_IDENTITY_BEARING_MODIFIERS = frozenset(("lysine", "arginine"))
+
 
 def components_full(text) -> list[str]:
     """Ingredients WITHOUT the clinical class-folding — the salt is kept.
@@ -227,7 +241,10 @@ def identity_bearing_bases(catalog) -> frozenset:
         forms.setdefault(head, set())
         if rest:
             forms[head].add(rest)
-    return frozenset(h for h, s in forms.items() if len(s) > 1)
+    return frozenset(h for h, s in forms.items()
+                     if len(s) > 1
+                     or any(w in _IDENTITY_BEARING_MODIFIERS
+                            for r in s for w in r.split()))
 
 
 def salt_base(name: str) -> str:

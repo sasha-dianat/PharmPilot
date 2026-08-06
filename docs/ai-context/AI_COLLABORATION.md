@@ -698,3 +698,38 @@ model must append an acceptance entry before editing.
 - Known limitation: a base with exactly ONE non-hydrate variant still folds, so
   «ibuprofen» vs «ibuprofen lysine» is not separated. Splitting it needs a
   pharmacological call rather than a count.
+
+### 2026-08-04 06:10 +0330 — Claude (Opus 5) — ibuprofen lysine, by owner's ruling
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner ruled that «ibuprofen lysine» is a distinct product. It is: the
+  intravenous neonatal product for closing a patent ductus arteriosus, sharing
+  a molecule with the oral analgesic and nothing else — different route,
+  indication, patient and price. The count rule in `identity_bearing_bases`
+  could not see it, because the catalog lists only ONE variant beside the bare
+  name, which is the same shape as the benign «metformin» /
+  «metformin hydrochloride» naming inconsistency.
+- Changed: `_IDENTITY_BEARING_MODIFIERS` in `structural_match` — a small,
+  documented set for judgements a count cannot make. Holds `lysine` and
+  `arginine` (ibuprofen arginine is the same class of case, listed so it is
+  separated the day it appears rather than after it has mis-matched). This is
+  the place to record further rulings of this kind.
+- Verified against the live catalog: plain oral ibuprofen still matches at 0.93,
+  «IBUPROFEN LYSINE INJECTION 10 mg/1mL» now reaches only the lysine product,
+  and metformin still folds. NFI's own `composition` field distinguishes them —
+  two rows read «IBUPROFEN LYSINE 10 mg/1mL» where the rest read «IBUPROFEN».
+- Ruled one conflict this surfaced: salamat's «GLYCERIN» was matching hydrogen
+  peroxide 30 % at 0.74 through the fuzzy price/form lane. Rejected — we hold no
+  glycerin at all, only nitroglycerin, which merely contains the substring.
+  A different substance, and the row is a genuine catalog absence.
+- Verification: `pytest tests/unit` → 1274 passed, 1 failed
+  (`test_integrations_sandbox`, the same pre-existing ordering artifact).
+- Board: 482 open, judgement lane 0 after the ruling.
+- **Open question for the owner, NOT acted on:** seven catalog rows read
+  «IBUPROFEN INJECTION INTRAVENOUS 5 mg/1mL 2MILLILITER», branded پدآ and
+  فنوفن, recorded by NFI as plain ibuprofen. 5 mg/mL in a 2 mL vial is 10 mg
+  per vial, which is the neonatal PDA presentation. NFI's composition field
+  says «IBUPROFEN», not «IBUPROFEN LYSINE», so the catalog is faithful to the
+  source — but the presentation is the neonatal one and it may be worth
+  checking the pages. No change made; this is a pharmacological call.
