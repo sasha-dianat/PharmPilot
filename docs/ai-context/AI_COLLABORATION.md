@@ -815,3 +815,37 @@ model must append an acceptance entry before editing.
 - Remaining 211 are overwhelmingly vaccines, formula products and pure
   substances. A vaccine has no mg/mL potency to find; the honest close for that
   class is a disposition, not a search.
+
+### 2026-08-06 — Claude (Opus 5) — ruling the 211, and the two verdicts they needed
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner said "rule them". They did not all deserve the same ruling — "no potency
+  exists" and "a potency exists but this row does not say which" are different
+  facts and were recorded as different verdicts:
+
+  | n | verdict | class |
+  |---|---|---|
+  | 91 | accepted | vaccine — antigen content per dose, not a concentration |
+  | 40 | accepted | compound formula — ORS, children's cold, triphasic OC |
+  | 13 | accepted | bulk raw material — not a finished product |
+  |  9 | accepted | pure substance / excipient — vaseline, acetone, menthol |
+  |  6 | accepted | biological — TU or venom-neutralising units per vial |
+  | 42 | **deferred** | real drug, several marketed strengths, row names none |
+  | 10 | left open | unclassified, listed below for the owner |
+
+- `deferred` was chosen deliberately for the 42 and does NOT decrement the board
+  (see `ruled_subjects`): Esbriet 267/801, Sandostatin LAR 10/20/30, Prograf,
+  Rapamune, Desferal, Amitiza, oxaliplatin. A potency is knowable for each — it
+  is the ROW that does not identify which, so the work is postponed, not
+  settled. Closing them would have hidden real work behind a tidy number.
+- Ten left open on purpose, and two are data-quality findings rather than drugs:
+  **«داروی جدید»** — literally "new drug", a placeholder row that reached the
+  catalog — and **«اسپری دافع حشرات»** (insect-repellent spray) with a
+  generic_name of `btc2125m+diethylenglycol`. The rest are aspirin, a vitamin C
+  combination, Belladonna PB, Colircusi Cicloplegico and three «سو-بگ / سو-کارت»
+  sodium products, all of which have a real strength that our data simply lacks.
+- Result: missing strength 211 → 52 counted; board 403 → **244 open**, judgement
+  lane 0. Reconciliation healthy, 0 firing.
+- The board is now 192 coverage rows + 52 strengths, and both wait on the same
+  thing: the ~27,000 uncrawled NFI ids behind the Iran proxy.
