@@ -849,3 +849,44 @@ model must append an acceptance entry before editing.
   lane 0. Reconciliation healthy, 0 firing.
 - The board is now 192 coverage rows + 52 strengths, and both wait on the same
   thing: the ~27,000 uncrawled NFI ids behind the Iran proxy.
+
+### 2026-08-06 — Claude (Opus 5) — two junk rows withheld, three real ones left for the owner
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner asked to fix the «داروی جدید» placeholder and the insect-spray row.
+  Pulling the thread found five rows on malformed IRCs, and they are NOT one
+  class — three of them are real, currently-licensed, priced products.
+- **Withheld** via `monograph.excluded`, the mechanism repo.fetch_all documents
+  for NFI's own junk:
+  - `123456789123654` «صثقصثق» — the name is keyboard mashing (ص ث ق repeated)
+    and the manufacturer is «غذا آوران تست», which says TEST outright. It
+    nonetheless carried a full levodopa/carbidopa 100/25 ER monograph and a
+    16,100 rial price, so a formulary row could have matched it — exactly the
+    2026-08-01 incident that docstring records.
+  - `9999000000000001` «داروی جدید» — "new drug", i.e. the name was never
+    entered. Empty monograph, no manufacturer, no licence, and a 42,000 price.
+- **Dispositioned, not withheld**: `2642992123404660` NORMOPIC FORT, the insect
+  /lice spray. It is a genuinely registered product, merely non-therapeutic
+  (ATC V07) with a licence lapsed since 1395/12/29 and a zero price. Its
+  `generic_full` is a chemical formulation carrying CAS numbers
+  (`112-34-5` = diethylene glycol monobutyl ether), which is why `generic_name`
+  reads `btc2125m+diethylenglycol`. It has no drug strength to find.
+- **NOT touched — needs the owner's decision.** Three REAL products sit on
+  placeholder `9999…` IRCs, all currently licensed, all priced, two carrying
+  live coverage:
+
+  | irc | product | strength | manufacturer | licence |
+  |---|---|---|---|---|
+  | 9999328807296526 | تایلوکیم اکسترا | acetaminophen 500 mg + caffeine 65 mg | داروسازی حکیم | 1405/10/13 |
+  | 9999426083359186 | پروپرانولول-عبیدی | propranolol HCl 10 mg | دکتر عبیدی | 1405/03/31 (has coverage) |
+  | 9999689235152604 | مدافینیل | modafinil 100 mg | لابراتوارهای رازک | 1405/05/31 (has coverage) |
+
+  Excluding them would remove real dispensable stock — modafinil among it — so I
+  did not. But the IRC is the identity anchor: these can never be reached by the
+  IRC join, their coverage is pinned to a code that is not a national code, and
+  when NFI issues the real IRC the next harvest will create a DUPLICATE row
+  beside each. That is a succession question, and `catalog_succession` already
+  exists to record old-IRC → new-IRC once the real codes are known.
+- Verification: catalog visible to the matcher 39,179 of 39,184; board 244 →
+  **243 open**; reconciliation healthy, 0 firing.
