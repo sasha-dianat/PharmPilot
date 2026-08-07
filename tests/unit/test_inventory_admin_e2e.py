@@ -660,3 +660,169 @@ async def test_each_hop_is_chained_into_the_ledger(env):
         "SELECT movement_type FROM inventory_movements WHERE ndc11=:n "
         "ORDER BY created_at"), {"n": ndc})).all()]
     assert kinds == ["RECEIPT", "DAMAGE", "TRANSFER_OUT"]
+
+
+# ── depot → shelf now moves stock, not just paperwork ─────────────────────
+async def _shelf(db, pid):
+    sh = (await db.execute(text(
+        "SELECT id FROM pharmacy_shelves WHERE pharmacy_id=:p LIMIT 1"),
+        {"p": pid})).scalar()
+    if sh:
+        return sh
+    sh = uuid.uuid4()
+    await db.execute(text("""
+        INSERT INTO pharmacy_shelves (id,pharmacy_id,label,zone,capacity_units,
+          current_units,is_active,created_at,updated_at,is_deleted)
+        VALUES (:i,:p,'A1','main',1000,0,true,now(),now(),false)"""),
+        {"i": sh, "p": pid})
+    await db.commit()
+    return sh
+
+
+async def _session(db, pid, staff_id, ndc):
+    sid = uuid.uuid4()
+    await db.execute(text("""
+        INSERT INTO replenishment_sessions (id,pharmacy_id,status,pick_list,
+          started_by,started_at,created_at,updated_at,is_deleted,created_by,updated_by)
+        VALUES (:i,:p,'OPEN',CAST(:n AS jsonb),:s,now(),now(),now(),false,:s,:s)"""),
+        {"i": sid, "p": pid, "n": f'[{{"ndc11": "{ndc}"}}]', "s": staff_id})
+    await db.commit()
+    return sid
+
+
+async def test_collecting_from_the_depot_takes_stock_out_of_sellable_inventory(env):
+    """Until this was wired, a carton being carried to the shelf stayed
+    sellable — the same units countable in the depot and on the trolley."""
+    from services.platform.routers import depot_transfer as DT
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    sid = await _session(db, pid, alice.id, ndc)
+
+    out = await DT.depot_collect(sid, DT.DepotCollectRequest(
+        inventory_lot_id=uuid.UUID(r["lot_id"]), counted_units=30,
+        staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 30},
+        scans=[]), staff=alice, db=db)
+    await db.commit()
+
+    assert out["moved_to_transit"] == 30.0
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_in_transit FROM inventory_lots WHERE id=:i"),
+        {"i": r["lot_id"]})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 70.0
+    assert float(row["quantity_in_transit"]) == 30.0
+
+
+async def test_stock_on_the_trolley_cannot_be_dispensed(env):
+    from services.platform.routers import depot_transfer as DT
+    from services.core.inventory import dispense as D, ledger as L
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=40)
+    sid = await _session(db, pid, alice.id, ndc)
+    await DT.depot_collect(sid, DT.DepotCollectRequest(
+        inventory_lot_id=uuid.UUID(r["lot_id"]), counted_units=40,
+        staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 40},
+        scans=[]), staff=alice, db=db)
+    await db.commit()
+    alloc = L.plan_dispense(await D._lots_for(db, pid, ndc), 5, reason="rx")
+    assert alloc.plans == [] and float(alloc.shortfall) == 5.0
+
+
+async def test_a_completed_transfer_conserves_the_lot(env):
+    """Nothing entered or left the pharmacy, so on-hand must return to where it
+    started once the units reach the shelf."""
+    from services.platform.routers import depot_transfer as DT
+    db, alice, bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    lot_id = uuid.UUID(r["lot_id"])
+    shelf = await _shelf(db, pid)
+    sid = await _session(db, pid, alice.id, ndc)
+
+    await DT.depot_collect(sid, DT.DepotCollectRequest(
+        inventory_lot_id=lot_id, counted_units=30,
+        staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 30}, scans=[]),
+        staff=alice, db=db)
+    await db.commit()
+
+    placed = await DT.shelf_place(sid, DT.ShelfPlaceRequest(
+        session_id=sid, shelf_id=shelf, inventory_lot_id=lot_id, ndc11=ndc,
+        quantity=30, barcode_scans=[], ai_verification={"count_verdict": "pass"},
+        temperature_logged_c=None, pharmacist_attestation_by=bob.id,
+        pharmacist_attestation_pin="1234"), staff=alice, db=db)
+    await db.commit()
+
+    assert placed["stock"]["released"] == 30.0
+    assert placed["stock"]["in_transit_remaining"] == 0.0
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_in_transit FROM inventory_lots WHERE id=:i"),
+        {"i": lot_id})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 100.0
+    assert float(row["quantity_in_transit"]) == 0.0
+
+    kinds = [x[0] for x in (await db.execute(text(
+        "SELECT movement_type FROM inventory_movements WHERE ndc11=:n "
+        "ORDER BY created_at"), {"n": ndc})).all()]
+    assert kinds == ["RECEIPT", "TRANSFER_OUT", "TRANSFER_IN"]
+
+
+async def test_units_collected_but_not_placed_stay_stranded_in_transit(env):
+    """The reconciliation discrepancy becomes a real countable quantity rather
+    than a note in a JSON blob."""
+    from services.platform.routers import depot_transfer as DT
+    db, alice, bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    lot_id = uuid.UUID(r["lot_id"])
+    shelf = await _shelf(db, pid)
+    sid = await _session(db, pid, alice.id, ndc)
+
+    await DT.depot_collect(sid, DT.DepotCollectRequest(
+        inventory_lot_id=lot_id, counted_units=30,
+        staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 30}, scans=[]),
+        staff=alice, db=db)
+    await db.commit()
+    placed = await DT.shelf_place(sid, DT.ShelfPlaceRequest(
+        session_id=sid, shelf_id=shelf, inventory_lot_id=lot_id, ndc11=ndc,
+        quantity=28, barcode_scans=[], ai_verification={"count_verdict": "pass"},
+        temperature_logged_c=None, pharmacist_attestation_by=bob.id,
+        pharmacist_attestation_pin="1234"), staff=alice, db=db)
+    await db.commit()
+
+    assert placed["stock"]["in_transit_remaining"] == 2.0
+    assert "not sellable" in placed["stock"]["note"]
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_in_transit FROM inventory_lots WHERE id=:i"),
+        {"i": lot_id})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 98.0    # 2 short of the original 100
+    assert float(row["quantity_in_transit"]) == 2.0
+
+
+async def test_the_depot_cannot_hand_over_stock_it_does_not_have(env):
+    from services.platform.routers import depot_transfer as DT
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=5)
+    sid = await _session(db, pid, alice.id, ndc)
+    with pytest.raises(Exception) as e:
+        await DT.depot_collect(sid, DT.DepotCollectRequest(
+            inventory_lot_id=uuid.UUID(r["lot_id"]), counted_units=50,
+            staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 50}, scans=[]),
+            staff=alice, db=db)
+    assert getattr(e.value, "status_code", None) == 422
+
+
+async def test_re_posting_a_collection_does_not_carry_the_stock_twice(env):
+    from services.platform.routers import depot_transfer as DT
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    sid = await _session(db, pid, alice.id, ndc)
+    req = DT.DepotCollectRequest(
+        inventory_lot_id=uuid.UUID(r["lot_id"]), counted_units=30,
+        staged={"ndc11": ndc, "lot_number": "L-1", "expiry_date": str(date.today() + timedelta(days=200)), "quantity": 30}, scans=[])
+    await DT.depot_collect(sid, req, staff=alice, db=db)
+    await db.commit()
+    second = await DT.depot_collect(sid, req, staff=alice, db=db)
+    await db.commit()
+    assert second["moved_to_transit"] == 0.0
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_in_transit FROM inventory_lots WHERE id=:i"),
+        {"i": r["lot_id"]})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 70.0    # not 40
+    assert float(row["quantity_in_transit"]) == 30.0

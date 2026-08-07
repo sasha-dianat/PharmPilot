@@ -382,14 +382,22 @@ def plan_bucket_transfer(lot: Lot, quantity, *, movement_type: str,
 
 def plan_bucket_release(lot: Lot, quantity, *, from_bucket: str, reason: str,
                         movement_type: str = "TRANSFER_IN",
-                        is_controlled: bool = False) -> MovementPlan:
+                        is_controlled: bool = False,
+                        verified_by: str | None = None) -> MovementPlan:
     """Return units from a bucket to sellable stock.
 
-    The arrival end of a transfer, or a supplier refusing a return. It always
-    needs approval, because this is the releasing direction: every other place
-    in this module treats putting blocked stock back on sale as the move that
-    requires a second person, and units that have been in transit or staged for
-    return have been out of sight.
+    The arrival end of a transfer, or a supplier refusing a return. Releasing is
+    the direction this module always guards: units that have been in transit or
+    staged for return were out of sight, so putting them back on sale needs
+    more than one person's say-so.
+
+    `verified_by` names a gate that has already supplied that assurance — the
+    depot→shelf workflow scans the barcode, runs the count check and takes a
+    pharmacist's attestation before it calls this, which is a stronger control
+    than a second signature after the fact. A release therefore needs EITHER a
+    recorded verification OR an approval, and never neither: with no
+    `verified_by` the plan comes back requiring approval, and the caller cannot
+    apply it directly.
     """
     if movement_type not in RECEIPT_TYPES:
         raise LedgerError(f"{movement_type!r} cannot release a bucket")
@@ -410,9 +418,10 @@ def plan_bucket_release(lot: Lot, quantity, *, from_bucket: str, reason: str,
         lot_id=lot.lot_id, movement_type=movement_type,
         quantity_delta=back, quantity_before=on_hand, quantity_after=q(on_hand + back),
         lot_number=lot.lot_number, expiry_date=lot.expiry_date, reason=reason,
-        requires_approval=True, from_bucket=from_bucket,
+        requires_approval=verified_by is None, from_bucket=from_bucket,
         bucket_before=held, bucket_after=q(held - back),
-        meta={"released_to_sale": True, "controlled": is_controlled})
+        meta={"released_to_sale": True, "controlled": is_controlled,
+              "verified_by": verified_by})
 
 
 def plan_bucket_writeoff(lot: Lot, quantity, *, movement_type: str,
