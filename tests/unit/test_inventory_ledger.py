@@ -311,8 +311,8 @@ def test_writing_off_from_a_bucket_leaves_sellable_stock_untouched():
     """The units left on-hand when they entered the bucket; deducting them
     again is exactly the double-count the bucket prevents."""
     p = L.plan_bucket_writeoff(_damaged_lot(), 20,
-                               movement_type="RETURN_TO_SUPPLIER",
-                               from_bucket="damaged", reason="supplier claim")
+                               movement_type="SUPPLIER_CREDIT",
+                               from_bucket="damaged", reason="credit note 1182")
     assert p.quantity_before == p.quantity_after == Decimal("80.000")
     assert (p.from_bucket, p.bucket_after) == ("damaged", Decimal("0.000"))
 
@@ -344,14 +344,131 @@ def test_damaged_stock_is_never_dispensable():
 
 
 def test_the_full_lifecycle_conserves_from_receipt_to_write_off():
-    """100 received, 20 damaged, 20 returned to supplier: 80 sellable, 0 held,
-    and nothing silently vanished along the way."""
-    after_damage = L.plan_bucket_transfer(lot("a", 100), 20,
-                                          movement_type="DAMAGE", reason="crushed")
+    """100 received → 20 damaged → staged for return → credited away.
+    80 sellable throughout, and nothing silently vanished at any step."""
+    dmg = L.plan_bucket_transfer(lot("a", 100), 20,
+                                 movement_type="DAMAGE", reason="crushed")
     mid = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
-                quantity_on_hand=after_damage.quantity_after,
-                quantity_damaged=after_damage.bucket_after)
-    out = L.plan_bucket_writeoff(mid, 20, movement_type="RETURN_TO_SUPPLIER",
-                                 from_bucket="damaged", reason="credit note")
+                quantity_on_hand=dmg.quantity_after,
+                quantity_damaged=dmg.bucket_after)
+
+    staged = L.plan_bucket_transfer(mid, 20, movement_type="RETURN_TO_SUPPLIER",
+                                    reason="claim raised", from_bucket="damaged")
+    assert staged.quantity_after == Decimal("80.000")     # sellable untouched
+    assert staged.bucket_after == Decimal("20.000")       # now in `returned`
+
+    staged_lot = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+                       quantity_on_hand=Decimal("80"), quantity_damaged=Decimal("0"),
+                       quantity_returned=Decimal("20"))
+    out = L.plan_bucket_writeoff(staged_lot, 20, movement_type="SUPPLIER_CREDIT",
+                                 from_bucket="returned", reason="credit note 1182")
     assert out.quantity_after == Decimal("80.000")
     assert out.bucket_after == Decimal("0.000")
+    assert out.requires_approval is True
+
+
+# ── transfers out and supplier returns ────────────────────────────────────
+def test_transfer_out_holds_stock_in_transit_rather_than_deleting_it():
+    """Stock that left the depot has not left the pharmacy. Until it arrives it
+    is neither sellable here nor gone — which is exactly what a bucket is for."""
+    p = L.plan_bucket_transfer(lot("a", 100), 30, movement_type="TRANSFER_OUT",
+                               reason="depot → shelf")
+    assert p.to_bucket == "in_transit"
+    assert (p.quantity_after, p.bucket_after) == (Decimal("70.000"), Decimal("30.000"))
+    assert p.quantity_after + p.bucket_after == Decimal("100.000")
+
+
+def test_staging_a_supplier_return_is_immediate_and_conserving():
+    p = L.plan_bucket_transfer(lot("a", 50), 10,
+                               movement_type="RETURN_TO_SUPPLIER",
+                               reason="over-shipped")
+    assert p.to_bucket == "returned" and p.requires_approval is False
+    assert p.quantity_after + p.bucket_after == Decimal("50.000")
+
+
+def test_damaged_stock_can_be_staged_for_return_without_touching_sellable_stock():
+    """The units stopped being sellable when they were damaged; passing them
+    back through on-hand to reach `returned` would double-count them."""
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+              quantity_on_hand=Decimal("80"), quantity_damaged=Decimal("20"))
+    p = L.plan_bucket_transfer(l, 20, movement_type="RETURN_TO_SUPPLIER",
+                               reason="claim", from_bucket="damaged")
+    assert p.quantity_before == p.quantity_after == Decimal("80.000")
+    assert (p.from_bucket, p.to_bucket) == ("damaged", "returned")
+
+
+def test_a_bucket_cannot_transfer_into_itself():
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+              quantity_on_hand=Decimal("10"), quantity_damaged=Decimal("5"))
+    with pytest.raises(L.LedgerError, match="cannot also draw from it"):
+        L.plan_bucket_transfer(l, 1, movement_type="DAMAGE", reason="x",
+                               from_bucket="damaged")
+
+
+def test_more_cannot_be_staged_than_the_source_holds():
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+              quantity_on_hand=Decimal("80"), quantity_damaged=Decimal("5"))
+    with pytest.raises(L.LedgerError, match="only"):
+        L.plan_bucket_transfer(l, 10, movement_type="RETURN_TO_SUPPLIER",
+                               reason="x", from_bucket="damaged")
+
+
+# ── the way back onto the shelf ───────────────────────────────────────────
+def _in_transit_lot(on_hand=70, transit=30):
+    return L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+                 quantity_on_hand=Decimal(str(on_hand)),
+                 quantity_in_transit=Decimal(str(transit)))
+
+
+def test_an_arrival_returns_stock_to_sale_and_needs_approval():
+    """Releasing is the direction that always needs a second person: these
+    units have been out of sight."""
+    p = L.plan_bucket_release(_in_transit_lot(), 30, from_bucket="in_transit",
+                              reason="arrived at shelf")
+    assert (p.quantity_after, p.bucket_after) == (Decimal("100.000"), Decimal("0.000"))
+    assert p.requires_approval is True
+    assert p.quantity_delta == Decimal("30.000")          # a receipt, so positive
+
+
+def test_a_partial_arrival_leaves_the_remainder_in_transit():
+    p = L.plan_bucket_release(_in_transit_lot(), 12, from_bucket="in_transit",
+                              reason="partial delivery")
+    assert (p.quantity_after, p.bucket_after) == (Decimal("82.000"), Decimal("18.000"))
+
+
+def test_more_cannot_arrive_than_was_sent():
+    with pytest.raises(L.LedgerError, match="only"):
+        L.plan_bucket_release(_in_transit_lot(transit=5), 10,
+                              from_bucket="in_transit", reason="x")
+
+
+def test_a_recalled_lot_cannot_have_stock_released_back_onto_the_shelf():
+    l = L.Lot(lot_id="a", lot_number="A", expiry_date=None,
+              quantity_on_hand=Decimal("10"), quantity_in_transit=Decimal("5"),
+              is_recalled=True)
+    with pytest.raises(L.LedgerError, match="recalled"):
+        L.plan_bucket_release(l, 5, from_bucket="in_transit", reason="arrived")
+
+
+def test_a_release_must_use_a_receipt_type():
+    with pytest.raises(L.LedgerError, match="cannot release"):
+        L.plan_bucket_release(_in_transit_lot(), 5, from_bucket="in_transit",
+                              reason="x", movement_type="WASTE")
+
+
+def test_a_patient_can_never_be_handed_bucketed_stock():
+    """DISPENSE is absent from the write-off vocabulary by design, so draining
+    a bucket to a patient is not merely forbidden but unrepresentable."""
+    assert "DISPENSE" not in L.BUCKET_WRITEOFF_TYPES
+    with pytest.raises(L.LedgerError, match="cannot write off"):
+        L.plan_bucket_writeoff(_damaged_lot(), 1, movement_type="DISPENSE",
+                               from_bucket="damaged", reason="x")
+
+
+def test_transfers_out_and_returns_are_no_longer_removals():
+    """They conserve now, so treating one as an issue must fail loudly rather
+    than silently deleting the stock it was meant to hold."""
+    for t in ("TRANSFER_OUT", "RETURN_TO_SUPPLIER"):
+        assert t not in L.ISSUE_TYPES
+        with pytest.raises(L.LedgerError, match="not an issue movement"):
+            L.plan_issue([lot("a", 10)], 1, movement_type=t, reason="x", as_of=TODAY)

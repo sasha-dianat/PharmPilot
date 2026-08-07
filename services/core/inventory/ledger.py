@@ -57,11 +57,10 @@ class LedgerError(ValueError):
 # can never raise it, whatever quantity the caller passes.
 ISSUE_TYPES = {
     "DISPENSE",         # to a patient against a prescription
-    "TRANSFER_OUT",     # depot → shelf, or pharmacy → pharmacy
     "WASTE",            # breakage, contamination
     "EXPIRY_REMOVAL",
     "RECALL_REMOVAL",
-    "RETURN_TO_SUPPLIER",
+    "SUPPLIER_CREDIT",  # the supplier credited the return; the units leave the books
 }
 RECEIPT_TYPES = {
     "RECEIPT",          # from a supplier against a PO
@@ -77,7 +76,16 @@ ISSUE_ONLY_COUNT = {"COUNT_LOSS"}   # count found less — an issue, but not a s
 # they could not be counted, valued, claimed from the supplier, or produced
 # during an audit. A transfer conserves them instead: on-hand falls, the
 # destination bucket rises, and the lot's physical total is unchanged.
-BUCKET_TRANSFER_TYPES = {"DAMAGE": "damaged"}
+BUCKET_TRANSFER_TYPES = {
+    "DAMAGE": "damaged",              # broken on arrival or on the shelf
+    "TRANSFER_OUT": "in_transit",     # left this location, not yet arrived
+    "RETURN_TO_SUPPLIER": "returned",  # staged for return, awaiting a credit note
+}
+# Types that may finally remove units from a holding bucket. DISPENSE is
+# deliberately absent: a patient may never be handed damaged, in-transit or
+# returned stock, and the way to prevent that is to make it unrepresentable.
+BUCKET_WRITEOFF_TYPES = {"WASTE", "EXPIRY_REMOVAL", "RECALL_REMOVAL",
+                         "SUPPLIER_CREDIT", "COUNT_LOSS"}
 # Buckets a write-off may draw from, so damaged stock has a way out of the
 # bucket. Without this it would accumulate for ever, which is a worse trap than
 # the vanishing it replaced.
@@ -91,8 +99,12 @@ ALL_TYPES = (ISSUE_TYPES | RECEIPT_TYPES | ISSUE_ONLY_COUNT
 # amount. Every one of them destroys or exports value without a patient on the
 # other end, which is exactly the shape of a diversion covered by paperwork:
 # "it broke", "it expired", "we sent it back", "the count was always wrong".
+# `RETURN_TO_SUPPLIER` is absent on purpose: staging goods for return takes
+# them out of use but they remain the pharmacy's asset, so it follows the same
+# rule as quarantine and damage — immediate. The loss is recognised later, by
+# SUPPLIER_CREDIT drawn from the `returned` bucket, and that needs two people.
 APPROVAL_ALWAYS = {"WASTE", "EXPIRY_REMOVAL", "RECALL_REMOVAL",
-                   "RETURN_TO_SUPPLIER", "COUNT_LOSS", "COUNT_GAIN"}
+                   "SUPPLIER_CREDIT", "COUNT_LOSS", "COUNT_GAIN"}
 
 
 @dataclass(frozen=True)
@@ -316,14 +328,20 @@ def bucket_quantity(lot: Lot, bucket: str) -> Decimal:
 
 
 def plan_bucket_transfer(lot: Lot, quantity, *, movement_type: str,
-                         reason: str) -> MovementPlan:
-    """Move units out of sellable stock and into a holding bucket.
+                         reason: str, from_bucket: str | None = None) -> MovementPlan:
+    """Move units into a holding bucket, from sellable stock or another bucket.
 
-    Deliberately needs no approval. The rule the whole module follows is that
-    taking stock *out of use* is immediate — a technician who finds a crushed
-    carton must be able to pull it from the shelf at once, exactly as they can
-    quarantine a lot. What needs two signatures is removing it from the books,
-    which is a later write-off drawn `from_bucket`.
+    `from_bucket=None` draws from on-hand — a carton crushed on the shelf, goods
+    picked for a transfer, stock staged for return. `from_bucket` set moves
+    between buckets, which is how damaged stock becomes a supplier return
+    without ever passing back through sellable inventory.
+
+    Deliberately needs no approval in either direction. The rule the whole
+    module follows is that taking stock *out of use* is immediate — a
+    technician holding a crushed carton must be able to pull it from the shelf
+    at once, exactly as they can quarantine a lot. What needs two signatures is
+    removing it from the books, which is `plan_bucket_writeoff`, or putting it
+    back on sale, which is `plan_bucket_release`.
     """
     dest = BUCKET_TRANSFER_TYPES.get(movement_type)
     if dest is None:
@@ -333,19 +351,68 @@ def plan_bucket_transfer(lot: Lot, quantity, *, movement_type: str,
     move = q(quantity)
     if move <= 0:
         raise LedgerError("transfer quantity must be positive")
+    if from_bucket == dest:
+        raise LedgerError(f"a transfer into {dest} cannot also draw from it")
 
-    before = q(lot.quantity_on_hand)
-    if move > before:
+    on_hand = q(lot.quantity_on_hand)
+    if from_bucket is None:
+        source_held = on_hand
+        source_name = "on hand"
+    else:
+        source_held = bucket_quantity(lot, from_bucket)
+        source_name = from_bucket
+    if move > source_held:
         raise LedgerError(
-            f"cannot move {move} to {dest} — only {before} on hand")
+            f"cannot move {move} to {dest} — only {source_held} {source_name}")
+
     b_before = bucket_quantity(lot, dest)
+    # On-hand only moves when the units came from it. A bucket-to-bucket
+    # transfer leaves sellable stock alone, because those units stopped being
+    # sellable when they first entered a bucket.
+    after = q(on_hand - move) if from_bucket is None else on_hand
     return MovementPlan(
         lot_id=lot.lot_id, movement_type=movement_type,
-        quantity_delta=q(-move), quantity_before=before,
-        quantity_after=q(before - move), lot_number=lot.lot_number,
-        expiry_date=lot.expiry_date, reason=reason, requires_approval=False,
-        to_bucket=dest, bucket_before=b_before, bucket_after=q(b_before + move),
-        meta={"conserved": True, "location": lot.storage_location})
+        quantity_delta=q(-move), quantity_before=on_hand, quantity_after=after,
+        lot_number=lot.lot_number, expiry_date=lot.expiry_date, reason=reason,
+        requires_approval=False, to_bucket=dest, from_bucket=from_bucket,
+        bucket_before=b_before, bucket_after=q(b_before + move),
+        meta={"conserved": True, "source": source_name,
+              "location": lot.storage_location})
+
+
+def plan_bucket_release(lot: Lot, quantity, *, from_bucket: str, reason: str,
+                        movement_type: str = "TRANSFER_IN",
+                        is_controlled: bool = False) -> MovementPlan:
+    """Return units from a bucket to sellable stock.
+
+    The arrival end of a transfer, or a supplier refusing a return. It always
+    needs approval, because this is the releasing direction: every other place
+    in this module treats putting blocked stock back on sale as the move that
+    requires a second person, and units that have been in transit or staged for
+    return have been out of sight.
+    """
+    if movement_type not in RECEIPT_TYPES:
+        raise LedgerError(f"{movement_type!r} cannot release a bucket")
+    if not reason or not reason.strip():
+        raise LedgerError("every movement needs a reason")
+    back = q(quantity)
+    if back <= 0:
+        raise LedgerError("release quantity must be positive")
+    if lot.is_recalled:
+        raise LedgerError("cannot release stock from a recalled lot")
+    held = bucket_quantity(lot, from_bucket)
+    if back > held:
+        raise LedgerError(
+            f"cannot release {back} from {from_bucket} — only {held} held")
+
+    on_hand = q(lot.quantity_on_hand)
+    return MovementPlan(
+        lot_id=lot.lot_id, movement_type=movement_type,
+        quantity_delta=back, quantity_before=on_hand, quantity_after=q(on_hand + back),
+        lot_number=lot.lot_number, expiry_date=lot.expiry_date, reason=reason,
+        requires_approval=True, from_bucket=from_bucket,
+        bucket_before=held, bucket_after=q(held - back),
+        meta={"released_to_sale": True, "controlled": is_controlled})
 
 
 def plan_bucket_writeoff(lot: Lot, quantity, *, movement_type: str,
@@ -355,7 +422,7 @@ def plan_bucket_writeoff(lot: Lot, quantity, *, movement_type: str,
     leaves. This one always needs approval: it is the step that turns a
     recoverable asset into a loss.
     """
-    if movement_type not in ISSUE_TYPES:
+    if movement_type not in BUCKET_WRITEOFF_TYPES:
         raise LedgerError(f"{movement_type!r} cannot write off a bucket")
     if not reason or not reason.strip():
         raise LedgerError("every movement needs a reason")

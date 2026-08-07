@@ -497,7 +497,7 @@ async def test_damage_is_immediate_but_writing_it_off_needs_two_people(env):
         lot_id=lot_id, quantity=20, reason="crushed"), staff=alice, db=db)
 
     req = await AD.request_write_off(AD.WriteOffRequest(
-        lot_id=lot_id, movement_type="RETURN_TO_SUPPLIER", quantity=20,
+        lot_id=lot_id, movement_type="SUPPLIER_CREDIT", quantity=20,
         reason="supplier credit note", from_bucket="damaged"), staff=alice, db=db)
     assert req["stock_changed"] is False
 
@@ -565,3 +565,98 @@ async def test_damage_is_chained_into_the_ledger_like_any_other_movement(env):
         "SELECT movement_type FROM inventory_movements WHERE ndc11=:n "
         "ORDER BY created_at"), {"n": ndc})).all()]
     assert kinds == ["RECEIPT", "DAMAGE"]
+
+
+# ── transfers out and supplier returns, end to end ────────────────────────
+async def test_transfer_out_holds_stock_in_transit(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    out = await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=30, movement_type="TRANSFER_OUT",
+        reason="depot to shelf"), staff=alice, db=db)
+
+    assert out["bucket"] == "in_transit" and out["bucket_quantity"] == 30.0
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_in_transit FROM inventory_lots WHERE id=:i"),
+        {"i": r["lot_id"]})).mappings().one()
+    assert float(row["quantity_on_hand"]) == 70.0
+    assert float(row["quantity_in_transit"]) == 30.0
+    assert float(row["quantity_on_hand"]) + float(row["quantity_in_transit"]) == 100.0
+
+
+async def test_stock_in_transit_is_not_dispensable(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=40)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=40, movement_type="TRANSFER_OUT",
+        reason="all moved"), staff=alice, db=db)
+    from services.core.inventory import dispense as D, ledger as L
+    alloc = L.plan_dispense(await D._lots_for(db, pid, ndc), 5, reason="rx")
+    assert alloc.plans == [] and float(alloc.shortfall) == 5.0
+
+
+async def test_damaged_stock_can_be_staged_for_return_then_credited(env):
+    """The full two-hop lifecycle: on-hand → damaged → returned → off the books,
+    with sellable stock touched exactly once."""
+    db, alice, bob, carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    lot_id = uuid.UUID(r["lot_id"])
+
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=lot_id, quantity=20, reason="crushed"), staff=alice, db=db)
+    staged = await AD.record_damage(AD.RecordDamage(
+        lot_id=lot_id, quantity=20, movement_type="RETURN_TO_SUPPLIER",
+        from_bucket="damaged", reason="claim raised"), staff=alice, db=db)
+    assert staged["bucket"] == "returned" and staged["from_bucket"] == "damaged"
+
+    mid = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_damaged, quantity_returned "
+        "FROM inventory_lots WHERE id=:i"), {"i": lot_id})).mappings().one()
+    assert float(mid["quantity_on_hand"]) == 80.0     # untouched by the second hop
+    assert float(mid["quantity_damaged"]) == 0.0
+    assert float(mid["quantity_returned"]) == 20.0
+
+    req = await AD.request_write_off(AD.WriteOffRequest(
+        lot_id=lot_id, movement_type="SUPPLIER_CREDIT", quantity=20,
+        reason="credit note 1182", from_bucket="returned"), staff=alice, db=db)
+    await IG.decide_approval(uuid.UUID(req["approval_id"]),
+                             IG.ApprovalDecision(approve=True, witness_id=carl),
+                             staff=bob, db=db)
+    end = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_returned FROM inventory_lots WHERE id=:i"),
+        {"i": lot_id})).mappings().one()
+    assert float(end["quantity_on_hand"]) == 80.0
+    assert float(end["quantity_returned"]) == 0.0
+
+
+async def test_staging_a_return_does_not_move_the_sellable_aggregate_twice(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=60)
+    lot_id = uuid.UUID(r["lot_id"])
+    await AD.record_damage(AD.RecordDamage(lot_id=lot_id, quantity=10,
+                                           reason="dented"), staff=alice, db=db)
+    before = float((await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar())
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=lot_id, quantity=10, movement_type="RETURN_TO_SUPPLIER",
+        from_bucket="damaged", reason="claim"), staff=alice, db=db)
+    after = float((await db.execute(text(
+        "SELECT quantity_on_hand FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": pid, "n": ndc})).scalar())
+    assert after == before == 50.0
+
+
+async def test_each_hop_is_chained_into_the_ledger(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=50)
+    lot_id = uuid.UUID(r["lot_id"])
+    await AD.record_damage(AD.RecordDamage(lot_id=lot_id, quantity=10,
+                                           reason="crushed"), staff=alice, db=db)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=lot_id, quantity=5, movement_type="TRANSFER_OUT",
+        reason="to shelf"), staff=alice, db=db)
+    kinds = [x[0] for x in (await db.execute(text(
+        "SELECT movement_type FROM inventory_movements WHERE ndc11=:n "
+        "ORDER BY created_at"), {"n": ndc})).all()]
+    assert kinds == ["RECEIPT", "DAMAGE", "TRANSFER_OUT"]

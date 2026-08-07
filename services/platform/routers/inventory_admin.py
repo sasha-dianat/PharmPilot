@@ -570,6 +570,11 @@ class RecordDamage(BaseModel):
     lot_id: UUID
     quantity: float = Field(..., gt=0)
     reason: str = Field(..., min_length=3, max_length=240)
+    # DAMAGE | TRANSFER_OUT | RETURN_TO_SUPPLIER — all three take stock out of
+    # use without removing it from the books, so all three apply immediately.
+    movement_type: str = "DAMAGE"
+    from_bucket: Optional[str] = Field(
+        None, description="move between buckets, e.g. damaged → returned")
 
 
 @router.post("/admin/damage", status_code=201)
@@ -603,41 +608,54 @@ async def record_damage(
                  quantity_damaged=L.q(lot.quantity_damaged or 0),
                  quantity_returned=L.q(lot.quantity_returned or 0),
                  quantity_in_transit=L.q(lot.quantity_in_transit or 0))
+    if body.from_bucket and body.from_bucket not in L.BUCKETS:
+        raise HTTPException(422, f"unknown bucket {body.from_bucket!r}")
     try:
         plan = L.plan_bucket_transfer(view, body.quantity,
-                                      movement_type="DAMAGE", reason=body.reason)
+                                      movement_type=body.movement_type,
+                                      reason=body.reason,
+                                      from_bucket=body.from_bucket)
     except L.LedgerError as e:
         raise HTTPException(422, str(e))
 
     lot.quantity_on_hand = plan.quantity_after
-    lot.quantity_damaged = plan.bucket_after
+    setattr(lot, L.BUCKETS[plan.to_bucket], plan.bucket_after)
+    if plan.from_bucket:
+        # A bucket-to-bucket move debits the source as well.
+        source_attr = L.BUCKETS[plan.from_bucket]
+        setattr(lot, source_attr,
+                L.q(getattr(lot, source_attr) or 0) - L.q(abs(plan.quantity_delta)))
     lot.updated_by = staff.id
 
-    # The aggregate tracks sellable stock, so it falls with on-hand.
-    await db.execute(text("""
-        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
-                                updated_at = NOW()
-        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
-        {"d": float(plan.quantity_delta), "pid": staff.pharmacy_id,
-         "ndc": lot.ndc11})
+    # The aggregate tracks sellable stock, so it moves only when on-hand does.
+    if plan.quantity_after != plan.quantity_before:
+        await db.execute(text("""
+            UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                    updated_at = NOW()
+            WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+            {"d": float(plan.quantity_after - plan.quantity_before),
+             "pid": staff.pharmacy_id, "ndc": lot.ndc11})
 
     movement = await append_movement(
         db, pharmacy_id=staff.pharmacy_id, ndc11=lot.ndc11, irc=lot.irc,
         lot_id=lot.id, plan=plan, actor_id=staff.id)
     await db.commit()
     return {"lot_id": str(lot.id), "moved": float(abs(plan.quantity_delta)),
+            "movement_type": plan.movement_type,
             "on_hand": float(plan.quantity_after),
-            "damaged": float(plan.bucket_after),
+            "bucket": plan.to_bucket, "bucket_quantity": float(plan.bucket_after),
+            "from_bucket": plan.from_bucket,
+            "damaged": float(plan.bucket_after) if plan.to_bucket == "damaged" else None,
             "movement_id": str(movement.id), "event_hash": movement.event_hash,
-            "note": "units are held, not written off — request a write-off from "
-                    "the damaged bucket when the supplier claim is settled"}
+            "note": "units are held, not written off — they remain the "
+                    "pharmacy's asset until an approved write-off or release"}
 
 
 # ── Write-off request ─────────────────────────────────────────────────────
 
 class WriteOffRequest(BaseModel):
     lot_id: UUID
-    movement_type: str          # WASTE | EXPIRY_REMOVAL | RECALL_REMOVAL | RETURN_TO_SUPPLIER
+    movement_type: str          # WASTE | EXPIRY_REMOVAL | RECALL_REMOVAL | SUPPLIER_CREDIT
     quantity: float = Field(..., gt=0)
     reason: str = Field(..., min_length=3)
     from_bucket: Optional[str] = Field(
@@ -657,10 +675,10 @@ async def request_write_off(
     different person applies it. That is the whole point: the person who
     discovers the loss is not the person who signs it off.
     """
-    if body.movement_type not in L.APPROVAL_ALWAYS:
+    if body.movement_type not in L.BUCKET_WRITEOFF_TYPES:
         raise HTTPException(422,
             f"{body.movement_type} is not a write-off; allowed: "
-            f"{sorted(L.APPROVAL_ALWAYS - {'COUNT_GAIN', 'COUNT_LOSS'})}")
+            f"{sorted(L.BUCKET_WRITEOFF_TYPES - {'COUNT_LOSS'})}")
 
     lot = (await db.execute(select(InventoryLot).where(
         InventoryLot.id == body.lot_id,

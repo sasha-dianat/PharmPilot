@@ -566,9 +566,17 @@ async def _apply_movement(db: AsyncSession, a: InventoryApproval,
     # A write-off drawn from a holding bucket takes its units from there, not
     # from sellable on-hand; deducting both would double-count exactly what the
     # bucket exists to prevent.
-    from_bucket = (a.payload or {}).get("from_bucket")
+    payload = a.payload or {}
+    from_bucket = payload.get("from_bucket")
     try:
-        if from_bucket:
+        if from_bucket and payload.get("release"):
+            # Putting blocked stock back on sale — the releasing direction, so
+            # it reaches here through approval rather than applying directly.
+            plan = L.plan_bucket_release(
+                lot_view, a.quantity, from_bucket=from_bucket,
+                movement_type=a.movement_type, reason=a.reason,
+                is_controlled=a.is_controlled)
+        elif from_bucket:
             plan = L.plan_bucket_writeoff(
                 lot_view, a.quantity, movement_type=a.movement_type,
                 from_bucket=from_bucket, reason=a.reason,
