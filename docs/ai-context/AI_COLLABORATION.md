@@ -971,3 +971,45 @@ model must append an acceptance entry before editing.
   exactly this (verdicts keep / accept_engine / reject / reopen); the 58 belong
   in that panel. Recommend reviewing tacrolimus, oxycodone and levothyroxine
   first regardless of what happens to the rest.
+
+### 2026-08-06 — Claude (Opus 5) — 49 strength mislinks corrected, 6 rejected, 3 staged
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner authorised correcting the unambiguous ones, and warned that an insurer
+  may cover one strength of a drug and not another. That caveat shaped the
+  handling of the "no target" cases: where the strength the formulary names is
+  genuinely absent from our catalog, the decision is REJECTED — not repointed to
+  a neighbouring strength — because pretending a different strength is the
+  covered one is exactly the error being fixed.
+- Snapshot first: `crosswalk_backup_pre_strength_fix` (4,653 confirmed rows).
+- Method: re-run each formulary line through the CURRENT matcher (much improved
+  since these were approved). Where it returns a record whose dose matches the
+  line, repoint. Where the matcher has a known blind spot, fall back to a direct
+  catalog search on the LINKED molecule plus the line's dose — that recovered
+  four the matcher missed: «ALENDRONATE» never reaches the catalog's
+  «alendronic acid» (a synonym gap), and lisdexamfetamine.
+- **49 repointed** — every one now resolves to its own strength. Verified by
+  re-linking the live tamin run: propranolol 10/20/40 → 20,000 / 22,000 / 24,000;
+  levothyroxine 25/50/75/100 → 14,500 / 26,000 / 28,000 / 30,000; tacrolimus IR
+  and ER separated across 0.5/1/3/5 mg. Each carries `revised_from_irc`,
+  `revised_at` and `method='strength_correction'`, so every change is reversible
+  and explainable.
+- **6 rejected** — the named strength is genuinely absent: sapropterin 50 mg,
+  ephedrine 15 mg, erlotinib 25 mg, flupentixol 0.5 mg, ibandronic acid 3 mg,
+  and mivacurium 2 mg (which was pointing at potaba, and which does not exist in
+  the catalog under any name). `method='strength_absent'`. These are the owner's
+  caveat made concrete: the insurer covers a strength we do not stock.
+- **3 staged, deliberately** — «PROGRAF® 1MG CAP», «PROGRAF® 0.5MG CAP» and
+  «TACROLIMUS 0.5 mg CAPSULE ORAL». Tacrolimus 0.5 and 1 mg each exist in TWO
+  ingredient groups, immediate-release and extended-release. Prograf is the IR
+  brand and Advagraf the ER one, so a reading is available — but guessing
+  between IR and ER on a narrow-therapeutic-index immunosuppressant is not mine
+  to do.
+- Dose-mismatched confirmed decisions: **58 → 3**.
+- **NOT YET MATERIALISED.** The decided layer is corrected and the linker
+  resolves correctly, but `drug_catalog.coverage` still holds the old values —
+  propranolol 10 mg still stores 22,000, and 20/40 mg still store nothing. That
+  column only changes when a coverage run is staged and applied through
+  `apply_run`, which is the owner's gate. Re-stage both insurers and apply to
+  land it.
