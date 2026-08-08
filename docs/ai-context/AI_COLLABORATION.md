@@ -929,3 +929,45 @@ model must append an acceptance entry before editing.
 - Propranolol-Abidi is a live, covered, dispensable product (tamin ref 22,000 at
   70%, salamat 21,440 at 70%) sitting on a fabricated IRC. That is the one worth
   chasing when the crawl reopens.
+
+### 2026-08-06 — Claude (Opus 5) — 58 confirmed decisions link a formulary line to the WRONG STRENGTH
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- **Nothing was changed. This is the owner's to rule, and it is urgent.**
+- Found while answering "which price does each formulary mention". Comparing the
+  two insurers by shared national code showed tamin names the strength in its own
+  line («PROPRANOLOL HYDROCHLORIDE 20 mg TABLET») while salamat prints only
+  «PROPRANOLOL HCL». Three tamin codes — 10 mg (01067), 20 mg (07066) and 40 mg
+  (01068) — ALL resolve to one 10 mg record at confidence 1.00, `method=crosswalk`.
+- Audited every confirmed decision the same way, restricted to SOLID ORAL,
+  single-ingredient rows where both sides state a plain mass dose, so there is no
+  percent-vs-mg/mL or concentration-vs-vial ambiguity: **58 decisions link a
+  formulary line to a product of a different strength.** Exported to
+  `docs/review-2026-08-06-dose-mismatched-decisions.csv`.
+  (An earlier count of 129 included unit-namespace artifacts — «NOREPINEPHRINE
+  0.1 %» IS 1 mg/mL — and was discarded. 58 is the defensible number.)
+- All 58 are `origin='owner'`, `status='confirmed'`, with **no reason, no method
+  and no confidence recorded** — the signature of a bulk «تأیید همه» approval
+  rather than a considered per-row ruling.
+- The clinically serious ones:
+  - **tacrolimus** — 1 mg → 5 mg, 0.5 mg → 5 mg, «PROGRAF® 0.5MG CAP» → 5 mg. A
+    tenfold error on a narrow-therapeutic-index immunosuppressant.
+  - **oxycodone** — 30 mg → 5 mg, and the ER 10 mg line → a 40 mg product.
+  - **levothyroxine** — the 100 µg, 75 µg and 25 µg lines ALL → the 50 µg product.
+  - alprazolam 0.5 → 1 mg; lorazepam 2 → 1 mg; sotalol 40 → 80; ticagrelor 60 →
+    90; alendronate 10 → 35 and 35 → 70; valacyclovir 1000 → 500.
+  - **one frank molecule error**: «MIVACURIUM CHLORIDE INJECTION 2 mg» → potaba
+    500 mg. A neuromuscular blocker pointed at a PABA supplement.
+  - oncology, where the money is largest: olaparib 50 mg line → 150 mg product
+    (ref 8,400,000), palbociclib 125 → 75, dasatinib 100 → 70, eltrombopag
+    25 → 50, erlotinib 25 → 100.
+- Harm: the insurer's reference price lands on the wrong strength, so patient
+  share is computed against the wrong figure, and the correctly-matched products
+  get no coverage at all — which is why every propranolol 20 mg and 40 mg row in
+  the catalog currently shows no reference while all 27 of the 10 mg rows carry
+  the 20 mg figure.
+- These are owner decisions and were NOT touched. `decision_review` exists for
+  exactly this (verdicts keep / accept_engine / reject / reopen); the 58 belong
+  in that panel. Recommend reviewing tacrolimus, oxycodone and levothyroxine
+  first regardless of what happens to the rest.
