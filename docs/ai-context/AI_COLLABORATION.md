@@ -890,3 +890,42 @@ model must append an acceptance entry before editing.
   exists to record old-IRC → new-IRC once the real codes are known.
 - Verification: catalog visible to the matcher 39,179 of 39,184; board 244 →
   **243 open**; reconciliation healthy, 0 firing.
+
+### 2026-08-06 — Claude (Opus 5) — succession NOT recorded for the 9999 IRCs, and why
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner asked to record succession for the three placeholder-IRC products. I had
+  suggested succession as "the clean path" in the previous entry — that was
+  before comparing the rows field by field. Having done so, the premise does not
+  hold and NOTHING was written. Recording these would enter a false claim into
+  the decided layer, and `succession.apply()` carries insurer coverage, field
+  overrides and crosswalk pointers across, so a wrong succession attaches one
+  presentation's decided facts to a different presentation.
+- What the comparison shows:
+  - **`9999689235152604` → `9330870830140073` (مدافینیل)** — identical brand,
+    manufacturer, strength, ATC, licence date… but **package_count 30 vs 100**.
+    Two pack presentations, each entitled to its own IRC. A 30-pack does not
+    become a 100-pack. Both already carry identical coverage (tamin ref 75,000
+    share 0; salamat ref 0), so a succession would carry nothing and assert
+    something untrue.
+  - **`9999328807296526` → `7015688221406659` (تایلوکیم اکسترا)** — identical on
+    every field including package_count 30, differing ONLY in GTIN. Plausibly one
+    product registered twice, but GTIN is the anchor this module explicitly
+    REJECTED (2,944 GTINs sit on more than one IRC), so it is not evidence.
+  - **`9999426083359186` (پروپرانولول-عبیدی)** — no candidate at all. Zero
+    propranolol 10 mg rows from دکتر عبیدی on a real IRC. Nothing to point at.
+- The decisive point for all three: **a succession means the old registration
+  ENDED, and both rows in each pair carry the SAME licence validity date** —
+  1405/10/13 and 1405/05/31, both in the future. These are concurrent live
+  registrations, not a re-registration.
+- The module's own anchor, `monograph.nfi_id`, is NULL on all of these rows, so
+  `detect()` would propose nothing — correctly. It arms itself on a SECOND audit
+  pass over ground already covered, which is precisely the evidence missing here
+  and is blocked on the Iran proxy.
+- Separate finding while here: **modafinil is priced 75,000 for BOTH the 30-tab
+  and the 100-tab pack.** One of those is wrong. Not touched — it belongs to the
+  price lane, not to succession.
+- Propranolol-Abidi is a live, covered, dispensable product (tamin ref 22,000 at
+  70%, salamat 21,440 at 70%) sitting on a fabricated IRC. That is the one worth
+  chasing when the crawl reopens.
