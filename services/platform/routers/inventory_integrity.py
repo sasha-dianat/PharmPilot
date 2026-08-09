@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import demand as DM
 from services.core.inventory import ledger as L
+from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
 from services.core.inventory import reservations as RSV
 from services.core.inventory import reconciliation as R
@@ -279,9 +280,23 @@ async def refresh_demand(
     stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, window_days)
     plan = DM.plan_refresh(stock, by_ndc, window_days=window_days, as_of=today)
 
+    # Lead time from this pharmacy's delivered orders, so the reorder point is
+    # derived from two measurements rather than two hard-coded constants. With
+    # no purchase history it falls back to the one declared default, labelled.
+    pos = [dict(r) for r in (await db.execute(text("""
+        SELECT wholesaler, ordered_at, received_at FROM purchase_orders
+        WHERE pharmacy_id = :pid AND received_at IS NOT NULL"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+    lead = LT.estimate(pos)
+
+    signals = {r.ndc11: LT.reorder_signals(
+        avg_daily_demand=r.new_adq, demand_basis=r.basis,
+        demand_stdev=r.stdev_daily, lead=lead) for r in plan}
+
     written = 0
     if apply:
         for row in plan:
+            sig = signals[row.ndc11]
             await db.execute(text("""
                 UPDATE stock_levels
                    SET avg_daily_demand = CAST(:adq AS numeric),
@@ -289,11 +304,15 @@ async def refresh_demand(
                        demand_confidence = CAST(:conf AS numeric),
                        demand_window_days = CAST(:win AS integer),
                        demand_units_observed = CAST(:units AS numeric),
+                       reorder_point = CAST(:rop AS numeric),
+                       safety_stock = CAST(:ss AS numeric),
                        forecast_updated_at = :now
                  WHERE pharmacy_id = :pid AND ndc11 = :ndc"""), {
                 "adq": None if row.new_adq is None else str(row.new_adq),
                 "basis": row.basis, "conf": str(row.confidence),
                 "win": row.window_days, "units": str(row.units_observed),
+                "rop": None if sig.reorder_point is None else str(sig.reorder_point),
+                "ss": None if sig.safety_stock is None else str(sig.safety_stock),
                 "now": datetime.now(timezone.utc),
                 "pid": staff.pharmacy_id, "ndc": row.ndc11,
             })
@@ -312,18 +331,18 @@ async def refresh_demand(
         "applied": apply,
         "window_days": window_days,
         "as_of": today.isoformat(),
-        "rows": [r.as_dict() for r in plan],
+        "lead_time": lead.as_dict(),
+        "rows": [{**r.as_dict(), "signals": signals[r.ndc11].as_dict()}
+                 for r in plan],
         "written": written,
         "summary": {
             "items": len(plan),
             "changed": sum(1 for r in plan if r.changed),
             "by_basis": by_basis,
             "prior_signal_verdict": by_verdict,
+            "reorder_points_set": sum(
+                1 for s in signals.values() if s.reorder_point is not None),
         },
-        # Reorder point and safety stock stay NULL until lead time is measured
-        # rather than assumed — deriving them from a default would rebuild the
-        # same unsupported numbers this refresh exists to remove.
-        "note": "reorder_point/safety_stock remain unset pending measured lead time",
     }
 
 

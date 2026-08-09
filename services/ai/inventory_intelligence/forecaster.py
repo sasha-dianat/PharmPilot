@@ -102,8 +102,13 @@ class DemandForecaster:
         prophet_7d = await self._prophet_forecast(df, horizon=7)
         prophet_30d = await self._prophet_forecast(df, horizon=30)
 
-        # Stockout probability: P(demand in lead_time > current_stock)
-        lead_time_days = 2  # Default wholesaler lead time
+        # Stockout probability: P(demand in lead_time > current_stock).
+        # This was a bare 2 while the procurement engine assumed 7, so the same
+        # item could be urgent in one screen and comfortable in the other. Both
+        # now read the one declared default, and a caller with measured supplier
+        # history should pass that instead.
+        from services.core.inventory.lead_time import DECLARED_DEFAULT_DAYS
+        lead_time_days = DECLARED_DEFAULT_DAYS
         lead_time_demand = avg_demand * lead_time_days
         lead_time_std = std_demand * (lead_time_days ** 0.5)
 

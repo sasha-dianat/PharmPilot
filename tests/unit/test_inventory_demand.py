@@ -251,3 +251,21 @@ def test_a_refresh_covers_every_stocked_item_including_ones_with_no_fills():
     assert [p.ndc11 for p in plan] == ["A", "B"]
     assert plan[0].basis == "no_history"
     assert plan[1].basis == "sparse"
+
+
+# ── variability, which is what safety stock is computed from ──────────────
+def test_variability_counts_the_days_with_no_dispensing():
+    """For an intermittent drug the zeros are most of the distribution. Taking
+    stdev over active days only would understate safety stock exactly where
+    cover matters most."""
+    steady = D.estimate("x", [fill(d, 5) for d in range(28)],
+                        window_days=W, as_of=TODAY)
+    lumpy = D.estimate("x", [fill(3, 140)], window_days=W, as_of=TODAY)
+    assert steady.units == lumpy.units == Decimal("140.000")
+    assert steady.stdev_daily == Decimal("0.000")
+    assert lumpy.stdev_daily > Decimal("20")
+
+
+def test_no_history_reports_no_variability_rather_than_zero_variability():
+    """Zero would read as 'perfectly predictable' and suppress safety stock."""
+    assert D.estimate("x", [], window_days=W, as_of=TODAY).stdev_daily is None

@@ -69,6 +69,11 @@ class DemandEstimate:
     avg_daily_demand: Decimal | None   # None means "we decline to guess"
     confidence: float       # 0.0-1.0, how much weight a planner should give it
     explanation: str
+    # Day-to-day variability, measured across the whole window including days
+    # with no dispensing. Safety stock is computed from this, and averaging only
+    # the active days would understate it badly for an intermittent drug — the
+    # zeros are most of the distribution.
+    stdev_daily: Decimal | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -82,6 +87,8 @@ class DemandEstimate:
                 None if self.avg_daily_demand is None else float(self.avg_daily_demand)
             ),
             "confidence": self.confidence,
+            "stdev_daily": (
+                None if self.stdev_daily is None else float(self.stdev_daily)),
             "explanation": self.explanation,
         }
 
@@ -150,6 +157,7 @@ def estimate(
     units = q(0)
     events = 0
     days: set[int] = set()
+    per_day: dict[int, Decimal] = {}
 
     for row in fills:
         d = _as_date(
@@ -163,9 +171,11 @@ def estimate(
         qty = row.get("quantity")
         if qty is None:
             qty = row.get("quantity_dispensed")
-        units += q(qty or 0)
+        amount = q(qty or 0)
+        units += amount
         events += 1
         days.add(o)
+        per_day[o] = q(per_day.get(o, Decimal("0")) + amount)
 
     active_days = len(days)
 
@@ -182,11 +192,19 @@ def estimate(
 
     rate = q(units / Decimal(window_days))
 
+    # Population stdev over every day in the window, not only the days with a
+    # fill. For an intermittent drug the zeros are most of the distribution, and
+    # dropping them would understate safety stock exactly where cover matters.
+    mean = units / Decimal(window_days)
+    var = sum(((per_day.get(start + i, Decimal("0")) - mean) ** 2
+               for i in range(window_days)), Decimal("0")) / Decimal(window_days)
+    stdev = q(Decimal(str(float(var) ** 0.5)))
+
     if events < MIN_EVENTS_FOR_RATE or window_days < MIN_WINDOW_DAYS:
         return DemandEstimate(
             ndc11=ndc11, window_days=window_days, units=units, events=events,
             active_days=active_days, basis="sparse", avg_daily_demand=rate,
-            confidence=0.35,
+            confidence=0.35, stdev_daily=stdev,
             explanation=(
                 f"{units} units over {events} fill(s) in {window_days} days — "
                 f"too few events to call this a rate; treat {rate}/day as "
@@ -202,7 +220,7 @@ def estimate(
     return DemandEstimate(
         ndc11=ndc11, window_days=window_days, units=units, events=events,
         active_days=active_days, basis="observed", avg_daily_demand=rate,
-        confidence=confidence,
+        confidence=confidence, stdev_daily=stdev,
         explanation=(
             f"{units} units over {events} fills on {active_days} distinct days "
             f"in {window_days} days = {rate}/day."
@@ -307,6 +325,7 @@ class RefreshRow:
     changed: bool
     verdict: str            # what the old value was, judged against the record
     explanation: str
+    stdev_daily: Decimal | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -319,6 +338,8 @@ class RefreshRow:
             "window_days": self.window_days,
             "changed": self.changed,
             "verdict": self.verdict,
+            "stdev_daily": (
+                None if self.stdev_daily is None else float(self.stdev_daily)),
             "explanation": self.explanation,
         }
 
@@ -350,7 +371,7 @@ def plan_refresh(
             ndc11=ndc, stored_adq=stored_q, new_adq=est.avg_daily_demand,
             basis=est.basis, confidence=est.confidence, units_observed=est.units,
             window_days=window_days, changed=changed, verdict=div.verdict,
-            explanation=est.explanation,
+            explanation=est.explanation, stdev_daily=est.stdev_daily,
         ))
     return out
 

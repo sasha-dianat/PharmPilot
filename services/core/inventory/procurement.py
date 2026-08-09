@@ -118,7 +118,7 @@ def build_recommendations(
     *,
     today: date,
     budget: float | None = None,
-    lead_time_default: int = 7,
+    lead_time_default: int | None = None,
 ) -> dict:
     """Build the procurement recommendation payload.
 
@@ -128,11 +128,20 @@ def build_recommendations(
     Only items needing units (recommended_order_qty > 0) are included.
     Sorted by urgency (critical first) then days_of_stock ascending (None last).
     """
+    # One source for the assumption, shared with the forecaster. These used to
+    # be two unrelated constants — 7 here and 2 there — so the same item could
+    # read critical on one screen and comfortable on the other.
+    from .lead_time import DECLARED_DEFAULT_DAYS
+    fallback = DECLARED_DEFAULT_DAYS if lead_time_default is None else lead_time_default
+
     recs: list[dict] = []
     for it in items:
         on_hand = float(it.get("on_hand") or 0.0)
         demand = it.get("avg_daily_demand")
-        lead_time = int(it.get("lead_time_days") or lead_time_default)
+        lead_time = int(it.get("lead_time_days") or fallback)
+        # Whether that lead time was measured, so the recommendation can say so.
+        lead_basis = it.get("lead_time_basis") or (
+            "observed" if it.get("lead_time_days") else "declared_default")
         safety = it.get("safety_stock") or 0.0
         par_max = it.get("par_level_max")
 
@@ -162,6 +171,7 @@ def build_recommendations(
             "days_of_stock": dos,
             "reorder_point": it.get("reorder_point"),
             "lead_time_days": lead_time,
+            "lead_time_basis": lead_basis,
             "recommended_order_qty": qty,
             "order_by_date": obd.isoformat() if obd is not None else None,
             "urgency": urg,
