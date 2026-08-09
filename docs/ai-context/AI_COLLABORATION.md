@@ -1013,3 +1013,42 @@ model must append an acceptance entry before editing.
   column only changes when a coverage run is staged and applied through
   `apply_run`, which is the owner's gate. Re-stage both insurers and apply to
   land it.
+
+### 2026-08-06 — Claude (Opus 5) — restaged and applied both insurers; two warnings opened
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Snapshot first: `coverage_backup_20260806` (27,999 rows with coverage).
+- Both runs returned to `parsed`, restaged with the current engine, applied.
+  **`remove_missing` was deliberately OFF** — the salamat restage reported
+  `diff.removed = 9,328`, and sampling those showed real covered products
+  (omeprazole 20 mg, meloxicam 15 mg, lisinopril 5 mg, valacyclovir 500 mg).
+  They are unmatched now because THIS session's matcher is stricter — salt bases
+  kept distinct, dose-ambiguity refused, ingredient groups re-partitioned by the
+  165 strengths filled — not because the insurer de-listed them. Retiring them
+  would have quoted patients full price for ordinary drugs.
+- Salamat's own lines name no strength, so the earlier audit could not judge
+  them. Corrected 21 by borrowing the dose from tamin's line for the SAME
+  national code, then **reverted 3 of those** on a form check: tamin's evidence
+  line must describe the same kind of product, and «FLUOXETINE 4 mg/1mL 60 mL»
+  (syrup) had been used to set a capsule's strength — the "20" came from the
+  pack volume. 18 stand, `method='code_cross_insurer'`.
+- Applied: 2,151 tamin and 1,858 salamat reference prices changed; rows holding
+  coverage 27,999 → 28,448.
+- **Verified landing**: propranolol 10/20/40 mg now carry tamin 20,000 / 22,000 /
+  24,000 where all three previously collapsed onto the 10 mg row at 22,000.
+- **Two warnings now firing — reconciliation is no longer clean:**
+  - `coverage_orphaned_by_newer_staging: 9,791` — the direct consequence of
+    applying without remove_missing. Those products keep coverage the current
+    engine no longer derives. Neither retiring them nor leaving them is
+    obviously right; the real cure is matching them again, which needs either
+    doses from salamat or owner group-level rulings.
+  - `price_gap_extreme_strong_identity: 28` (board shows 61 judgement items) —
+    corrected references produce new gaps against announced prices. These are
+    genuinely new questions created by fixing the links, not by breaking them.
+- **UNRESOLVED, and I stopped rather than guess**: tamin's levothyroxine 100 µg
+  (code 00751) and 25 µg (07938) are corrected in the crosswalk — both show
+  `strength_correction` pointing at the right ingredient_key — yet a fresh
+  restage puts them in NEITHER staged, review, NOR unmatched, so they never
+  apply. The 50 µg and 75 µg lines from the same run stage normally. Something
+  in `stage_run_payload` drops them; it needs a focused look.
