@@ -1052,3 +1052,41 @@ model must append an acceptance entry before editing.
   restage puts them in NEITHER staged, review, NOR unmatched, so they never
   apply. The 50 µg and 75 µg lines from the same run stage normally. Something
   in `stage_run_payload` drops them; it needs a focused look.
+
+### 2026-08-06 — Claude (Opus 5) — why levothyroxine 100/25 µg would not stage
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- **Correction to the previous entry.** I reported those rows were in "neither
+  staged, review, nor unmatched". Wrong — they are in REVIEW. My search looked
+  for a `name` key while a review item nests it under `row.drug_name`. The data
+  was fine; the query was not.
+- Not a bug. The chain:
+  1. `link_rows` resolves all four levothyroxine codes at conf 1.00 via
+     `crosswalk` — the corrections work.
+  2. `match_intel.verify_links` demotes 00751 and 07938 to 0.74 and stamps
+     `method='crosswalk+intel'`.
+  3. 0.74 is under the 0.75 cutoff, so `build_coverage` routes them to review.
+  4. `apply_run` without `accepted_review_ids` does not apply review items.
+- The demotion reason is the learned PRICE BAND, not the FS score — the review
+  threshold is 0.0, so the score (5.184 on all four) never demotes. tamin's band
+  is `lo=0.3866, hi=6.5122, median=1.0, n=21502`, and both failures are
+  MARGINAL:
+  - 100 µg → 30,000/87,000 = **0.345** against a floor of 0.3866
+  - 25 µg → 14,500/2,200 = **6.591** against a ceiling of 6.5122
+  - 75 µg → 28,000/28,000 = 1.000, comfortably inside, and it staged normally.
+- **The band is stale in a way that matters.** It was fitted 2026-08-03 from
+  21,502 tamin pairs — a population that still contained every mislink corrected
+  today, including all three propranolol codes pointing at one 10 mg product. A
+  band learned from mismatched pairs is now judging correctly-matched ones.
+- 314 links were demoted by the model in this run. If the band is shaped by bad
+  pairs, some of those 314 may also be wrongly held back — this is not confined
+  to levothyroxine.
+- Two ways forward, both the owner's call:
+  1. Accept those review items — they are correctly linked
+     (`apply_run(accepted_review_ids=[...])`).
+  2. Re-fit the model now that 67 decisions are corrected, then restage. This is
+     the principled fix and would re-derive the band from clean pairs, but it
+     moves all 314 demotions, so it deserves a look at the before/after.
+- Note `data/reference/match_model.json` has been modified-uncommitted since
+  before this session; whatever is in the working tree is what loads.
