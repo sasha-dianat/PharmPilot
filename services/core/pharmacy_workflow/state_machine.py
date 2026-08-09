@@ -350,6 +350,29 @@ class RxStateMachine:
                             ", ".join(result.lots) or "none",
                             f"; SHORT by {result.shortfall}" if result.shortfall else "")
 
+        elif to_status == RxStatus.READY_TO_FILL:
+            # Stock is committed here, not at FILLING. By the time a technician
+            # reaches the shelf two prescriptions may already have been promised
+            # the same units; adjudication is settled at this point and the
+            # pharmacy has agreed to dispense, which is what a reservation
+            # means. Nothing raised one before this — `quantity_reserved` was
+            # decremented by the dispense hook and incremented by nobody, so
+            # `available` always equalled on-hand.
+            #
+            # A failure to reserve does not block the transition: the
+            # prescription is clinically ready whether or not the shelf can be
+            # earmarked, and stranding it would be the wrong failure direction.
+            from services.core.inventory import reservation_service as RS
+            res = await RS.reserve(self.db, rx, staff_id=staff_id, now=now)
+            if not res.ok:
+                logger.warning("Rx %s ready to fill but stock was NOT reserved: %s",
+                               rx.rx_number, res.error)
+            elif res.skipped:
+                logger.info("Rx %s reservation skipped (%s)", rx.rx_number, res.skipped)
+            else:
+                logger.info("Rx %s reserved %s units across %d lot(s)",
+                            rx.rx_number, res.reserved, res.rows)
+
         elif to_status == RxStatus.FILLING:
             rx.fill_date = now.date()
 
@@ -377,6 +400,23 @@ class RxStateMachine:
         elif to_status == RxStatus.WILL_CALL:
             # Record when Rx went to will-call — 14-day expiry in most states
             logger.info("Rx %s in will-call bin", rx.rx_number)
+
+        # Any transition that stops this prescription reaching a patient must
+        # give the units back. Handled after the branches above so it also
+        # covers RETURNED_TO_STOCK, where a reservation can still be open if the
+        # prescription was returned without ever dispensing.
+        from services.core.inventory import reservation_service as RS
+        if str(to_status.value if hasattr(to_status, "value") else to_status).upper() \
+                in RS.RSV.RELEASE_ON:
+            rel = await RS.release_for_transition(self.db, rx, str(
+                to_status.value if hasattr(to_status, "value") else to_status).upper(),
+                now=now)
+            if rel.released:
+                logger.info("Rx %s → %s: released %d reservation(s)",
+                            rx.rx_number, to_status, rel.released)
+            elif not rel.ok:
+                logger.error("Rx %s → %s but reservations were NOT released: %s",
+                             rx.rx_number, to_status, rel.error)
 
     async def _verify_epcs_enrollment(self, staff_id: UUID) -> bool:
         from shared.models.auth import Staff

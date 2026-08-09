@@ -348,6 +348,42 @@ def check_over_reservation(rows: list[dict]) -> Finding:
     )
 
 
+# ── C13. Reserved counter vs the reservation rows ─────────────────────────
+def check_reservation_drift(drifts: list[dict],
+                            lapsed: list[dict] | None = None) -> Finding:
+    """`quantity_reserved` must equal the sum of the lot's active reservations.
+
+    The counter is a denormalisation of `inventory_reservations`, exactly as
+    `stock_levels.quantity_on_hand` is of its lots — and it drifts the same way.
+    It matters more than it looks: `available = on_hand - reserved` is what the
+    allocator hands out from, so a counter holding units no reservation claims
+    quietly makes real stock unissuable, and the shelf shows quantities FEFO
+    will refuse to give anyone.
+
+    Lapsed holds are reported alongside because they have the same effect and
+    the same fix — an uncollected will-call sterilises its units until swept.
+    """
+    lapsed = lapsed or []
+    severity = "high" if drifts else ("medium" if lapsed else "info")
+    parts = []
+    if drifts:
+        parts.append(f"{len(drifts)} lot(s) where the reserved counter and the "
+                     f"reservation rows disagree")
+    if lapsed:
+        parts.append(f"{len(lapsed)} reservation(s) past their hold, still "
+                     f"withholding stock from availability")
+    return Finding(
+        "reservation_drift", severity, len(drifts) + len(lapsed),
+        "مغایرت رزرو با ردیف‌های رزرو",
+        ("; ".join(parts) + ".") if parts
+        else "Reserved counters match their reservation rows.",
+        drifts + [{**l, "kind": "lapsed"} for l in lapsed],
+        "Sweep lapsed reservations first, then re-derive the counter from the "
+        "active rows. Do not zero the counter by hand — that hides which "
+        "prescription held the units.",
+    )
+
+
 # ── C12. Demand signal vs the fill record ─────────────────────────────────
 def check_demand_signal(divergences: list, *, stale: list[dict] | None = None,
                         blind: list[dict] | None = None) -> Finding:
@@ -431,7 +467,8 @@ def check_chain(verify_result: dict) -> Finding:
 ALL_CHECKS = ("aggregate_drift", "negative_stock", "fill_without_movement",
               "untraceable_fill", "dispense_shortfall", "unbound_from_formulary", "expired_on_hand",
               "suspicious_adjustment", "duplicate_lot", "unit_conversion_suspect",
-              "over_reserved", "demand_signal_unsupported", "ledger_chain")
+              "over_reserved", "reservation_drift", "demand_signal_unsupported",
+              "ledger_chain")
 
 
 def summarize(findings: list[Finding]) -> dict:

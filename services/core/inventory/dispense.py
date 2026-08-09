@@ -154,6 +154,12 @@ async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
             return DispenseResult(ok=True, fill_id=fill.id,
                                   skipped="already decremented for this fill")
 
+        # Retire this prescription's own holds first. Until they are consumed
+        # the units they name are excluded from `available`, so FEFO would
+        # refuse to hand the prescription the very stock reserved for it.
+        from . import reservation_service as RS
+        await RS.consume(db, rx, fill_id=fill.id, now=now)
+
         lots = await _lots_for(db, rx.pharmacy_id, rx.ndc)
         alloc = L.plan_dispense(lots, qty, as_of=as_of or now.date(),
                                 reason=f"dispense {rx.rx_number}")
@@ -161,12 +167,15 @@ async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
         movement_ids = []
         irc = None
         for plan in alloc.plans:
+            # `quantity_reserved` is not touched here. It used to be decremented
+            # by GREATEST(0, reserved - taken), a clamp that silently absorbed
+            # any disagreement between the counter and reality. The reservation
+            # rows are now the record, `RS.consume` above retires them exactly,
+            # and a mismatch is reported rather than flattened.
             await db.execute(text(
                 "UPDATE inventory_lots SET quantity_on_hand = :after, "
-                "quantity_reserved = GREATEST(0, quantity_reserved - :taken), "
                 "updated_at = NOW() WHERE id = :id"),
-                {"after": float(plan.quantity_after),
-                 "taken": float(abs(plan.quantity_delta)), "id": plan.lot_id})
+                {"after": float(plan.quantity_after), "id": plan.lot_id})
             if irc is None:
                 irc = (await db.execute(text(
                     "SELECT irc FROM inventory_lots WHERE id = :id"),

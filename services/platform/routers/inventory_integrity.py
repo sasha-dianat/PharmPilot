@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import demand as DM
 from services.core.inventory import ledger as L
+from services.core.inventory import reservation_service as RS
+from services.core.inventory import reservations as RSV
 from services.core.inventory import reconciliation as R
 from services.core.inventory import formulary_binding as FB
 from services.platform.auth import require_permission
@@ -140,6 +142,22 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
 
     chain = chain_rows_for(chain_rows)
 
+    # The reserved counter against the rows it denormalises, plus holds that
+    # have lapsed and are still withholding stock from availability.
+    reservation_drift = await RS.counter_drift(db, pharmacy_id)
+    lapsed = RSV.expired_rows([dict(r) for r in (await db.execute(text("""
+        SELECT id, prescription_id, inventory_lot_id, ndc11, quantity, status,
+               expires_at
+        FROM inventory_reservations
+        WHERE pharmacy_id = :pid AND status = 'active' AND is_deleted = false"""),
+        p)).mappings().all()])
+    lapsed = [{"reservation_id": str(r["id"]),
+               "prescription_id": str(r["prescription_id"]),
+               "lot_id": str(r["inventory_lot_id"]), "ndc11": r["ndc11"],
+               "quantity": float(r["quantity"]),
+               "expired_at": r["expires_at"].isoformat() if r["expires_at"] else None}
+              for r in lapsed]
+
     # Demand signal vs the fill record. Scoped through the prescription for the
     # same reason the orphan-fill query is: a fill carries no pharmacy of its
     # own, and an unscoped read would test this tenant's signal against another
@@ -194,6 +212,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_duplicate_lots([dict(r) for r in lots]),
         R.check_unit_conversion([dict(r) for r in conv]),
         R.check_over_reservation([dict(r) for r in lots]),
+        R.check_reservation_drift(reservation_drift, lapsed),
         R.check_demand_signal(divergences, stale=stale, blind=blind),
         R.check_chain(L.verify_chain(chain)),
     ]

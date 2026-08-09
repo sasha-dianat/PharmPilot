@@ -287,6 +287,42 @@ class InventoryApproval(AuditedBase):
     payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class InventoryReservation(AuditedBase):
+    """Stock promised to a prescription that has not left the shelf.
+
+    `quantity_reserved` on the lot and the stock level is a denormalisation of
+    the active rows here, exactly as `stock_levels.quantity_on_hand`
+    denormalises its lots — which is what lets the two be compared instead of
+    the counter quietly drifting away from what anyone actually holds.
+
+    Rules live in `services.core.inventory.reservations`.
+    """
+    __tablename__ = "inventory_reservations"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    prescription_id: Mapped[UUID] = mapped_column(
+        ForeignKey("prescriptions.id"), nullable=False, index=True)
+    # Set when the hold is consumed, so a reservation can be followed to the
+    # dispense that used it and back to the patient.
+    prescription_fill_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("prescription_fills.id"), nullable=True)
+    inventory_lot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("inventory_lots.id"), nullable=False, index=True)
+
+    ndc11: Mapped[str] = mapped_column(String(11), nullable=False, index=True)
+    irc: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    quantity: Mapped[float] = mapped_column(Numeric(10, 3), nullable=False)
+
+    # active | consumed | released | expired
+    status: Mapped[str] = mapped_column(String(12), default="active", nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    # Not optional: an uncollected will-call would otherwise hold its units out
+    # of `available` forever.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+
 class StockCount(AuditedBase):
     """A physical count session — full inventory or a cycle count of a subset.
 

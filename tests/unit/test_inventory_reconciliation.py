@@ -277,3 +277,30 @@ def test_a_wrong_signal_outranks_a_missing_one():
 def test_nothing_wrong_anywhere_stays_info():
     assert R.check_demand_signal([_div(_Dec("5"), 140)],
                                  stale=[], blind=[]).severity == "info"
+
+
+# ── C13 reservation drift ─────────────────────────────────────────────────
+def test_matching_reserved_counters_are_silent():
+    assert R.check_reservation_drift([]).count == 0
+    assert R.check_reservation_drift([]).severity == "info"
+
+
+def test_a_counter_out_of_step_with_its_rows_is_high_severity():
+    """available = on_hand - reserved, so a counter nobody claims quietly makes
+    real stock unissuable."""
+    f = R.check_reservation_drift(
+        [{"lot_id": "L1", "counter": 10.0, "active_reservations": 0.0, "drift": 10.0}])
+    assert (f.count, f.severity) == (1, "high")
+    assert "disagree" in f.detail
+    assert "Do not zero the counter by hand" in f.remediation
+
+
+def test_a_lapsed_hold_still_withholding_stock_is_reported():
+    f = R.check_reservation_drift([], [{"reservation_id": "r1", "quantity": 30.0}])
+    assert (f.count, f.severity) == (1, "medium")
+    assert "past their hold" in f.detail
+    assert f.samples[0]["kind"] == "lapsed"
+
+
+def test_the_reservation_check_is_in_the_registry():
+    assert "reservation_drift" in R.ALL_CHECKS
