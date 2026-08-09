@@ -1090,3 +1090,31 @@ model must append an acceptance entry before editing.
      moves all 314 demotions, so it deserves a look at the before/after.
 - Note `data/reference/match_model.json` has been modified-uncommitted since
   before this session; whatever is in the working tree is what loads.
+
+### 2026-08-09 — Claude (Opus 5) — refit measured and REJECTED; my hypothesis was wrong
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- I predicted the price band was stale — learned from pairs containing the
+  mislinks corrected on 2026-08-06 — and that refitting would release the two
+  levothyroxine rows. **Measured, and it is not true.**
+- Band before → after:
+  - tamin  `lo 0.3866 → 0.3968`, `hi 6.5122 → 6.4394`, n 21,502 → 22,248
+  - salamat `lo 0.0585 → 0.0591`, `hi 3.6 → 3.6`, median 0.7211 → 0.7299
+  The tamin band got TIGHTER on both sides, so levothyroxine 100 µg (ratio
+  0.345) and 25 µg (6.591) fall further outside, not inside.
+- Effect on the live runs, same links scored by each model:
+  - tamin  demoted 314 → 320 (+6), staged 1,661 → 1,655 (−6), released 0
+  - salamat demoted 1,111 → 1,112 (+1), released 0
+  The refit demotes MORE and releases NOTHING. Rejected; the 2026-08-03 model is
+  restored and verified by hash.
+- Why the hypothesis failed: the band is a percentile over ~22,000 pairs, and 67
+  corrected decisions cannot move it. The two levothyroxine ratios are genuine
+  economic outliers — tamin reimburses the 100 µg at a third of its announced
+  price and the 25 µg at 6.6× — so the model is flagging them CORRECTLY. The
+  right resolution is to accept those two review items, not to retrain.
+- **Trap worth knowing**: `match_intel.fit_from_db` calls `save_model()` at
+  line 381, so fitting OVERWRITES `data/reference/match_model.json` as a side
+  effect. There is no dry-run. I only recovered the previous model because I had
+  copied it first. Anyone evaluating a fit must back the file up beforehand, or
+  the module needs a `persist=False` parameter.
