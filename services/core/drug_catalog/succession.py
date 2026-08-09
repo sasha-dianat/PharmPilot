@@ -102,8 +102,31 @@ async def propose_manual(db, old_irc: str, new_irc: str, *, staff_id=None) -> di
     """An owner-entered succession — same carry-over, evidence marked manual."""
     from sqlalchemy import select
     from shared.models.catalog_succession import CatalogSuccession
+    from shared.models.drug_catalog import DrugCatalogItem
     if not old_irc or not new_irc or old_irc == new_irc:
         raise RuntimeError("دو IRC متفاوت لازم است.")
+
+    # A succession CARRIES coverage and overrides across, so the two rows must be
+    # the same thing sold under a new registration. Two rows at different prices
+    # are two products — the 2026-08-06 modafinil pair looked identical until the
+    # pack counts (30 vs 100) and prices separated them, and merging would have
+    # moved a 30-pack's decided facts onto a 100-pack. Owner's rule: differing
+    # price means differing row.
+    pair = {r.irc: r for r in (await db.execute(select(DrugCatalogItem).where(
+        DrugCatalogItem.irc.in_([old_irc, new_irc])))).scalars().all()}
+    old_r, new_r = pair.get(old_irc), pair.get(new_irc)
+    if old_r is not None and new_r is not None:
+        po, pn = old_r.announced_price, new_r.announced_price
+        if po and pn and int(po) != int(pn):
+            raise RuntimeError(
+                f"قیمت اعلامی این دو ردیف یکی نیست ({int(po):,} در برابر {int(pn):,}) — "
+                "دو فرآوردهٔ متفاوت‌اند، نه یک ثبت تازه. جانشینی ثبت نشد.")
+        if (old_r.package_count and new_r.package_count
+                and old_r.package_count != new_r.package_count):
+            raise RuntimeError(
+                f"تعداد بسته یکی نیست ({old_r.package_count} در برابر "
+                f"{new_r.package_count}) — دو ارائهٔ متفاوت‌اند. جانشینی ثبت نشد.")
+
     row = (await db.execute(select(CatalogSuccession).where(
         CatalogSuccession.old_irc == old_irc,
         CatalogSuccession.new_irc == new_irc))).scalar_one_or_none()

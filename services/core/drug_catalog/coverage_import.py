@@ -691,6 +691,13 @@ _COND_FLAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("price_stability",  ("ثبات قیمت",)),
 )
 _NOT_INSURED = ("غیر بیمه", "غیربیمه")
+# Funding channels tamin names inside its «تعهد» column. Ordinary insurance pays
+# 0 % on these; the entitlement exists somewhere else and the patient must claim
+# it, so "covered" alone is a dangerous summary.
+_FUNDING_CHANNELS = (
+    ("hard_to_treat_fund", ("صندوق صعب العلاج", "صعب العلاج")),
+    ("govt_subsidy",       ("یارانه دولت", "يارانه دولت")),
+)
 _SHARE_IN_TEXT = re.compile(r"سهم\s*سازمان\s*(\d+)\s*درصد")
 _AGE_RANGE = re.compile(r"بیش\s*از\s*(\d+)\s*سال\D*?کمتر\s*از\s*(\d+)\s*سال")
 
@@ -767,6 +774,19 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
             unmatched.append({"row": link.row, "confidence": link.confidence})
             continue
         entry: dict = {"covered": _to_bool(link.row.get("covered", "1"))}
+        # tamin's «تعهد» column is not a yes/no. Besides «است» and «نيست» it
+        # names the FUNDING CHANNEL — «صرفا مشمول يارانه دولت» (335 rows) and
+        # «صرفا مشمول صندوق صعب العلاج» (32) — and every one of those carries
+        # share_pct 0. Coerced to a bare bool they became covered=true at 0 %,
+        # which reads as "insured, pays nothing" and is indistinguishable from
+        # "not insured". It is neither: the patient IS entitled, through a
+        # channel they must claim from. Tag it the way salamat's شرایط تعهد text
+        # is already tagged.
+        for tag, needles in _FUNDING_CHANNELS:
+            if any(n in _fold_fa(link.row.get("covered")) for n in needles):
+                entry.setdefault("restrictions", []).append(tag)
+                entry["funding_channel"] = tag
+                break
         for k, conv in (("share_pct", _to_int), ("reference_price", _to_int),
                         ("ceiling", _to_int)):
             v = link.row.get(k)

@@ -826,3 +826,83 @@ async def test_re_posting_a_collection_does_not_carry_the_stock_twice(env):
         {"i": r["lot_id"]})).mappings().one()
     assert float(row["quantity_on_hand"]) == 70.0    # not 40
     assert float(row["quantity_in_transit"]) == 30.0
+
+
+async def test_the_chain_detects_an_edit_made_behind_the_applications_back(env):
+    """The proof the whole ledger design rests on.
+
+    Every other chain test verifies an untouched chain, which only shows the
+    hashes are computed consistently. The claim being made is stronger — that an
+    edit made outside the application is *detectable* — and until something
+    tampers with a real row and the verifier says where, that claim is untested.
+
+    The append-only trigger has to be suspended to do it, which is itself the
+    point: this is the threat model. Someone with direct database access, not
+    someone using the app.
+    """
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=10,
+        reason="carton crushed in transit"), staff=alice, db=db)
+
+    async def chain():
+        rows = (await db.execute(text("""
+            SELECT id, pharmacy_id, irc, inventory_lot_id, movement_type,
+                   quantity_delta, quantity_after, created_by, prev_hash,
+                   event_hash, created_at
+            FROM inventory_movements
+            WHERE pharmacy_id = :p AND event_hash IS NOT NULL
+            ORDER BY created_at ASC, id ASC"""),
+            {"p": alice.pharmacy_id})).mappings().all()
+        return IG.chain_rows_for(rows), rows
+
+    rows, raw = await chain()
+    assert len(rows) >= 2
+    assert verify_chain(rows)["intact"] is True
+
+    victim = raw[-1]["id"]          # this test's most recent movement
+    victim_index = len(raw) - 1
+    before = (await db.execute(text(
+        "SELECT quantity_after FROM inventory_movements WHERE id = :i"),
+        {"i": victim})).scalar()
+
+    await db.execute(text(
+        "ALTER TABLE inventory_movements DISABLE TRIGGER "
+        "trg_inventory_movements_append_only"))
+    try:
+        await db.execute(text(
+            "UPDATE inventory_movements SET quantity_after = quantity_after + 5 "
+            "WHERE id = :i"), {"i": victim})
+        tampered, _ = await chain()
+        result = verify_chain(tampered)
+        assert result["intact"] is False, "an edited row went undetected"
+        assert result["break_index"] == victim_index, \
+            "the break must name the edited row"
+    finally:
+        await db.execute(text(
+            "UPDATE inventory_movements SET quantity_after = :v WHERE id = :i"),
+            {"v": before, "i": victim})
+        await db.execute(text(
+            "ALTER TABLE inventory_movements ENABLE TRIGGER "
+            "trg_inventory_movements_append_only"))
+
+    restored, _ = await chain()
+    assert verify_chain(restored)["intact"] is True
+
+
+async def test_the_trigger_refuses_an_update_through_the_application(env):
+    """The chain says an edit happened; the trigger stops it happening at all.
+    Both matter — the first is evidence, the second is prevention."""
+    db, alice, _bob, _carl, pid, ndc = env
+    await _receive(db, alice, ndc, qty=50)
+    mid = (await db.execute(text(
+        "SELECT id FROM inventory_movements WHERE pharmacy_id=:p AND ndc11=:n "
+        "LIMIT 1"), {"p": alice.pharmacy_id, "n": ndc})).scalar()
+
+    with pytest.raises(Exception) as e:
+        await db.execute(text(
+            "UPDATE inventory_movements SET reason = 'edited' WHERE id = :i"),
+            {"i": mid})
+    assert "append-only" in str(e.value).lower() or "immutable" in str(e.value).lower()
+    await db.rollback()

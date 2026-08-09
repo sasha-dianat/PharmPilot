@@ -170,7 +170,23 @@ CAUSES: dict[str, dict] = {
         "action": "پذیرش گروهی یا به‌روزرسانی دسته‌ای قیمت‌ها از آخرین اجرا.",
         "route": "price_review",
     },
+    "group_price_dispersion": {
+        "lane": LANE_JUDGEMENT, "title": "پراکندگی غیرمنطقی قیمت در یک گروه",
+        "why": "اعضای یک گروه هم‌ارز بیش از ۱۰۰ برابر اختلاف قیمت دارند. مابه‌التفاوت "
+               "برند گران‌تر طبیعی است و به‌ندرت از ۲۰ برابر می‌گذرد؛ فراتر از آن معمولاً "
+               "یعنی کلید گروه‌بندی غلط است یا یکی از قیمت‌ها خراب — «vitamin|12|tablet» "
+               "از سرریز «ویتامین ب۱۲» ساخته شده و ۲ تا ۷۵۰٬۰۰۰ ریال را کنار هم گذاشته.",
+        "action": "گروه را باز کنید: اگر واقعاً هم‌ارز نیستند کلید را اصلاح کنید، "
+                  "وگرنه قیمت خراب را. تا وقتی گروه یکی است، مرجع بیمه روی همه پخش می‌شود.",
+        "route": "price_review",
+    },
 }
+
+# Above this ratio a group is almost certainly mis-keyed or holds a bad price
+# rather than a real brand premium. Measured: 1,203 covered groups hold members
+# at different prices (normal — that is what مابه‌التفاوت is for), but only 30
+# exceed 100×.
+GROUP_DISPERSION_RATIO = 100
 
 
 def cause_key(cause: str, scope: str = "*") -> str:
@@ -295,8 +311,23 @@ async def _price_counts(db, extreme_pct: int = 1000,
     any_gap = (await db.execute(
         text(sql.format(op=">", excl="AND dc.irc <> ALL(:excl)" if ex_a else "")),
         {"pct": 50, **({"excl": ex_a} if ex_a else {})})).scalar() or 0
+    # One interchangeable group spanning >100× is a grouping or price defect, not
+    # a brand premium. Counted in PRODUCTS so it reads on the same scale as every
+    # other cause, and excluding rows already ruled.
+    ex_d = sorted(ruled.get("group_price_dispersion", ()))
+    disp = (await db.execute(text(f"""
+      SELECT coalesce(sum(n), 0) FROM (
+        SELECT count(*) AS n FROM drug_catalog
+        WHERE coverage IS NOT NULL AND announced_price > 0 AND ingredient_key <> ''
+          {"AND irc <> ALL(:excl)" if ex_d else ""}
+        GROUP BY ingredient_key
+        HAVING count(*) > 1 AND min(announced_price) > 0
+           AND max(announced_price)::numeric / min(announced_price)::numeric >= :ratio
+      ) t"""), {"ratio": GROUP_DISPERSION_RATIO,
+                **({"excl": ex_d} if ex_d else {})})).scalar() or 0
     return {"price_gap_extreme": extreme,
-            "price_gap_moderate": max(0, any_gap - extreme)}
+            "price_gap_moderate": max(0, any_gap - extreme),
+            "group_price_dispersion": int(disp)}
 
 
 async def _coverage_counts(db) -> dict[str, int]:

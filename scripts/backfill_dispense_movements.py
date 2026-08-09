@@ -79,8 +79,19 @@ async def main() -> int:
 
         for f in orphans:
             lots = await _lots_for(db, pid, f["ndc11"])
-            alloc = L.plan_dispense(lots, f["quantity_dispensed"],
-                                    reason=f"backfill fill {f['fill_id']}")
+            # The quantity is provable — a fill record exists, so stock left the
+            # shelf. The *lot* is not: FEFO run today is not the FEFO that ran
+            # in May, and on this pharmacy's own books it demonstrably differs
+            # (MTP50-OLD was the earliest-expiring lot at fill time and has
+            # since been quarantined, so FEFO now picks MTP50-NEW instead).
+            # The reason says so, because a recall that reads this ledger must
+            # not treat a reconstruction as an observation and notify the wrong
+            # patients.
+            # `reason` is varchar(120), so it says the essential thing only.
+            alloc = L.plan_dispense(
+                lots, f["quantity_dispensed"],
+                reason=f"backfill fill {f['fill_id']} — lot reconstructed, "
+                       f"not recorded at dispense")
             mark = "OK " if alloc.complete else "SHORT"
             print(f"  [{mark}] {f['ndc11']}  qty={float(f['quantity_dispensed']):>7} "
                   f"allocatable={float(alloc.allocated):>7} "

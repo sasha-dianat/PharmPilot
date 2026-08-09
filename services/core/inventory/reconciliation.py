@@ -171,26 +171,60 @@ def check_dispense_shortfall(rows: list[dict]) -> Finding:
 
 
 # ── C5. Formulary binding ─────────────────────────────────────────────────
-def check_formulary_binding(rows: list[dict]) -> Finding:
+def check_formulary_binding(rows: list[dict],
+                            ambiguous: dict[str, int] | None = None) -> Finding:
     """Stock must point at a row of the real formulary.
 
     Inventory keys on `ndc11` (a US National Drug Code); the authoritative
     Iranian catalogue is `drug_catalog.irc`. Unbound stock cannot be priced,
     adjudicated against insurer coverage, or matched to a prescription written
     from the formulary.
+
+    `ambiguous` separates the two reasons a row is unbound, because they need
+    different people. A row nobody has resolved yet is work. A row where
+    generic+strength+form matches several IRCs is not: an IRC is a per-brand,
+    per-manufacturer registration, so a molecule and a strength genuinely cannot
+    pick one, and no amount of matching effort will change that. Those need a
+    GTIN at goods receipt or an owner's ruling on the brand. Reporting both as
+    one undifferentiated backlog is how a check gets ignored — it never goes
+    down however much work is done.
     """
-    bad = [{"ndc11": r.get("ndc11"), "lot_id": r.get("lot_id"),
-            "quantity": float(_f(r, "quantity_on_hand")),
-            "drug_name": r.get("drug_name")}
-           for r in rows if not r.get("irc")]
+    ambiguous = ambiguous or {}
+    bad, blocked = [], []
+    for r in rows:
+        if r.get("irc"):
+            continue
+        ndc = r.get("ndc11")
+        row = {"ndc11": ndc, "lot_id": r.get("lot_id"),
+               "quantity": float(_f(r, "quantity_on_hand")),
+               "drug_name": r.get("drug_name")}
+        n = ambiguous.get(str(ndc))
+        if n:
+            blocked.append({**row, "candidates": n,
+                            "reason": f"{n} formulary brands share this "
+                                      f"generic, strength and form"})
+        else:
+            bad.append(row)
+
+    severity = "high" if bad else ("medium" if blocked else "info")
+    parts = []
+    if bad:
+        parts.append(f"{len(bad)} stock row(s) carry no IRC and have not been "
+                     f"resolved")
+    if blocked:
+        parts.append(f"{len(blocked)} awaiting a brand ruling — the formulary "
+                     f"holds several registrations for the same molecule, "
+                     f"strength and form")
     return Finding(
-        "unbound_from_formulary", "high", len(bad),
+        "unbound_from_formulary", severity, len(bad) + len(blocked),
         "عدم اتصال به فهرست دارویی رسمی",
-        "Stock row carries no IRC, so it is not connected to the national "
-        "formulary (drug_catalog) used for pricing and coverage.",
-        bad,
-        "Resolve IRC by GTIN, then by generic+strength+form; leave genuinely "
-        "unresolvable rows for owner review rather than guessing.",
+        ("; ".join(parts) + ".") if parts
+        else "Every stock row is bound to the formulary.",
+        bad + blocked,
+        "Resolve IRC by GTIN, then by generic+strength+form. Rows with several "
+        "candidate brands need a scan at goods receipt or an owner's ruling — "
+        "not a guess, which would attach a wrong price and wrong coverage to a "
+        "real product.",
     )
 
 

@@ -66,6 +66,18 @@ def chain_rows_for(rows) -> list[dict]:
 
 # ── Reconciliation ────────────────────────────────────────────────────────
 
+class _ReadOnly:
+    """A staff stand-in for calling a read endpoint from inside another.
+
+    `binding_proposals` takes the pharmacy from the caller's `Staff`. Reusing it
+    here keeps one resolver rather than a second copy of the matching ladder
+    that could drift from the one the operator sees.
+    """
+    def __init__(self, pharmacy_id):
+        self.pharmacy_id = pharmacy_id
+        self.id = None
+
+
 async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
     """Run every check against the pharmacy's real rows."""
     p = {"pid": pharmacy_id}
@@ -143,6 +155,27 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
 
     chain = chain_rows_for(chain_rows)
 
+    # Which unbound rows are unbound because nobody has resolved them, and which
+    # because the formulary holds several brands for the same molecule. Only the
+    # first kind is work. Run over the unbound items only, so this stays cheap.
+    ambiguous: dict[str, int] = {}
+    try:
+        proposals = (await binding_proposals(limit=500, staff=_ReadOnly(pharmacy_id),
+                                             db=db)).get("proposals", [])
+        for prop in proposals:
+            if not prop.get("ambiguous"):
+                continue
+            n = prop.get("candidates")
+            # `candidates` is a count in the proposal payload; tolerate a list
+            # in case that ever changes, rather than reporting every ambiguous
+            # row as unresolved work again.
+            if isinstance(n, (list, tuple, set)):
+                n = len(n)
+            ambiguous[str(prop["ndc11"])] = int(n or 2)
+    except Exception:                                          # pragma: no cover
+        log.warning("binding ambiguity unavailable; reporting all unbound rows "
+                    "as unresolved", exc_info=True)
+
     # The reserved counter against the rows it denormalises, plus holds that
     # have lapsed and are still withholding stock from availability.
     reservation_drift = await RS.counter_drift(db, pharmacy_id)
@@ -207,7 +240,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_fills_without_movements([dict(r) for r in fills], linked),
         R.check_untraceable_fills([dict(r) for r in fills]),
         R.check_dispense_shortfall([dict(r) for r in shortfalls]),
-        R.check_formulary_binding([dict(r) for r in lots]),
+        R.check_formulary_binding([dict(r) for r in lots], ambiguous),
         R.check_expired_on_hand([dict(r) for r in lots]),
         R.check_suspicious_adjustments([dict(r) for r in movements]),
         R.check_duplicate_lots([dict(r) for r in lots]),

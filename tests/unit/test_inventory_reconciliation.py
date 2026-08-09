@@ -304,3 +304,34 @@ def test_a_lapsed_hold_still_withholding_stock_is_reported():
 
 def test_the_reservation_check_is_in_the_registry():
     assert "reservation_drift" in R.ALL_CHECKS
+
+
+# ── C5 binding: unresolved work vs a ruling nobody can automate ───────────
+def test_an_unbound_row_with_no_ambiguity_is_unresolved_work():
+    f = R.check_formulary_binding([{"ndc11": "N1", "irc": None, "quantity_on_hand": 5}])
+    assert (f.count, f.severity) == (1, "high")
+    assert "have not been resolved" in f.detail
+
+
+def test_an_unbound_row_with_many_candidate_brands_is_not_work_it_is_a_ruling():
+    """An IRC is a per-brand registration. Gabapentin 300mg capsules have 68 of
+    them on the real formulary, so no matcher can pick one, and reporting it as
+    outstanding work means the check never goes down however much is done."""
+    f = R.check_formulary_binding(
+        [{"ndc11": "N1", "irc": None, "quantity_on_hand": 5}], {"N1": 68})
+    assert (f.count, f.severity) == (1, "medium")
+    assert "awaiting a brand ruling" in f.detail
+    assert f.samples[0]["candidates"] == 68
+    assert "not a guess" in f.remediation
+
+
+def test_unresolved_work_outranks_a_pending_ruling():
+    f = R.check_formulary_binding(
+        [{"ndc11": "A", "irc": None}, {"ndc11": "B", "irc": None}], {"B": 4})
+    assert f.severity == "high"
+    assert f.count == 2
+
+
+def test_fully_bound_stock_is_silent():
+    f = R.check_formulary_binding([{"ndc11": "A", "irc": "123"}])
+    assert f.count == 0 and f.severity == "info"
