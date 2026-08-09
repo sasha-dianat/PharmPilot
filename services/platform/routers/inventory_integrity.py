@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.core.inventory import demand as DM
 from services.core.inventory import ledger as L
 from services.core.inventory import reconciliation as R
 from services.core.inventory import formulary_binding as FB
@@ -34,6 +35,10 @@ from shared.models.inventory import (
 
 router = APIRouter()
 log = logging.getLogger(__name__)
+
+# Four weeks: long enough that a weekly drug appears several times, short enough
+# that it still describes current dispensing rather than last quarter's.
+DEMAND_WINDOW_DAYS = 28
 
 # The chain digest is taken over the timestamp as a string, so reading and
 # writing must agree on one format exactly. Formatting in Python (rather than
@@ -135,6 +140,48 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
 
     chain = chain_rows_for(chain_rows)
 
+    # Demand signal vs the fill record. Scoped through the prescription for the
+    # same reason the orphan-fill query is: a fill carries no pharmacy of its
+    # own, and an unscoped read would test this tenant's signal against another
+    # tenant's dispensing.
+    signal = (await db.execute(text("""
+        SELECT s.ndc11, s.avg_daily_demand, s.forecast_updated_at,
+               s.demand_basis, COALESCE(s.quantity_on_hand, 0) AS on_hand
+        FROM stock_levels s WHERE s.pharmacy_id = :pid"""), p)).mappings().all()
+
+    demand_fills = (await db.execute(text("""
+        SELECT pf.ndc_dispensed AS ndc11, pf.quantity_dispensed,
+               COALESCE(pf.fill_date, pf.created_at::date) AS fill_date
+        FROM prescription_fills pf
+        JOIN prescriptions pr ON pr.id = pf.prescription_id
+        WHERE pf.is_deleted = false AND pr.pharmacy_id = :pid
+          AND COALESCE(pf.fill_date, pf.created_at::date)
+              > (CURRENT_DATE - CAST(:window AS integer))"""),
+        {**p, "window": DEMAND_WINDOW_DAYS})).mappings().all()
+
+    by_ndc: dict[str, list[dict]] = {}
+    for r in demand_fills:
+        by_ndc.setdefault(r["ndc11"], []).append(dict(r))
+
+    today = DM.utc_date()
+    divergences, stale, blind = [], [], []
+    for r in signal:
+        est = DM.estimate(r["ndc11"], by_ndc.get(r["ndc11"], []),
+                          window_days=DEMAND_WINDOW_DAYS, as_of=today)
+        divergences.append(DM.divergence(
+            ndc11=r["ndc11"], stored_adq=r["avg_daily_demand"], observed=est))
+        if DM.is_stale(r["forecast_updated_at"], today):
+            age = DM.staleness_days(r["forecast_updated_at"], today)
+            stale.append({"ndc11": r["ndc11"], "age_days": age,
+                          "detail": "never computed" if age is None
+                                    else f"{age} days old"})
+        elif r["avg_daily_demand"] is None and float(r["on_hand"] or 0) > 0:
+            # Freshly computed and still no rate: a real measured absence, and
+            # the units are on the shelf regardless.
+            blind.append({"ndc11": r["ndc11"], "on_hand": float(r["on_hand"]),
+                          "basis": r["demand_basis"],
+                          "detail": "stock held with no measurable demand"})
+
     return [
         R.check_aggregate_drift([dict(r) for r in agg]),
         R.check_negative_stock([dict(r) for r in lots] + [dict(r) for r in agg]),
@@ -147,6 +194,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_duplicate_lots([dict(r) for r in lots]),
         R.check_unit_conversion([dict(r) for r in conv]),
         R.check_over_reservation([dict(r) for r in lots]),
+        R.check_demand_signal(divergences, stale=stale, blind=blind),
         R.check_chain(L.verify_chain(chain)),
     ]
 
@@ -161,6 +209,103 @@ async def reconciliation_report(
     out = R.summarize(findings)
     out["generated_at"] = datetime.now(timezone.utc).isoformat()
     return out
+
+
+# ── Demand signal ─────────────────────────────────────────────────────────
+
+async def _demand_inputs(db: AsyncSession, pharmacy_id, window_days: int):
+    """Stock rows and their in-window fills, both scoped to one pharmacy."""
+    p = {"pid": pharmacy_id}
+    stock = (await db.execute(text("""
+        SELECT ndc11, avg_daily_demand, forecast_updated_at
+        FROM stock_levels WHERE pharmacy_id = :pid ORDER BY ndc11"""),
+        p)).mappings().all()
+
+    fills = (await db.execute(text("""
+        SELECT pf.ndc_dispensed AS ndc11, pf.quantity_dispensed,
+               COALESCE(pf.fill_date, pf.created_at::date) AS fill_date
+        FROM prescription_fills pf
+        JOIN prescriptions pr ON pr.id = pf.prescription_id
+        WHERE pf.is_deleted = false AND pr.pharmacy_id = :pid
+          AND COALESCE(pf.fill_date, pf.created_at::date)
+              > (CURRENT_DATE - CAST(:window AS integer))"""),
+        {**p, "window": window_days})).mappings().all()
+
+    by_ndc: dict[str, list[dict]] = {}
+    for r in fills:
+        by_ndc.setdefault(r["ndc11"], []).append(dict(r))
+    return [dict(r) for r in stock], by_ndc
+
+
+@router.post("/demand/refresh")
+async def refresh_demand(
+    apply: bool = Query(False, description="False previews; True writes."),
+    window_days: int = Query(DEMAND_WINDOW_DAYS, ge=7, le=365),
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recompute each item's demand rate from the fill record, with provenance.
+
+    Preview by default. The response shows the standing of each *old* value
+    alongside its replacement, so an operator approving a refresh can see which
+    numbers were wrong and by how much rather than only what they become.
+
+    `no_history` writes NULL, deliberately. NULL propagates as "unknown" to the
+    purchasing engine, which then recommends nothing for that item — the correct
+    behaviour when the shelf has no evidence of demand. The alternative, which
+    this replaces, was a fallback constant that produced confident orders for
+    drugs nobody dispenses.
+    """
+    today = DM.utc_date()
+    stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, window_days)
+    plan = DM.plan_refresh(stock, by_ndc, window_days=window_days, as_of=today)
+
+    written = 0
+    if apply:
+        for row in plan:
+            await db.execute(text("""
+                UPDATE stock_levels
+                   SET avg_daily_demand = CAST(:adq AS numeric),
+                       demand_basis = CAST(:basis AS varchar),
+                       demand_confidence = CAST(:conf AS numeric),
+                       demand_window_days = CAST(:win AS integer),
+                       demand_units_observed = CAST(:units AS numeric),
+                       forecast_updated_at = :now
+                 WHERE pharmacy_id = :pid AND ndc11 = :ndc"""), {
+                "adq": None if row.new_adq is None else str(row.new_adq),
+                "basis": row.basis, "conf": str(row.confidence),
+                "win": row.window_days, "units": str(row.units_observed),
+                "now": datetime.now(timezone.utc),
+                "pid": staff.pharmacy_id, "ndc": row.ndc11,
+            })
+            written += 1
+        await db.commit()
+        log.info("Demand refresh applied: pharmacy=%s rows=%d window=%dd",
+                 str(staff.pharmacy_id)[:8], written, window_days)
+
+    by_basis: dict[str, int] = {}
+    by_verdict: dict[str, int] = {}
+    for r in plan:
+        by_basis[r.basis] = by_basis.get(r.basis, 0) + 1
+        by_verdict[r.verdict] = by_verdict.get(r.verdict, 0) + 1
+
+    return {
+        "applied": apply,
+        "window_days": window_days,
+        "as_of": today.isoformat(),
+        "rows": [r.as_dict() for r in plan],
+        "written": written,
+        "summary": {
+            "items": len(plan),
+            "changed": sum(1 for r in plan if r.changed),
+            "by_basis": by_basis,
+            "prior_signal_verdict": by_verdict,
+        },
+        # Reorder point and safety stock stay NULL until lead time is measured
+        # rather than assumed — deriving them from a default would rebuild the
+        # same unsupported numbers this refresh exists to remove.
+        "note": "reorder_point/safety_stock remain unset pending measured lead time",
+    }
 
 
 # ── Formulary binding ─────────────────────────────────────────────────────

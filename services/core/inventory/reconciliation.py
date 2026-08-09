@@ -348,6 +348,68 @@ def check_over_reservation(rows: list[dict]) -> Finding:
     )
 
 
+# ── C12. Demand signal vs the fill record ─────────────────────────────────
+def check_demand_signal(divergences: list, *, stale: list[dict] | None = None,
+                        blind: list[dict] | None = None) -> Finding:
+    """The stored demand rate must be supported by what was actually dispensed.
+
+    Every purchasing decision reads `stock_levels.avg_daily_demand`, and until
+    this check existed nothing tested it. The seeded values claimed 14 units/day
+    for an item with no dispensing at all, and 4/day for one moving at 12.9 —
+    so the engine simultaneously recommended buying a drug nobody takes and
+    left the fastest-moving item below its true reorder point.
+
+    `contradicted` is deliberately separated from merely wrong: it means the
+    number has no basis in this pharmacy's fill record, which impeaches every
+    other value written by the same source.
+    """
+    bad = [d.as_dict() for d in divergences if getattr(d, "disagrees", False)]
+    stale = stale or []
+    # Stock on the shelf with no demand rate behind it. Not a wrong number — the
+    # absence of one. It still belongs here, because an item that cannot be
+    # forecast cannot be reordered on evidence *or* retired as dead stock, and a
+    # refresh that legitimately finds no history would otherwise fall silent
+    # while capital sits on the shelf expiring.
+    blind = blind or []
+    contradicted = [b for b in bad if b["verdict"] == "contradicted"]
+    understated = [b for b in bad if b["verdict"] == "understated"]
+
+    if contradicted or understated:
+        severity = "high"
+    elif bad or stale or blind:
+        severity = "medium"
+    else:
+        severity = "info"
+
+    parts = []
+    if bad:
+        parts.append(
+            f"{len(bad)} item(s) whose stored demand disagrees with dispensing "
+            f"({len(contradicted)} contradicted by a nil fill record, "
+            f"{len(understated)} understated and at stockout risk)")
+    if stale:
+        parts.append(f"{len(stale)} signal(s) stale or never computed")
+    if blind:
+        parts.append(f"{len(blind)} item(s) holding stock with no demand rate "
+                     f"to reorder or retire it on")
+    detail = ("; ".join(parts) + ".") if parts else \
+        "Stored demand agrees with the fill record."
+
+    return Finding(
+        "demand_signal_unsupported", severity,
+        len(bad) + len(stale) + len(blind),
+        "سیگنال تقاضا با سوابق تحویل هم‌خوانی ندارد",
+        detail,
+        bad
+        + [{**s, "verdict": "stale"} for s in stale]
+        + [{**b, "verdict": "no_signal"} for b in blind],
+        "Recompute demand from the fill record before acting on any purchase "
+        "recommendation. Do not hand-edit the stored rate — it will be "
+        "overwritten and the disagreement will return. Items with no rate at "
+        "all need a dispensing history or an explicit dead-stock ruling.",
+    )
+
+
 # ── C11. Chain integrity ──────────────────────────────────────────────────
 def check_chain(verify_result: dict) -> Finding:
     intact = verify_result.get("intact", False)
@@ -369,7 +431,7 @@ def check_chain(verify_result: dict) -> Finding:
 ALL_CHECKS = ("aggregate_drift", "negative_stock", "fill_without_movement",
               "untraceable_fill", "dispense_shortfall", "unbound_from_formulary", "expired_on_hand",
               "suspicious_adjustment", "duplicate_lot", "unit_conversion_suspect",
-              "over_reserved", "ledger_chain")
+              "over_reserved", "demand_signal_unsupported", "ledger_chain")
 
 
 def summarize(findings: list[Finding]) -> dict:

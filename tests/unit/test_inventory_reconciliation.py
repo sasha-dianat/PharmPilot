@@ -198,3 +198,82 @@ def test_medium_findings_alone_do_not_block():
     # medium-only: not blocking, still trustworthy for ordering decisions, but
     # not "healthy" — something is firing and the report must say so
     assert s["blocking"] is False and s["trustworthy"] is True and s["healthy"] is False
+
+
+# ── C12 demand signal ─────────────────────────────────────────────────────
+from decimal import Decimal as _Dec  # noqa: E402
+
+from services.core.inventory import demand as _D  # noqa: E402
+
+
+def _div(stored, units, *, ndc="A"):
+    """Five fills spread backwards from TODAY, totalling `units`."""
+    fills = [{"fill_date": date.fromordinal(TODAY.toordinal() - (i * 3 + 1)),
+              "quantity_dispensed": units / 5} for i in range(5)] if units else []
+    est = _D.estimate(ndc, fills, window_days=28, as_of=TODAY)
+    return _D.divergence(ndc11=ndc, stored_adq=stored, observed=est)
+
+
+def test_demand_signal_agreeing_everywhere_is_silent():
+    f = R.check_demand_signal([_div(_Dec("5"), 140)])
+    assert f.count == 0
+    assert f.severity == "info"
+
+
+def test_a_contradicted_demand_signal_is_high_severity():
+    """14/day against a nil fill record means the number is not a measurement."""
+    f = R.check_demand_signal([_div(_Dec("14"), 0)])
+    assert (f.count, f.severity) == (1, "high")
+    assert "contradicted by a nil fill record" in f.detail
+
+
+def test_an_understated_signal_is_high_because_it_hides_stockout_risk():
+    f = R.check_demand_signal([_div(_Dec("4"), 360)])
+    assert (f.count, f.severity) == (1, "high")
+
+
+def test_only_overstated_signals_stay_medium():
+    f = R.check_demand_signal([_div(_Dec("20"), 100)])
+    assert (f.count, f.severity) == (1, "medium")
+
+
+def test_a_stale_signal_is_reported_even_when_the_values_agree():
+    f = R.check_demand_signal([_div(_Dec("5"), 140)],
+                              stale=[{"ndc11": "A", "age_days": 54,
+                                      "detail": "54 days old"}])
+    assert f.count == 1
+    assert f.severity == "medium"
+    assert "stale or never computed" in f.detail
+    assert f.samples[0]["verdict"] == "stale"
+
+
+def test_the_demand_check_is_in_the_registry():
+    """A check absent from ALL_CHECKS is invisible to the register's diff and
+    would never open, recur, or resolve as an exception."""
+    assert "demand_signal_unsupported" in R.ALL_CHECKS
+
+
+def test_stock_held_with_no_demand_rate_is_reported_not_silent():
+    """After a refresh legitimately finds no history the item goes quiet, but
+    the capital is still on the shelf and can neither be reordered on evidence
+    nor retired as dead stock."""
+    f = R.check_demand_signal(
+        [], blind=[{"ndc11": "A", "on_hand": 90.0, "basis": "no_history",
+                    "detail": "stock held with no measurable demand"}])
+    assert (f.count, f.severity) == (1, "medium")
+    assert "no demand rate to reorder or retire it on" in f.detail
+    assert f.samples[0]["verdict"] == "no_signal"
+
+
+def test_a_wrong_signal_outranks_a_missing_one():
+    """Both present: the high-severity disagreement must set the severity."""
+    f = R.check_demand_signal(
+        [_div(_Dec("14"), 0)],
+        blind=[{"ndc11": "B", "on_hand": 10.0, "basis": "no_history"}])
+    assert f.severity == "high"
+    assert f.count == 2
+
+
+def test_nothing_wrong_anywhere_stays_info():
+    assert R.check_demand_signal([_div(_Dec("5"), 140)],
+                                 stale=[], blind=[]).severity == "info"

@@ -124,13 +124,24 @@ class StockLevel(TimestampedBase):
     par_level_min: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
     par_level_max: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
 
-    # ML-computed reorder signals (updated by inventory intelligence service)
+    # Reorder signals, measured from the fill record by
+    # `services.core.inventory.demand` and written by the refresh endpoint.
+    # NULL means "not known" and must stay NULL rather than be defaulted: a
+    # purchasing engine reading NULL recommends nothing, which is correct, while
+    # one reading an invented rate orders stock for a drug nobody takes.
     reorder_point: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
     reorder_quantity: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
     safety_stock: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
     avg_daily_demand: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     stockout_probability_7d: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     forecast_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Provenance for the rate above (migration 0036) — how it was derived, how
+    # much to trust it, and the raw observation it came from.
+    demand_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    demand_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    demand_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    demand_units_observed: Mapped[float | None] = mapped_column(Numeric(12, 3), nullable=True)
 
     last_dispensed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
