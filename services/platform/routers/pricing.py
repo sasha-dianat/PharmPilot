@@ -69,6 +69,25 @@ def _coverage(rec: CatalogRecord, insurer: str) -> tuple[bool, Decimal | None, D
     return covered, None, vat
 
 
+_CHANNEL_FA = {
+    "hard_to_treat_fund": "صرفاً از صندوق صعب‌العلاج — بیمهٔ پایه سهمی نمی‌پردازد",
+    "govt_subsidy":       "صرفاً مشمول یارانهٔ دولت — بیمهٔ پایه سهمی نمی‌پردازد",
+}
+
+
+def _channel_of(rec: CatalogRecord, insurer: str) -> dict:
+    """The funding channel this insurer named, if any — quote-ready.
+
+    Empty for the ordinary case, so it costs nothing on the 99% of lines that
+    have no channel and cannot be mistaken for one.
+    """
+    entry = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
+    ch = (entry or {}).get("funding_channel")
+    if not ch:
+        return {}
+    return {"funding_channel": ch, "funding_channel_fa": _CHANNEL_FA.get(ch, ch)}
+
+
 @router.post("/quote")
 async def quote(body: QuoteRequest,
                 staff: Staff = Depends(require_permission("clinical:read")),
@@ -148,6 +167,13 @@ async def quote(body: QuoteRequest,
             "insurer_share": float(b.insurer_share), "patient_share": float(b.patient_share),
             "differential": float(b.differential), "vat": float(b.vat),
             "patient_total": float(b.patient_total),
+            # tamin names a FUNDING CHANNEL inside its «تعهد» column for 367
+            # products — «صرفا مشمول يارانه دولت» and «صرفا مشمول صندوق صعب
+            # العلاج». Both carry share 0, so the arithmetic above correctly has
+            # the insurer paying nothing; but the patient IS entitled, through a
+            # channel they must claim from. Without this the counter cannot tell
+            # that apart from "not insured".
+            **_channel_of(rec, body.insurer),
             "alternatives": [{
                 "irc": a.record.irc, "name": a.record.name_fa, "brand_name": a.record.brand_name,
                 "is_generic": a.record.is_generic, "unit_price": float(a.effective_price),

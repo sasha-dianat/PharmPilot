@@ -1238,3 +1238,45 @@ trigger, edits a row, and asserts the break lands at that row's index.
   recorded on the movement.
 - `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`
   still fails in-suite and passes in isolation. Pre-existing, unrelated, unchanged.
+
+### 2026-08-09 — Claude (Opus 5) — reference pricing verified end to end on real data
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner described the coverage model: the insurer publishes a reference price —
+  usually the Iranian generic — and for ANY other brand the insurer still pays
+  its share OF THE REFERENCE, while the patient pays their franchise plus the
+  whole difference. Verified rather than assumed.
+- `pricing_ir.engine` already implements exactly that, and its docstring says so:
+  `covered_base = reference × qty`, `insurer_share = covered_base × (1−franchise)`,
+  `differential = max(0, consumer − reference) × qty`,
+  `patient_total = patient_share + differential + vat`, with
+  `insurer_share + patient_total == gross + vat`.
+- Proved on live ketotifen 1 mg tablet, tamin reference 20,400 at 70 %:
+
+  | | Iranian generic | Swiss زادیتن |
+  |---|---|---|
+  | consumer | 20,400 | 29,200 |
+  | insurer pays | 14,280 | **14,280 — unchanged** |
+  | patient franchise | 6,120 | 6,120 |
+  | مابه‌التفاوت | 0 | **8,800** |
+  | patient total | 6,120 | **14,920** |
+
+  Conservation held in both. The production path is wired correctly too —
+  `routers/pricing._coverage` reads `rec.coverage[insurer].reference_price` and
+  passes it as `insurer_reference_price`.
+- This also settles the 2026-08-09 spread question for good: the reference is
+  per interchangeable group BY DESIGN, and the patient absorbs the premium. Had
+  we restricted the spread to equal prices, the Swiss brand would have lost its
+  14,280 of cover entirely.
+- Completed the funding-channel thread: `_channel_of` now surfaces
+  `funding_channel` + a Persian label on the quote line, so the counter can see
+  «صرفاً از صندوق صعب‌العلاج — بیمهٔ پایه سهمی نمی‌پردازد» instead of a bare
+  "covered, insurer pays 0". Empty dict on ordinary lines, so it costs nothing
+  on the 99 % that have no channel.
+- Worth a look at the counter: زادیتن syrup (Swiss) is priced 6,300,000 against
+  a salamat reference of 357,700 — a مابه‌التفاوت of 5,942,300 rial on one
+  bottle. That is the single largest patient-facing surprise in the ketotifen
+  family and exactly what the differential line exists to show.
+- Verification: `pytest tests/unit -p no:randomly` → 1,534 passed, 1 failed
+  (`test_integrations_sandbox`, pre-existing).
