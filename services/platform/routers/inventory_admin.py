@@ -27,6 +27,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import admin_rules as A
+from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import ledger as L
 from services.platform.auth import require_permission
 from services.platform.database import get_db
@@ -345,7 +346,9 @@ async def edit_lot(
             payload={"table": "inventory_lots", "row_id": str(lot.id),
                      "field": body.field, "old": _jsonable(old),
                      "new": _jsonable(body.value), "reason": body.reason},
-            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id,
+            due_at=SLA.deadline("FIELD_EDIT", requested_at=datetime.now(timezone.utc),
+                                is_controlled=is_controlled).due_at)
         db.add(appr)
         await db.commit()
         return {"applied": False, "approval_id": str(appr.id),
@@ -460,6 +463,11 @@ class ReceiveLot(BaseModel):
     lot_number: str = Field(..., min_length=1)
     expiry_date: date
     quantity: float = Field(..., gt=0)
+    # What was counted: individual units, or packs to be multiplied by the
+    # product's pack size. Defaults to "each" because every existing caller
+    # means that; reinterpreting their receipts as packs would rewrite the
+    # shelf by a factor of the pack size.
+    uom: Optional[str] = Field(default="each", pattern="^(each|pack)$")
     unit_cost: Optional[float] = None
     irc: Optional[str] = None
     storage_location: Optional[str] = None
@@ -498,6 +506,16 @@ async def receive_stock(
         if not known:
             raise HTTPException(422, f"IRC {body.irc} is not in the formulary")
 
+    # Convert what was counted into units on the shelf, and record which it was.
+    # A bare number could not distinguish 3 boxes from 3 tablets, which is the
+    # 30x error `check_unit_conversion` can only report after the fact.
+    try:
+        recv = A.receipt_units(body.quantity, uom=body.uom,
+                              units_per_pack=drug.package_quantity)
+    except A.ReceiptUnitError as exc:
+        raise HTTPException(422, str(exc))
+    units = float(recv["units"])
+
     lot = (await db.execute(select(InventoryLot).where(
         InventoryLot.pharmacy_id == staff.pharmacy_id,
         InventoryLot.ndc11 == body.ndc11,
@@ -513,6 +531,8 @@ async def receive_stock(
             irc=body.irc, lot_number=body.lot_number, expiry_date=body.expiry_date,
             quantity_received=0, quantity_on_hand=0, quantity_reserved=0,
             unit_cost=body.unit_cost, storage_location=body.storage_location,
+            received_uom=recv["uom"], received_packs=recv["packs"],
+            units_per_pack=recv["units_per_pack"],
             serial_number=body.serial_number, received_at=now,
             purchase_order_id=body.purchase_order_id,
             created_by=staff.id, updated_by=staff.id)
@@ -529,13 +549,13 @@ async def receive_stock(
                  quantity_on_hand=L.q(lot.quantity_on_hand),
                  is_recalled=bool(lot.is_recalled))
     try:
-        plan = L.plan_receipt(view, body.quantity, movement_type="RECEIPT",
+        plan = L.plan_receipt(view, units, movement_type="RECEIPT",
                               reason=body.reason, is_controlled=bool(drug.is_controlled))
     except L.LedgerError as e:
         raise HTTPException(422, str(e))
 
     lot.quantity_on_hand = plan.quantity_after
-    lot.quantity_received = L.q(float(lot.quantity_received or 0) + body.quantity)
+    lot.quantity_received = L.q(float(lot.quantity_received or 0) + units)
     lot.updated_by = staff.id
     if body.unit_cost is not None:
         lot.unit_cost = body.unit_cost
@@ -549,7 +569,7 @@ async def receive_stock(
                            quantity_on_hand=0, quantity_reserved=0, quantity_on_order=0)
         db.add(stock)
         await db.flush()
-    stock.quantity_on_hand = L.q(float(stock.quantity_on_hand or 0) + body.quantity)
+    stock.quantity_on_hand = L.q(float(stock.quantity_on_hand or 0) + units)
     stock.last_received_at = now
     if body.irc and not stock.irc:
         stock.irc = body.irc
@@ -559,7 +579,8 @@ async def receive_stock(
         irc=body.irc or lot.irc, lot_id=lot.id, plan=plan, actor_id=staff.id)
     await db.commit()
     return {"lot_id": str(lot.id), "lot_created": created,
-            "quantity_received": body.quantity,
+            "quantity_received": units,
+            "counted": recv["explanation"],
             "lot_on_hand": float(plan.quantity_after),
             "movement_id": str(movement.id), "event_hash": movement.event_hash}
 

@@ -382,6 +382,45 @@ def check_over_reservation(rows: list[dict]) -> Finding:
     )
 
 
+# ── C14. Approvals that stalled ───────────────────────────────────────────
+def check_overdue_approvals(overdue: list) -> Finding:
+    """A pending write-off past its deadline.
+
+    This one is easy to under-rate. Nothing is *wrong* in the ledger — the
+    approval is correctly pending and the movement correctly has not applied.
+    That is the problem: the stock it covers is still on the books looking
+    sellable, the requester assumes it is handled, and no one is told. A
+    maker-checker queue with no clock fails silently, which is the worst way for
+    a control to fail because it looks exactly like a control that is working.
+    """
+    rows = [o.as_dict() if hasattr(o, "as_dict") else dict(o) for o in overdue]
+    controlled = [r for r in rows if r.get("is_controlled")]
+    escalated = [r for r in rows if (r.get("level") or 0) >= 2]
+
+    if controlled or escalated:
+        severity = "high"
+    elif rows:
+        severity = "medium"
+    else:
+        severity = "info"
+
+    detail = (
+        f"{len(rows)} approval(s) past their deadline"
+        + (f", {len(controlled)} on controlled stock" if controlled else "")
+        + (f", {len(escalated)} escalated to the owner" if escalated else "")
+        + "."
+    ) if rows else "No approval is past its deadline."
+
+    return Finding(
+        "approval_overdue", severity, len(rows),
+        "تأییدهای معوق",
+        detail, rows,
+        "Decide them. An approval cannot be aged out into an approval — the "
+        "second signature is the control, and expiring it on a timer would "
+        "remove exactly what it was there to provide.",
+    )
+
+
 # ── C13. Reserved counter vs the reservation rows ─────────────────────────
 def check_reservation_drift(drifts: list[dict],
                             lapsed: list[dict] | None = None) -> Finding:
@@ -502,7 +541,7 @@ ALL_CHECKS = ("aggregate_drift", "negative_stock", "fill_without_movement",
               "untraceable_fill", "dispense_shortfall", "unbound_from_formulary", "expired_on_hand",
               "suspicious_adjustment", "duplicate_lot", "unit_conversion_suspect",
               "over_reserved", "reservation_drift", "demand_signal_unsupported",
-              "ledger_chain")
+              "approval_overdue", "ledger_chain")
 
 
 def summarize(findings: list[Finding]) -> dict:

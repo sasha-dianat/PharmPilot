@@ -23,6 +23,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import demand as DM
+from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
@@ -176,6 +177,13 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         log.warning("binding ambiguity unavailable; reporting all unbound rows "
                     "as unresolved", exc_info=True)
 
+    # Approvals still waiting for a second signature, with their deadline.
+    pending_approvals = [dict(r) for r in (await db.execute(text("""
+        SELECT id, movement_type, is_controlled, status, created_at, due_at,
+               escalation_level
+        FROM inventory_approvals
+        WHERE pharmacy_id = :pid AND status = 'pending'"""), p)).mappings().all()]
+
     # The reserved counter against the rows it denormalises, plus holds that
     # have lapsed and are still withholding stock from availability.
     reservation_drift = await RS.counter_drift(db, pharmacy_id)
@@ -248,6 +256,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_over_reservation([dict(r) for r in lots]),
         R.check_reservation_drift(reservation_drift, lapsed),
         R.check_demand_signal(divergences, stale=stale, blind=blind),
+        R.check_overdue_approvals(SLA.overdue(pending_approvals)),
         R.check_chain(L.verify_chain(chain)),
     ]
 
@@ -609,7 +618,9 @@ async def post_count(
             quantity=abs(plan.quantity_delta), status="pending",
             reason=f"count variance on lot {line.lot_number}: "
                    f"expected {line.expected_quantity}, counted {line.counted_quantity}",
-            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+            requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id,
+            due_at=SLA.deadline(plan.movement_type,
+                                requested_at=datetime.now(timezone.utc)).due_at)
         db.add(appr)
         created.append(appr)
 

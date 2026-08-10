@@ -184,6 +184,56 @@ def normalize_query(q: str | None) -> dict:
     return {"kind": "name", "value": s}
 
 
+RECEIPT_UOMS = ("each", "pack")
+
+
+class ReceiptUnitError(ValueError):
+    """A receipt whose quantity cannot be converted to units without guessing."""
+
+
+def receipt_units(quantity, *, uom: str | None, units_per_pack=None) -> dict:
+    """Convert what was counted at the bench into units on the shelf.
+
+    A goods receipt recorded a bare number. "3" of a 30-count pack is 3 units or
+    90 depending on what the person meant, and nothing recorded which — a 30x
+    error that `check_unit_conversion` can only catch afterwards, once the shelf
+    figure is already wrong and has already driven a reorder decision.
+
+    `uom=None` is accepted and means "each", because every existing caller means
+    that and silently reinterpreting their receipts as packs would rewrite the
+    shelf. Declaring `pack` without a pack size is refused rather than assumed:
+    that is exactly the guess this exists to prevent.
+    """
+    from decimal import Decimal
+    from .ledger import q
+
+    qty = q(quantity)
+    if qty <= 0:
+        raise ReceiptUnitError("received quantity must be positive")
+
+    unit = (uom or "each").strip().lower()
+    if unit not in RECEIPT_UOMS:
+        raise ReceiptUnitError(
+            f"unknown unit of measure {uom!r}; expected one of {RECEIPT_UOMS}")
+
+    if unit == "each":
+        return {"units": qty, "uom": "each", "packs": None,
+                "units_per_pack": None if units_per_pack is None
+                                  else q(units_per_pack),
+                "explanation": f"{qty} unit(s) received."}
+
+    if units_per_pack is None or q(units_per_pack) <= 0:
+        raise ReceiptUnitError(
+            "received in packs but the product has no pack size on file — "
+            "record the units, or set the pack size first. Assuming one would "
+            "misstate the shelf by the size of the pack.")
+
+    per = q(units_per_pack)
+    return {"units": q(qty * per), "uom": "pack", "packs": qty,
+            "units_per_pack": per,
+            "explanation": f"{qty} pack(s) x {per} = {q(qty * per)} units."}
+
+
 def days_supply(on_hand, avg_daily_demand) -> float | None:
     try:
         d = float(avg_daily_demand or 0)

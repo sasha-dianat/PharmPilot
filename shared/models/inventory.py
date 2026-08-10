@@ -85,6 +85,14 @@ class InventoryLot(AuditedBase):
         Numeric(10, 3), default=0.0, nullable=False)
 
     unit_cost: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
+
+    # What the person at the bench actually counted (migration 0038). A receipt
+    # used to record a bare number: "3" of a 30-count pack is 3 units or 90
+    # depending on what they meant, and nothing recorded which.
+    received_uom: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    received_packs: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
+    units_per_pack: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
+
     storage_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # e.g., "SHELF-A3", "REFRIGERATOR-1", "VAULT-CS"
 
@@ -246,6 +254,16 @@ class InventoryMovement(AuditedBase):
     approval_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("inventory_approvals.id"), nullable=True
     )
+    # Forensics (migration 0038). `created_by` names a person, which is enough
+    # for an audit and not enough for an investigation: which terminal, which
+    # session, what role the actor held at the time (joining to their current
+    # role back-dates a promotion), and whether this came from the workstation,
+    # an API client, or a script.
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Tamper evidence
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -281,6 +299,14 @@ class InventoryApproval(AuditedBase):
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # A controlled-substance destruction needs a witness beyond the approver.
     witness_id: Mapped[UUID | None] = mapped_column(nullable=True)
+
+    # The clock (migration 0038). Maker-checker without a deadline is a queue
+    # that stalls silently: the movement never applies, the stock stays on the
+    # books, and nobody is told.
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    escalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    escalation_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Empty for a stock movement; for a FIELD_EDIT it holds
     # {table, row_id, field, old, new} so one approval queue and one set of
     # separation-of-duties rules covers both kinds of change.
