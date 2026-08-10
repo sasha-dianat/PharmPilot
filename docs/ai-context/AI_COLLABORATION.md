@@ -1118,3 +1118,45 @@ model must append an acceptance entry before editing.
   effect. There is no dry-run. I only recovered the previous model because I had
   copied it first. Anyone evaluating a fit must back the file up beforehand, or
   the module needs a `persist=False` parameter.
+
+### 2026-08-09 — Claude (Opus 5) — full formulary column audit; two owner rules implemented
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- **Column inventory of both formularies** (the first time every column has been
+  looked at rather than the five we consume):
+  - tamin, 7 columns / 2,600 rows: `ceiling` (quantity limit), `inpatient`,
+    `covered`, `share_pct`, `generic_code`, `reference_price`, `drug_name`
+  - salamat, 5 columns / 3,679 rows: `drug_name`, `generic_code`, `share_pct`,
+    `reference_price`, `conditions` (71% filled)
+  - `ceiling`, `inpatient`, `conditions_text`, `restrictions`, `age_min/max` all
+    already reach `drug_catalog.coverage`. One field did not.
+- **The finding: tamin's «تعهد» column is not a yes/no.** It has four states and
+  two of them name the FUNDING CHANNEL — «صرفا مشمول يارانه دولت» (335 rows) and
+  «صرفا مشمول صندوق صعب العلاج» (32). Both carry `share_pct 0`. `_to_bool`
+  returned True for each, so 367 products stored as `covered=true` at 0 %, which
+  a pharmacist cannot tell apart from "not insured". It is neither — the patient
+  IS entitled, through a channel they must claim from. Now tagged
+  `funding_channel` + a `restrictions` entry, the same treatment salamat's
+  شرایط تعهد text already gets.
+- **Owner's rule, both halves implemented** (they chose these two; they did NOT
+  choose stopping the coverage spread, which would have hit 62% of multi-member
+  groups and broken reference pricing — مابه‌التفاوت exists precisely because
+  group members differ in price):
+  1. `succession.same_product_refusal` — a succession carries coverage and
+     overrides across, so it now refuses when the two rows differ in announced
+     price or pack count. Verified live: the modafinil pair is refused on
+     30-vs-100, the Tylokim pair (same price, same pack) is allowed. Extracted
+     as a pure predicate so it is testable; silence cannot refuse.
+  2. New cause `group_price_dispersion` at ≥100×. Measured first: 1,203 covered
+     groups hold members at different prices, which is normal, but only 30
+     exceed 100× and every one is a bad key or a bad price —
+     «vitamin|12|tablet» ×375,000 (built from the «ویتامین ب۱۲» bleed, 2 …
+     750,000 rial), liothyronine 25 µg ×8,477, alectinib 150 mg ×3,527.
+- Board: 588 products across those 30 groups now surface as a judgement item;
+  open 308 → 896. That is a real backlog appearing, not one being created.
+- Verification: `pytest tests/unit -p no:randomly` → 1,469 passed, 1 failed
+  (`test_integrations_sandbox`, pre-existing). NOTE: the suite uses
+  pytest-randomly, and `test_model_column_parity` is order-sensitive — it failed
+  once under a shuffle and passes with ordering fixed. Worth knowing before
+  anyone blames a change for it.

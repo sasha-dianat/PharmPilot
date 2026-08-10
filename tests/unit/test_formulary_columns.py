@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
+
 
 from services.core.drug_catalog import coverage_import as ci
 from services.core.drug_catalog.schema import CatalogRecord
