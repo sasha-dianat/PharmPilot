@@ -27,6 +27,7 @@ from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import anomaly_bridge as AB
 from services.core.inventory import cycle_count as CC
 from services.core.inventory import recommendations as RC
+from services.core.inventory import valuation as VAL
 from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
@@ -1139,3 +1140,54 @@ async def recommendation_scoreboard(
             "rejection_reasons": RC.rejection_reasons(rows)[:50],
             "note": "acceptance is agreement, not correctness — outcome is "
                     "recorded separately where it can be observed"}
+
+
+# ── Valuation ─────────────────────────────────────────────────────────────
+
+@router.get("/valuation")
+async def stock_valuation(
+    method: str = Query(VAL.DEFAULT_METHOD, pattern="^(fifo|weighted)$"),
+    shrinkage_days: int = Query(90, ge=7, le=730),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """What the stock is worth, and what the losses cost.
+
+    `unit_cost` has been on the lot since the first migration and nothing ever
+    added it up, so shrinkage was reported in units — a hundred lost
+    paracetamol tablets and a hundred lost insulin pens read identically.
+
+    The response says which method produced the figure and how much of the
+    shelf it could not value. A valuation whose method is implicit is a number
+    two people will read differently, and one that quietly values uncosted
+    stock at zero is a floor being reported as a total.
+    """
+    lots = [dict(r) for r in (await db.execute(text("""
+        SELECT ndc11, lot_number, expiry_date, quantity_on_hand, unit_cost,
+               quantity_damaged, quantity_returned, quantity_in_transit
+        FROM inventory_lots
+        WHERE pharmacy_id = :pid AND is_deleted = false"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+    valued = VAL.value_stock(lots, method=method)
+
+    # The lot cost at the time is not on the movement, so the current lot cost
+    # is used and the response says so. Costing a write-off at today's price is
+    # right for stock bought recently and wrong for anything held through a
+    # devaluation — worth knowing before the figure is quoted.
+    movements = [dict(r) for r in (await db.execute(text("""
+        SELECT m.movement_type, m.quantity_delta, m.ndc11, il.unit_cost
+        FROM inventory_movements m
+        LEFT JOIN inventory_lots il ON il.id = m.inventory_lot_id
+        WHERE m.pharmacy_id = :pid
+          AND m.created_at > NOW() - make_interval(days => CAST(:d AS integer))"""),
+        {"pid": staff.pharmacy_id, "d": shrinkage_days})).mappings().all()]
+
+    return {
+        "valuation": valued.as_dict(),
+        "shrinkage": VAL.shrinkage(movements, period_days=shrinkage_days).as_dict(),
+        "cost_basis_note": (
+            "Losses are costed at the lot's current unit_cost; the cost at the "
+            "time of the movement is not recorded on the movement, so a "
+            "write-off of stock held through a price change is valued at "
+            "today's price, not what was paid."),
+    }
