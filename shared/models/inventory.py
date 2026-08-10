@@ -313,6 +313,55 @@ class InventoryApproval(AuditedBase):
     payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class InventoryRecommendation(AuditedBase):
+    """What an advisory component proposed, and what the human did about it.
+
+    The label substrate for every model in the inventory section. Without it a
+    detector's precision is unmeasurable, its thresholds untunable, and the
+    reason it was overruled — the most valuable signal it produces — is lost the
+    moment the screen is closed.
+
+    Nothing here decides anything. Applying a recommendation still goes through
+    the ordinary approval and ledger paths: rules decide, models advise.
+
+    Rules live in `services.core.inventory.recommendations`.
+    """
+    __tablename__ = "inventory_recommendations"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    ndc11: Mapped[str | None] = mapped_column(String(11), nullable=True, index=True)
+    irc: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    inventory_lot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("inventory_lots.id"), nullable=True)
+
+    proposal: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # The inputs it was computed from, so a decision stays interpretable after
+    # the model that produced it has changed.
+    features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str | None] = mapped_column(String(12), nullable=True)
+
+    produced_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Identity across runs, so a nightly job recognises yesterday's advice
+    # instead of re-raising it and inflating its own denominator.
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # open | accepted | rejected | superseded | expired
+    status: Mapped[str] = mapped_column(String(12), default="open", nullable=False)
+    decided_by_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What happened afterwards where it can be observed — the difference between
+    # "the pharmacist agreed" and "it was right".
+    outcome: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+
 class InventoryReservation(AuditedBase):
     """Stock promised to a prescription that has not left the shelf.
 

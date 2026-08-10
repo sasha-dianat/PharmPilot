@@ -24,7 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import demand as DM
 from services.core.inventory import approvals_sla as SLA
+from services.core.inventory import anomaly_bridge as AB
 from services.core.inventory import cycle_count as CC
+from services.core.inventory import recommendations as RC
 from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
@@ -35,7 +37,8 @@ from services.platform.auth import require_permission
 from services.platform.database import get_db
 from shared.models.auth import Staff
 from shared.models.inventory import (
-    InventoryApproval, InventoryLot, InventoryMovement, StockCount, StockCountLine,
+    InventoryApproval, InventoryLot, InventoryMovement, InventoryRecommendation,
+    StockCount, StockCountLine,
 )
 
 router = APIRouter()
@@ -981,3 +984,158 @@ async def cycle_count_plan(
         "effort": CC.effort_saved(classified),
         "classification": [c.as_dict() for c in classified],
     }
+
+
+# ── Recommendations ───────────────────────────────────────────────────────
+
+async def _record(db: AsyncSession, pharmacy_id, proposals: list, *, actor_id=None):
+    """Persist a run's proposals, closing out what it no longer proposes.
+
+    Re-raising advice that is already open would inflate the denominator every
+    night and make the acceptance rate a measure of how often the job ran. The
+    partial unique index enforces it; this skips the insert so a nightly sweep
+    is not a stream of caught conflicts.
+    """
+    recent = [dict(r) for r in (await db.execute(text("""
+        SELECT id, kind, status, fingerprint, created_at, decided_at
+        FROM inventory_recommendations
+        WHERE pharmacy_id = :pid AND is_deleted = false
+          AND (status = 'open' OR decided_at > NOW() - INTERVAL '180 days')"""),
+        {"pid": pharmacy_id})).mappings().all()]
+    existing = [r for r in recent if r["status"] == "open"]
+    open_fps = {r["fingerprint"] for r in existing}
+    # Advice a human decided recently is not raised again. Re-asking is how an
+    # alert queue teaches people to ignore it, and it re-inflates the
+    # denominator the fingerprint exists to protect.
+    quiet = RC.suppressed(recent)
+    keep = set()
+
+    written = skipped = 0
+    for p in proposals:
+        fp = RC.fingerprint(p)
+        keep.add(fp)
+        if fp in open_fps:
+            continue
+        if fp in quiet:
+            skipped += 1
+            continue
+        db.add(InventoryRecommendation(
+            pharmacy_id=pharmacy_id, kind=p.kind, ndc11=p.subject or None,
+            proposal=p.proposal, features=p.features or None,
+            confidence=p.confidence, explanation=p.explanation,
+            severity=p.severity, produced_by=p.produced_by,
+            model_version=p.model_version, fingerprint=fp, status="open",
+            created_by=actor_id, updated_by=actor_id))
+        written += 1
+
+    closed = 0
+    for row in RC.supersede(existing, keep):
+        await db.execute(text(
+            "UPDATE inventory_recommendations SET status = 'superseded', "
+            "updated_at = NOW() WHERE id = :i"), {"i": row["id"]})
+        closed += 1
+    for row in RC.expired(existing):
+        await db.execute(text(
+            "UPDATE inventory_recommendations SET status = 'expired', "
+            "updated_at = NOW() WHERE id = :i"), {"i": row["id"]})
+
+    await db.commit()
+    return {"produced": len(proposals), "written": written,
+            "superseded": closed, "suppressed": skipped}
+
+
+@router.get("/recommendations")
+async def list_recommendations(
+    kind: Optional[str] = Query(None),
+    status: str = Query("open"),
+    limit: int = Query(100, ge=1, le=1000),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Advice awaiting a decision, worst first."""
+    where = ["pharmacy_id = :pid", "is_deleted = false", "status = :st"]
+    params: dict = {"pid": staff.pharmacy_id, "st": status, "lim": limit}
+    if kind:
+        where.append("kind = :kind")
+        params["kind"] = kind
+    rows = (await db.execute(text(f"""
+        SELECT id, kind, ndc11, irc, proposal, features, confidence, explanation,
+               severity, produced_by, model_version, status, created_at,
+               decided_at, decision_note
+        FROM inventory_recommendations
+        WHERE {' AND '.join(where)}
+        ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                               WHEN 'medium' THEN 2 ELSE 3 END,
+                 confidence DESC NULLS LAST, created_at ASC
+        LIMIT :lim"""), params)).mappings().all()
+    return {"status": status, "count": len(rows),
+            "recommendations": [dict(r) | {"id": str(r["id"])} for r in rows]}
+
+
+class Decision(BaseModel):
+    accept: bool
+    note: Optional[str] = None
+
+
+@router.post("/recommendations/{rec_id}/decide")
+async def decide_recommendation(
+    rec_id: UUID,
+    body: Decision,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept or reject a recommendation.
+
+    A rejection must say why. That reason is the labelled negative — produced by
+    an expert at the moment they had the full context — and it is the only part
+    of this that cannot be reconstructed later.
+
+    Accepting records agreement, not action. Applying the advice still goes
+    through the ordinary approval and ledger paths.
+    """
+    row = (await db.execute(text(
+        "SELECT id, status FROM inventory_recommendations "
+        "WHERE id = :i AND pharmacy_id = :pid AND is_deleted = false"),
+        {"i": rec_id, "pid": staff.pharmacy_id})).mappings().first()
+    if row is None:
+        raise HTTPException(404, "recommendation not found")
+
+    try:
+        out = RC.decide(dict(row), status="accepted" if body.accept else "rejected",
+                        note=body.note, decided_by=staff.id,
+                        now=datetime.now(timezone.utc))
+    except RC.RecommendationError as exc:
+        raise HTTPException(422, str(exc))
+
+    await db.execute(text("""
+        UPDATE inventory_recommendations
+           SET status = CAST(:st AS varchar), decision_note = :note,
+               decided_by_id = :by, decided_at = :at, updated_at = NOW()
+         WHERE id = :i"""), {
+        "st": out["status"], "note": out["decision_note"],
+        "by": out["decided_by_id"], "at": out["decided_at"], "i": rec_id})
+    await db.commit()
+    return {"id": str(rec_id), "status": out["status"],
+            "note": out["decision_note"]}
+
+
+@router.get("/recommendations/scoreboard")
+async def recommendation_scoreboard(
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Whether each advisory component is any good, per kind.
+
+    `ignored` is the verdict worth watching for: plenty produced and almost
+    none decided. On a dashboard counting alerts that reads as a vigilant
+    detector; here it reads as staff who have learned to scroll past it.
+    """
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT id, kind, status, decision_note, decided_at, ndc11, confidence
+        FROM inventory_recommendations
+        WHERE pharmacy_id = :pid AND is_deleted = false"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+    return {"scores": [s.as_dict() for s in RC.scoreboard(rows)],
+            "rejection_reasons": RC.rejection_reasons(rows)[:50],
+            "note": "acceptance is agreement, not correctness — outcome is "
+                    "recorded separately where it can be observed"}
