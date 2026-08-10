@@ -265,3 +265,85 @@ verified against real data.
 false` on the reconciliation report for 14 consecutive days, with a posted full
 physical count, `fill_without_movement = 0`, and ≥ 95% of stocked items bound to
 the formulary by GTIN.
+
+---
+
+## 10. The measurement pass (2026-08-09, migrations 0036–0039)
+
+A structured re-examination of this section found that its weakness was not
+missing engines. The procurement recommender, turnover/dead-stock classifier,
+replenishment rules and the ML forecaster all existed and were correct. What was
+missing was any guarantee that the numbers they consumed had ever been measured.
+
+### 10.1 The pattern
+
+Four separate defects, one shape — **a planning input that looks like a
+measurement and is not**:
+
+| Input | What it held | How it was found |
+|---|---|---|
+| `avg_daily_demand` | Seed values: 14 units/day against 0 dispensed; 4/day against an observed 12.9. `forecast_updated_at` frozen at row creation for 54 days | Compared the stored rate against the fill record |
+| `quantity_reserved` | Always 0. Decremented by the dispense hook, incremented by nothing | Looked for the writer and found none |
+| `lead_time_days` | 7 in `procurement`, 2 in `forecaster`, neither measured, `purchase_orders` empty | Read both constants |
+| Movement hash chain | Empty, so `/ledger/verify` passed over nothing | Counted `event_hash IS NOT NULL` |
+
+None of these produced an error. Each produced a confident, plausible number,
+which is why none had been noticed.
+
+### 10.2 The rule adopted
+
+**Every planning input declares its provenance, and refuses to invent one.**
+
+```
+observed          derived from this pharmacy's own records
+sparse            derived from too little to be a distribution
+no_history        nothing to derive it from — the value is NULL
+declared_default  nobody measured it; this is a stated assumption
+```
+
+`no_history` writing NULL is the load-bearing part. A purchasing engine reading
+NULL recommends nothing, which is correct. One reading a fallback constant
+orders stock for a drug nobody dispenses, which is what
+`FALLBACK_DEMAND_RATE = 1.0` did.
+
+### 10.3 Checks added (12 → 15)
+
+| Check | Catches |
+|---|---|
+| `demand_signal_unsupported` | Stored demand contradicted by the fill record, stale, or absent while stock is held |
+| `reservation_drift` | `quantity_reserved` disagreeing with the reservation rows, and lapsed holds still withholding stock |
+| `approval_overdue` | A maker-checker queue that has stalled — the failure that looks identical to one that is working |
+
+### 10.4 What is deliberately *not* automated
+
+- **Approvals never age into approvals.** Escalation raises who is told. A timer
+  that approves would remove the control it exists to provide.
+- **Ambiguous formulary bindings are not guessed.** An IRC is a per-brand
+  registration; gabapentin 300 mg has 68. This needs a GTIN scan or an owner's
+  ruling, and the check now says so instead of reporting it as backlog.
+- **Backfilled lot attribution is marked reconstructed.** FEFO today is not FEFO
+  in May. A recall must not treat a reconstruction as an observation.
+- **Counter identity is not an input to the cycle-count schedule.** That would
+  turn a stock control into a staff surveillance tool.
+
+### 10.5 Measuring the models
+
+`inventory_recommendations` records what each advisory component proposed and
+what the human did about it, because an advisory system that reports how much
+advice it produced is unfalsifiable. The scoreboard names `ignored` explicitly —
+plenty produced, almost none decided — since that is the state which looks
+healthiest on any dashboard counting alerts and is in fact the worst.
+
+Acceptance is recorded as agreement, not correctness. `outcome` is separate.
+
+### 10.6 Honest limitations
+
+- Demand reads `no_history` for all 16 items: dispensing stopped 2026-06-18.
+  Forecast quality is blocked on real dispensing, not on model choice.
+- The cycle-count schedule costs **56% more** count-lines than a flat sweep on a
+  16-item catalogue. That is correct — the saving comes from the C-class tail,
+  which 16 items do not have. The claim should not be made until catalogue scale.
+- Write-offs are costed at the lot's current price; cost-at-movement is not
+  recorded on the movement.
+- 765 units cannot be covered by current stock. That gap settles with a physical
+  count, not an edit.

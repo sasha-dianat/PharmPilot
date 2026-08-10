@@ -1160,3 +1160,81 @@ model must append an acceptance entry before editing.
   pytest-randomly, and `test_model_column_parity` is order-sensitive — it failed
   once under a shuffle and passes with ordering fixed. Worth knowing before
   anyone blames a change for it.
+
+### 2026-08-09 — Claude Code · inventory truth pass and nine phases
+
+- Workstream: `CL-003` · Branch `feat/inventory-integrity` at `6870ef3`
+- Scope: a structured re-examination of the inventory section, then nine phases
+  of remediation. Migrations `0036`–`0039`.
+
+**What the audit overturned.** The prior deficiency register claimed several
+engines were missing. They were not. `stock_intelligence.py`,
+`procurement.py`, `replenishment.py` and `services/ai/inventory_intelligence/`
+already existed and were correct. The real defect was that every one of them was
+being fed numbers nobody had measured:
+
+- `stock_levels.avg_daily_demand` held seeded values contradicted by the fill
+  record — 14 units/day against 0 ever dispensed, 4/day against an observed 12.9.
+  `forecast_updated_at` equalled `created_at` on all 16 rows and had never moved
+  (54 days stale). No check tested it.
+- `quantity_reserved` was decrement-only. The dispense hook decremented it and
+  nothing ever incremented it, so `available` always equalled on-hand,
+  `check_over_reservation` could not fire, and two staff could promise the same box.
+- Lead time was two hard-coded constants that disagreed: 7 in procurement, 2 in
+  the forecaster. `purchase_orders` had 0 rows, so nothing was derivable.
+- The movement hash chain was empty, so `/ledger/verify` passed over nothing.
+
+**What changed.** Demand, lead time and reorder points are now measured and carry
+provenance (`observed`/`sparse`/`no_history`/`declared_default`); no history
+writes NULL rather than a fallback constant, and `FALLBACK_DEMAND_RATE = 1.0` is
+gone. Reservations exist as rows with the counters as a checkable denormalisation,
+committed at `READY_TO_FILL`, released exactly — the `GREATEST(0, …)` clamp is
+removed. Approvals have a clock with escalation but no auto-approve. Movements
+carry session/device/role/source. Receipts declare their unit of measure.
+Valuation and shrinkage are in currency. Cycle counting is ABC/XYZ and risk-ranked.
+A recommendation ledger records what each model proposed and what the human did.
+
+**Checks actually run.** Full backend unit suite; 469 inventory tests; migrations
+`0036`–`0039` up/down/up on `pharmpilot_test` with the model-column parity guard
+green; the whole chain `0001`→`0039` rebuilt on a fresh disposable database
+(39 migrations, single head); reconciliation run against the pilot books before
+and after each phase.
+
+**Production state.** Reconciliation went from 12 checks / 125 findings to 15
+checks / 92. `fill_without_movement` fell from 46 (critical) to 15 after 31
+DISPENSE movements were backfilled. The chain is now 31 rows and verifies intact,
+and tamper detection is proven by an e2e test that suspends the append-only
+trigger, edits a row, and asserts the break lands at that row's index.
+
+**Errors made and corrected, recorded because they cost time.**
+1. A bash substitution meant to retarget `pharmpilot_test` silently did nothing,
+   and migration `0036` — including its destructive UPDATE — ran against
+   production. Owner was informed, chose to keep the retired values (they were
+   the fabricated ones the migration existed to remove), and authorised
+   autonomous production writes with a pre-dump thereafter.
+2. The append-only trigger rejected `0038`'s attempt to back-fill
+   `source_system` on existing movements. It was right on the merits as well as
+   the letter: nobody observed where those 8 legacy rows came from, so NULL
+   ("recorded before provenance was captured") is the true value.
+3. `_abc_for` classified the single most valuable line as C by measuring the
+   cumulative share *after* adding the item.
+4. The recommendation ledger re-raised advice that had just been accepted;
+   fixed with a per-kind decision cooldown.
+
+**Risks and next actions.**
+- 46 fills remain untraceable and 15 have no movement: 6 dispense an NDC the
+  books never held, and 765 units cannot be covered. This settles with a physical
+  count, not an edit. Backfilled lot attribution is explicitly marked
+  reconstructed — a recall must not treat it as observed.
+- 16 items stay unbound from the formulary. This is not backlog: an IRC is a
+  per-brand registration and gabapentin 300mg has 68 of them, so this needs a
+  GTIN scan at goods receipt or an owner's brand ruling.
+- Demand reads `no_history` for all 16 items because dispensing stopped
+  2026-06-18. Forecast quality is blocked on real dispensing, not on model choice.
+- `effort_saved` reports the cycle-count schedule costing 56% MORE lines than a
+  flat sweep on 16 items. That is correct for a catalogue with no C-class tail;
+  the saving needs catalogue scale, and the claim should not be made until it is.
+- Write-offs are costed at today's lot price; the cost at movement time is not
+  recorded on the movement.
+- `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`
+  still fails in-suite and passes in isolation. Pre-existing, unrelated, unchanged.

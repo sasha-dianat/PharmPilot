@@ -58,11 +58,21 @@ async def _bump(db: AsyncSession, lot_id, ndc11, pharmacy_id, delta) -> None:
     await db.execute(text(
         "UPDATE inventory_lots SET quantity_reserved = :v, updated_at = NOW() "
         "WHERE id = :id"), {"v": float(after), "id": lot_id})
-    await db.execute(text(
-        "UPDATE stock_levels SET quantity_reserved = "
-        "GREATEST(0, COALESCE(quantity_reserved,0) + CAST(:d AS numeric)), "
-        "updated_at = NOW() WHERE pharmacy_id = :pid AND ndc11 = :ndc"),
-        {"d": float(q(delta)), "pid": pharmacy_id, "ndc": ndc11})
+
+    # The aggregate is re-derived from the lots rather than incremented
+    # alongside them. An incremental update needed a GREATEST(0, ...) to stay
+    # sane, which is the same clamp this module removed from the dispense hook —
+    # and keeping it here would have meant the lot raises on an inconsistency
+    # while its own mirror quietly absorbs one. Summing cannot drift.
+    await db.execute(text("""
+        UPDATE stock_levels s
+           SET quantity_reserved = COALESCE((
+                   SELECT SUM(il.quantity_reserved) FROM inventory_lots il
+                   WHERE il.pharmacy_id = s.pharmacy_id AND il.ndc11 = s.ndc11
+                     AND il.is_deleted = false), 0),
+               updated_at = NOW()
+         WHERE s.pharmacy_id = :pid AND s.ndc11 = :ndc"""),
+        {"pid": pharmacy_id, "ndc": ndc11})
 
 
 async def active_for(db: AsyncSession, prescription_id) -> list[dict]:

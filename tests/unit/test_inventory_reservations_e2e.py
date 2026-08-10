@@ -289,3 +289,27 @@ async def test_the_database_refuses_a_nonpositive_reservation(env):
              "l": lot_id, "n": ndc})
     assert "ck_reservation_quantity_positive" in str(e.value)
     await db.rollback()
+
+
+async def test_the_aggregate_is_derived_from_the_lots_not_incremented(env):
+    """An incremental aggregate needed a GREATEST(0, ...) to stay sane — the
+    same clamp this module removed from the dispense hook. Summing the lots
+    cannot drift, so the lot can raise on an inconsistency without its own
+    mirror quietly absorbing one."""
+    db, staff, ndc = env
+    await _receive(db, staff, ndc, f"L{uuid.uuid4().hex[:6]}", qty=100)
+    rx = await make_rx(db, staff.pharmacy_id, ndc, 40)
+    await RS.reserve(db, rx, staff_id=staff.id)
+
+    # Corrupt the aggregate behind the service's back.
+    await db.execute(text(
+        "UPDATE stock_levels SET quantity_reserved = 999 "
+        "WHERE pharmacy_id = :p AND ndc11 = :n"),
+        {"p": staff.pharmacy_id, "n": ndc})
+
+    # Any further reservation activity re-derives it from the lots.
+    await RS.release_for_transition(db, rx, "CANCELLED")
+    agg = (await db.execute(text(
+        "SELECT quantity_reserved FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
+        {"p": staff.pharmacy_id, "n": ndc})).scalar()
+    assert Decimal(str(agg)) == Decimal("0.000")
