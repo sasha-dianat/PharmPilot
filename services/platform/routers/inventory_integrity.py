@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import demand as DM
 from services.core.inventory import approvals_sla as SLA
+from services.core.inventory import cycle_count as CC
 from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
@@ -899,3 +900,84 @@ async def verify_ledger(
         ORDER BY created_at ASC, id ASC"""),
         {"pid": staff.pharmacy_id})).mappings().all()
     return L.verify_chain(chain_rows_for(rows))
+
+
+# ── Cycle counting ────────────────────────────────────────────────────────
+
+@router.get("/cycle-count/plan")
+async def cycle_count_plan(
+    capacity: int = Query(25, ge=1, le=500, description="count lines per session"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """What to count next, worst first, and what this schedule leaves out.
+
+    Counting everything equally is the same as counting nothing carefully: the
+    hours go into cheap slow-moving stock while the items carrying the money and
+    the risk get the same thin attention. `StockCount` could always record a
+    count; nothing decided what to count.
+
+    The response reports the effort comparison against a flat sweep rather than
+    asserting a saving, because a schedule that tightens intervals on risk can
+    cost more than the one it replaced — and that should be visible now, not
+    discovered a year later.
+    """
+    today = DM.utc_date()
+    items = [dict(r) for r in (await db.execute(text("""
+        SELECT s.ndc11, s.avg_daily_demand, s.demand_basis,
+               dp.is_controlled,
+               agg.unit_cost, agg.on_hand, agg.next_expiry, agg.max_lot_value,
+               sc.last_counted, mv.last_variance_at
+        FROM stock_levels s
+        LEFT JOIN drug_products dp ON dp.id = s.drug_product_id
+        LEFT JOIN (
+            SELECT ndc11, pharmacy_id,
+                   SUM(quantity_on_hand) AS on_hand,
+                   MAX(COALESCE(unit_cost,0)) AS unit_cost,
+                   MIN(CASE WHEN quantity_on_hand > 0 THEN expiry_date END) AS next_expiry,
+                   MAX(quantity_on_hand * COALESCE(unit_cost,0)) AS max_lot_value
+            FROM inventory_lots WHERE is_deleted = false GROUP BY ndc11, pharmacy_id
+        ) agg ON agg.ndc11 = s.ndc11 AND agg.pharmacy_id = s.pharmacy_id
+        LEFT JOIN (
+            SELECT l.ndc11, MAX(l.counted_at::date) AS last_counted
+            FROM stock_count_lines l
+            WHERE l.counted_at IS NOT NULL AND l.is_deleted = false
+            GROUP BY l.ndc11
+        ) sc ON sc.ndc11 = s.ndc11
+        LEFT JOIN (
+            SELECT ndc11, MAX(created_at::date) AS last_variance_at
+            FROM inventory_movements
+            WHERE movement_type IN ('COUNT_GAIN','COUNT_LOSS')
+            GROUP BY ndc11
+        ) mv ON mv.ndc11 = s.ndc11
+        WHERE s.pharmacy_id = :pid"""), {"pid": staff.pharmacy_id})).mappings().all()]
+
+    # Variability comes from the same measured window the demand signal used, so
+    # the XYZ band cannot disagree with the rate it is derived from.
+    _, by_ndc = await _demand_inputs(db, staff.pharmacy_id, DEMAND_WINDOW_DAYS)
+    for it in items:
+        est = DM.estimate(str(it["ndc11"]), by_ndc.get(it["ndc11"], []),
+                          window_days=DEMAND_WINDOW_DAYS, as_of=today)
+        it["stdev_daily"] = est.stdev_daily
+
+    classified = CC.classify(items, as_of=today)
+    last = {str(i["ndc11"]): i["last_counted"] for i in items if i.get("last_counted")}
+    due = CC.due_for_count(classified, last, as_of=today)
+    session = CC.plan_session(due, capacity=capacity) if due else {
+        "lines": [], "counted": 0, "deferred": 0, "deferred_classes": [],
+        "worst_deferred": None, "coverage_note": "Nothing is due."}
+
+    mix: dict[str, int] = {}
+    for c in classified:
+        mix[c.klass] = mix.get(c.klass, 0) + 1
+
+    return {
+        "as_of": today.isoformat(),
+        "capacity": capacity,
+        "items_classified": len(classified),
+        "class_mix": dict(sorted(mix.items())),
+        "due_now": len(due),
+        "session": session,
+        "effort": CC.effort_saved(classified),
+        "classification": [c.as_dict() for c in classified],
+    }

@@ -63,22 +63,33 @@ def test_the_arabic_and_persian_spellings_both_match():
 
 
 # ── differing price means differing row (owner's rule, 2026-08-09) ──────────
-@pytest.mark.asyncio
-async def test_succession_refuses_two_rows_that_are_not_the_same_product():
-    """A succession CARRIES coverage and overrides across, so the two rows must
-    be one product re-registered. The modafinil pair looked identical until the
-    pack counts separated them — 30 against 100 — and merging would have moved a
-    30-pack's decided facts onto a 100-pack."""
-    from services.core.drug_catalog import succession
-    from shared.models.drug_catalog import DrugCatalogItem
+class _Row:
+    def __init__(self, price=None, pack=None):
+        self.announced_price, self.package_count = price, pack
 
-    class _Fake:
-        def __init__(self, **kw): self.__dict__.update(kw)
 
-    # exercised against the live guard via its own error text
-    assert "قیمت" in succession.propose_manual.__doc__ or True  # doc is short
-    # the guard itself is integration-tested in test_new_modules; here we assert
-    # the rule is present in the module so it cannot be silently dropped
-    import inspect
-    src = inspect.getsource(succession.propose_manual)
-    assert "announced_price" in src and "package_count" in src
+def test_a_differing_price_refuses_the_succession():
+    from services.core.drug_catalog.succession import same_product_refusal
+    why = same_product_refusal(_Row(price=20000), _Row(price=75000))
+    assert why and "قیمت" in why
+
+
+def test_a_differing_pack_count_refuses_it_too():
+    """The real modafinil pair: same brand, manufacturer, strength, ATC and
+    licence date, same 75,000 price — separated only by 30 against 100."""
+    from services.core.drug_catalog.succession import same_product_refusal
+    why = same_product_refusal(_Row(price=75000, pack=30), _Row(price=75000, pack=100))
+    assert why and "بسته" in why
+
+
+def test_one_product_re_registered_is_allowed():
+    from services.core.drug_catalog.succession import same_product_refusal
+    assert same_product_refusal(_Row(price=40000, pack=30), _Row(price=40000, pack=30)) is None
+
+
+def test_a_missing_field_cannot_refuse():
+    """Silence is not evidence — a row with no price recorded must not block a
+    succession the owner knows to be real."""
+    from services.core.drug_catalog.succession import same_product_refusal
+    assert same_product_refusal(_Row(price=None, pack=30), _Row(price=75000, pack=30)) is None
+    assert same_product_refusal(None, _Row(price=1)) is None
