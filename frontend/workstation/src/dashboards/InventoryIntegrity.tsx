@@ -13,6 +13,8 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryIntegrityApi, apiErrorText } from '../lib/api'
 import ExceptionRegister from '../components/ExceptionRegister'
+import { useLang } from '../lib/i18n'
+import { checkTitle } from '../lib/serverLabels'
 
 interface Finding {
   check: string; severity: 'critical' | 'high' | 'medium' | 'info'
@@ -34,20 +36,22 @@ interface Approval {
   escalation_level: number; audience: string | null
 }
 
-const ESCALATION_FA = ['', 'به مسئول فنی اطلاع داده شود',
-                       'به مالک داروخانه اطلاع داده شود',
-                       'نقص کنترلی حل‌نشده — به مالک اعلام شود']
+const ESCALATION: readonly (readonly [string, string])[] = [
+  ['', ''],
+  ['Notify the responsible pharmacist', 'به مسئول فنی اطلاع داده شود'],
+  ['Notify the pharmacy owner', 'به مالک داروخانه اطلاع داده شود'],
+  ['Unresolved control failure — escalate to the owner', 'نقص کنترلی حل‌نشده — به مالک اعلام شود'],
+]
 
-const fa = (n: number) => new Intl.NumberFormat('fa-IR').format(n)
-
-const SEV: Record<string, { chip: string; dot: string; label: string }> = {
-  critical: { chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40', dot: 'bg-rose-400', label: 'بحرانی' },
-  high:     { chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', dot: 'bg-amber-400', label: 'مهم' },
-  medium:   { chip: 'bg-sky-500/15 text-sky-300 border-sky-500/40', dot: 'bg-sky-400', label: 'متوسط' },
-  info:     { chip: 'bg-slate-600/20 text-slate-300 border-slate-600', dot: 'bg-slate-400', label: 'اطلاعی' },
+const SEV: Record<string, { chip: string; dot: string; label: readonly [string, string] }> = {
+  critical: { chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40', dot: 'bg-rose-400', label: ['Critical', 'بحرانی'] },
+  high:     { chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', dot: 'bg-amber-400', label: ['High', 'مهم'] },
+  medium:   { chip: 'bg-sky-500/15 text-sky-300 border-sky-500/40', dot: 'bg-sky-400', label: ['Medium', 'متوسط'] },
+  info:     { chip: 'bg-slate-600/20 text-slate-300 border-slate-600', dot: 'bg-slate-400', label: ['Info', 'اطلاعی'] },
 }
 
 export default function InventoryIntegrity() {
+  const { t, tp, n: fa, dir, dateTime, lang } = useLang()
   const qc = useQueryClient()
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -68,48 +72,51 @@ export default function InventoryIntegrity() {
     setBusy(true); setMsg(null)
     try {
       await inventoryIntegrityApi.decideApproval(id, { approve })
-      setMsg({ kind: 'ok', text: approve ? 'تأیید شد و در دفتر ثبت گردید.' : 'رد شد؛ موجودی تغییری نکرد.' })
+      setMsg({ kind: 'ok', text: approve
+        ? t('Approved and written to the ledger.', 'تأیید شد و در دفتر ثبت گردید.')
+        : t('Rejected; stock was left unchanged.', 'رد شد؛ موجودی تغییری نکرد.') })
       qc.invalidateQueries({ queryKey: ['inv-approvals'] })
       qc.invalidateQueries({ queryKey: ['inv-reconciliation'] })
     } catch (e: unknown) {
-      setMsg({ kind: 'err', text: apiErrorText(e, 'ثبت تصمیم ناموفق بود.') })
+      setMsg({ kind: 'err', text: apiErrorText(e, t('The decision could not be recorded.', 'ثبت تصمیم ناموفق بود.')) })
     } finally { setBusy(false) }
   }
 
   const verdict = !report ? null
-    : report.blocking ? { text: 'دفتر موجودی قابل اتکا نیست', cls: 'text-rose-300', ring: 'ring-rose-500/40' }
-    : !report.trustworthy ? { text: 'ایراد مهم دارد', cls: 'text-amber-300', ring: 'ring-amber-500/40' }
-    : !report.healthy ? { text: 'قابل اتکا، با نکات جزئی', cls: 'text-sky-300', ring: 'ring-sky-500/40' }
-    : { text: 'سالم', cls: 'text-emerald-300', ring: 'ring-emerald-500/40' }
+    : report.blocking ? { text: t('The stock ledger cannot be relied on', 'دفتر موجودی قابل اتکا نیست'), cls: 'text-rose-300', ring: 'ring-rose-500/40' }
+    : !report.trustworthy ? { text: t('Has a serious defect', 'ایراد مهم دارد'), cls: 'text-amber-300', ring: 'ring-amber-500/40' }
+    : !report.healthy ? { text: t('Reliable, with minor notes', 'قابل اتکا، با نکات جزئی'), cls: 'text-sky-300', ring: 'ring-sky-500/40' }
+    : { text: t('Healthy', 'سالم'), cls: 'text-emerald-300', ring: 'ring-emerald-500/40' }
 
   return (
-    <div className="p-4 space-y-4 text-slate-100" dir="rtl">
+    <div className="p-4 space-y-4 text-slate-100" dir={dir}>
       <div className="flex flex-wrap items-baseline gap-3">
-        <h2 className="text-lg font-bold">سلامت موجودی — تطبیق، شمارش و تأییدها</h2>
+        <h2 className="text-lg font-bold">{t('Inventory integrity — reconciliation, counting and approvals',
+                                              'سلامت موجودی — تطبیق، شمارش و تأییدها')}</h2>
         {report && (
           <span className="text-[11px] text-slate-500">
-            آخرین بررسی: {new Date(report.generated_at).toLocaleString('fa-IR')}
+            {t('Last check', 'آخرین بررسی')}: {dateTime(report.generated_at)}
           </span>)}
       </div>
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
-      {isLoading && <p className="text-sm text-slate-400">در حال بررسی…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Checking…', 'در حال بررسی…')}</p>}
 
       {report && verdict && (
         <>
           <div className={`bg-slate-800/50 border border-slate-700 ring-1 ${verdict.ring} rounded-lg p-4
                            flex flex-wrap items-center gap-x-8 gap-y-2`}>
             <div>
-              <div className="text-[10px] text-slate-500">وضعیت</div>
+              <div className="text-[10px] text-slate-500">{t('Status', 'وضعیت')}</div>
               <div className={`text-xl font-bold ${verdict.cls}`}>{verdict.text}</div>
             </div>
-            <Metric label="بررسی‌های انجام‌شده" value={fa(report.checks_run)} />
-            <Metric label="بررسی‌های هشداردهنده" value={fa(report.checks_firing)} />
-            <Metric label="ردیف‌های درگیر" value={fa(report.total_rows_affected)} />
-            <Metric label="در انتظار تأیید" value={fa(approvals?.count ?? 0)} />
+            <Metric label={t('Checks run', 'بررسی‌های انجام‌شده')} value={fa(report.checks_run)} />
+            <Metric label={t('Checks firing', 'بررسی‌های هشداردهنده')} value={fa(report.checks_firing)} />
+            <Metric label={t('Rows affected', 'ردیف‌های درگیر')} value={fa(report.total_rows_affected)} />
+            <Metric label={t('Awaiting approval', 'در انتظار تأیید')} value={fa(approvals?.count ?? 0)} />
             {!!approvals?.overdue_count && (
               <div>
-                <div className="text-[10px] text-slate-500">از مهلت گذشته</div>
+                <div className="text-[10px] text-slate-500">{t('Past the deadline', 'از مهلت گذشته')}</div>
                 <div className="text-lg font-bold tabular-nums text-amber-300">
                   {fa(approvals.overdue_count)}</div>
               </div>)}
@@ -118,7 +125,8 @@ export default function InventoryIntegrity() {
           {/* ── Check health: which of the twelve fire, at a glance ────────── */}
           <div className="bg-slate-800/40 border border-slate-700 rounded-lg px-4 py-3">
             <p className="text-[11px] text-slate-500 pb-2">
-              سلامت بررسی‌ها — جزئیات و ردیف‌های درگیر در دفتر مغایرت‌ها زیر همین بخش
+              {t('Check health — details and affected rows are in the exception register below',
+                 'سلامت بررسی‌ها — جزئیات و ردیف‌های درگیر در دفتر مغایرت‌ها زیر همین بخش')}
             </p>
             <div className="flex flex-wrap gap-1.5">
               {report.findings.map(f => {
@@ -127,8 +135,8 @@ export default function InventoryIntegrity() {
                   <span key={f.check} title={f.detail}
                     className={`text-[11px] px-2 py-1 rounded-full border ${
                       f.count ? sev.chip : 'bg-slate-900 border-slate-700 text-slate-500'}`}>
-                    {f.title_fa} <span className="font-mono">
-                      {f.count ? fa(f.count) : '۰'}</span>
+                    {checkTitle(lang, f.check, f.title_fa)} <span className="font-mono">
+                      {fa(f.count || 0)}</span>
                   </span>)
               })}
             </div>
@@ -145,39 +153,40 @@ export default function InventoryIntegrity() {
       {/* ── Pending write-offs ───────────────────────────────────────────── */}
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-sm">تأییدهای در انتظار (کسر موجودی)</span>
+          <span className="font-semibold text-sm">{t('Pending approvals (stock deductions)', 'تأییدهای در انتظار (کسر موجودی)')}</span>
           <span className="text-[11px] text-slate-500">
-            درخواست‌کننده نمی‌تواند درخواست خود را تأیید کند؛ اقلام تحت کنترل به شاهد نیاز دارند.
-            مهلت‌ها با تصمیم بسته می‌شوند، نه با گذشت زمان.
+            {t('A requester cannot approve their own request; controlled items need a witness. Deadlines close on a decision, not on the passage of time.',
+               'درخواست‌کننده نمی‌تواند درخواست خود را تأیید کند؛ اقلام تحت کنترل به شاهد نیاز دارند. مهلت‌ها با تصمیم بسته می‌شوند، نه با گذشت زمان.')}
           </span>
         </div>
-        {!approvals?.count && <p className="text-[12px] text-slate-500">موردی در انتظار نیست.</p>}
+        {!approvals?.count && <p className="text-[12px] text-slate-500">{t('Nothing is waiting.', 'موردی در انتظار نیست.')}</p>}
         {approvals?.approvals.map(a => (
           <div key={a.id} className="flex flex-wrap items-center gap-3 border-t border-slate-700/60 pt-2 text-[12px]">
             <span className="font-mono text-slate-300">{a.movement_type}</span>
             {a.is_controlled && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/40">
-                تحت کنترل
+                {t('Controlled', 'تحت کنترل')}
               </span>)}
             <span className="font-mono tabular-nums">{fa(a.quantity)}</span>
             <span className="text-slate-400">{a.irc || a.ndc11}</span>
             <span className="text-slate-500 truncate max-w-md">{a.reason}</span>
             {a.overdue && (
-              <span title={ESCALATION_FA[a.escalation_level] || a.audience || ''}
+              <span title={(ESCALATION[a.escalation_level] ? tp(ESCALATION[a.escalation_level]) : '') || a.audience || ''}
                 className={`text-[10px] px-1.5 py-0.5 rounded border ${
                   a.escalation_level >= 2
                     ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
                     : 'bg-amber-500/15 text-amber-300 border-amber-500/40'}`}>
-                {fa(Math.round(a.hours_late))} ساعت از مهلت گذشته
+                {t(`${fa(Math.round(a.hours_late))} hours past the deadline`,
+                   `${fa(Math.round(a.hours_late))} ساعت از مهلت گذشته`)}
               </span>)}
-            <div className="mr-auto flex gap-2">
+            <div className="ms-auto flex gap-2">
               <button onClick={() => decide(a.id, true)} disabled={busy}
                       className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">
-                تأیید
+                {t('Approve', 'تأیید')}
               </button>
               <button onClick={() => decide(a.id, false)} disabled={busy}
                       className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
-                رد
+                {t('Reject', 'رد')}
               </button>
             </div>
           </div>))}

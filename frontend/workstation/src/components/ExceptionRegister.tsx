@@ -23,6 +23,8 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryExceptionsApi, apiErrorText } from '../lib/api'
+import { useLang } from '../lib/i18n'
+import { checkTitle } from '../lib/serverLabels'
 
 export interface ExceptionRow {
   id: string; fingerprint: string; check: string; severity: string
@@ -42,26 +44,26 @@ interface Detail extends ExceptionRow {
              reason: string | null; actor: string; at: string | null }[]
 }
 
-const fa = (n: number | null | undefined) =>
-  n == null ? '—' : new Intl.NumberFormat('fa-IR').format(n)
+type Pair = readonly [string, string]
 
-const SEV: Record<string, { chip: string; dot: string; label: string }> = {
-  critical: { chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40', dot: 'bg-rose-400', label: 'بحرانی' },
-  high:     { chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', dot: 'bg-amber-400', label: 'مهم' },
-  medium:   { chip: 'bg-sky-500/15 text-sky-300 border-sky-500/40', dot: 'bg-sky-400', label: 'متوسط' },
-  info:     { chip: 'bg-slate-600/20 text-slate-300 border-slate-600', dot: 'bg-slate-400', label: 'اطلاعی' },
+const SEV: Record<string, { chip: string; dot: string; label: Pair }> = {
+  critical: { chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40', dot: 'bg-rose-400', label: ['Critical', 'بحرانی'] },
+  high:     { chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', dot: 'bg-amber-400', label: ['High', 'مهم'] },
+  medium:   { chip: 'bg-sky-500/15 text-sky-300 border-sky-500/40', dot: 'bg-sky-400', label: ['Medium', 'متوسط'] },
+  info:     { chip: 'bg-slate-600/20 text-slate-300 border-slate-600', dot: 'bg-slate-400', label: ['Info', 'اطلاعی'] },
 }
-const STATUS_FA: Record<string, string> = {
-  open: 'باز', assigned: 'واگذارشده', accepted: 'پذیرفته‌شده',
-  suppressed: 'خاموش‌شده', resolved: 'برطرف‌شده',
+const STATUS: Record<string, Pair> = {
+  open: ['Open', 'باز'], assigned: ['Assigned', 'واگذارشده'], accepted: ['Accepted', 'پذیرفته‌شده'],
+  suppressed: ['Suppressed', 'خاموش‌شده'], resolved: ['Resolved', 'برطرف‌شده'],
 }
-const FILTERS: [string, string][] = [
-  ['active', 'فعال'], ['open', 'باز'], ['assigned', 'واگذارشده'],
-  ['accepted', 'پذیرفته‌شده'], ['suppressed', 'خاموش'], ['resolved', 'برطرف‌شده'],
-  ['all', 'همه'],
+const FILTERS: [string, Pair][] = [
+  ['active', ['Active', 'فعال']], ['open', ['Open', 'باز']], ['assigned', ['Assigned', 'واگذارشده']],
+  ['accepted', ['Accepted', 'پذیرفته‌شده']], ['suppressed', ['Suppressed', 'خاموش']],
+  ['resolved', ['Resolved', 'برطرف‌شده']], ['all', ['All', 'همه']],
 ]
 
 export default function ExceptionRegister() {
+  const { t, tp, n: fa, lang, dateTime } = useLang()
   const qc = useQueryClient()
   const [status, setStatus] = useState('active')
   const [controlledOnly, setControlledOnly] = useState(false)
@@ -94,19 +96,22 @@ export default function ExceptionRegister() {
     setBusy(true); setMsg(null)
     try {
       const { data: r } = await inventoryExceptionsApi.run()
-      setMsg({ kind: 'ok', text: `بررسی انجام شد — ${fa(r.opened)} مورد تازه، `
-        + `${fa(r.recurred)} تکرار، ${fa(r.resolved)} برطرف‌شده.` })
+      setMsg({ kind: 'ok', text: t(
+        `Check complete — ${fa(r.opened)} new, ${fa(r.recurred)} recurred, ${fa(r.resolved)} resolved.`,
+        `بررسی انجام شد — ${fa(r.opened)} مورد تازه، ${fa(r.recurred)} تکرار، ${fa(r.resolved)} برطرف‌شده.`) })
       refresh()
     } catch (e) { setMsg({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
   }
 
   const dispose = async (id: string, disposition: string) => {
-    const label = STATUS_FA[disposition] || disposition
-    const reason = window.prompt(
-      `دلیل «${label}» کردن این مغایرت؟ (در سابقه ثبت می‌شود و قابل حذف نیست)`)
+    const label = STATUS[disposition] ? tp(STATUS[disposition]) : disposition
+    const reason = window.prompt(t(
+      `Reason for marking this exception “${label}”? (recorded permanently)`,
+      `دلیل «${label}» کردن این مغایرت؟ (در سابقه ثبت می‌شود و قابل حذف نیست)`))
     if (!reason || reason.trim().length < 3) {
-      if (reason !== null) setMsg({ kind: 'err', text: 'دلیل باید حداقل ۳ نویسه باشد.' })
+      if (reason !== null) setMsg({ kind: 'err', text: t('The reason must be at least 3 characters.',
+                                                         'دلیل باید حداقل ۳ نویسه باشد.') })
       return
     }
     setBusy(true); setMsg(null)
@@ -124,10 +129,12 @@ export default function ExceptionRegister() {
       const { data: r } = await inventoryExceptionsApi.simulate(id)
       const lines = (r.plan as Record<string, unknown>[]).map(p =>
         `${p.lot_number ?? '—'}: ${p.action}` +
-        (p.quantity != null ? ` ${fa(Number(p.quantity))} واحد → ${fa(Number(p.on_hand_after))}` : '') +
+        (p.quantity != null ? t(` ${fa(Number(p.quantity))} units → ${fa(Number(p.on_hand_after))}`,
+                                ` ${fa(Number(p.quantity))} واحد → ${fa(Number(p.on_hand_after))}`) : '') +
         (p.why ? ` (${p.why})` : ''))
       setMsg({ kind: 'warn', text: lines.length
-        ? `شبیه‌سازی (بدون تغییر): ${lines.join(' · ')}`
+        ? t(`Simulation (nothing changed): ${lines.join(' · ')}`,
+            `شبیه‌سازی (بدون تغییر): ${lines.join(' · ')}`)
         : r.note })
     } catch (e) { setMsg({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -141,17 +148,18 @@ export default function ExceptionRegister() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="font-semibold text-sm">دفتر مغایرت‌ها</span>
+        <span className="font-semibold text-sm">{t('Exception register', 'دفتر مغایرت‌ها')}</span>
         {activeCritical > 0 && (
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/40">
-            {fa(activeCritical)} مورد بحرانی باز
+            {t(`${fa(activeCritical)} critical open`, `${fa(activeCritical)} مورد بحرانی باز`)}
           </span>)}
         <span className="text-[11px] text-slate-500">
-          رتبه‌بندی بر پایهٔ اثر مالی، ایمنی بیمار و قطعیت — نه صرفاً شدت
+          {t('Ranked by financial impact, patient safety and certainty — not by severity alone',
+             'رتبه‌بندی بر پایهٔ اثر مالی، ایمنی بیمار و قطعیت — نه صرفاً شدت')}
         </span>
         <button onClick={runNow} disabled={busy}
-          className="mr-auto px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm disabled:opacity-50">
-          ↻ بررسی دوباره
+          className="ms-auto px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm disabled:opacity-50">
+          ↻ {t('Run the check again', 'بررسی دوباره')}
         </button>
       </div>
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400'
@@ -171,20 +179,21 @@ export default function ExceptionRegister() {
               className={`text-[11px] px-2.5 py-1 rounded-full border transition-colors ${
                 status === k ? 'bg-indigo-600/25 border-indigo-500 text-indigo-200'
                              : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500'}`}>
-              {label} <span className="font-mono">{fa(n)}</span>
+              {tp(label)} <span className="font-mono">{fa(n)}</span>
             </button>)
         })}
-        <label className="text-[11px] text-slate-400 flex items-center gap-1.5 mr-2">
+        <label className="text-[11px] text-slate-400 flex items-center gap-1.5 ms-2">
           <input type="checkbox" checked={controlledOnly}
                  onChange={e => setControlledOnly(e.target.checked)} />
-          فقط اقلام تحت کنترل
+          {t('Controlled items only', 'فقط اقلام تحت کنترل')}
         </label>
       </div>
 
-      {isLoading && <p className="text-sm text-slate-400">در حال بارگذاری…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Loading…', 'در حال بارگذاری…')}</p>}
       {data?.exceptions.length === 0 && (
         <p className="text-[12px] text-slate-500 py-4">
-          موردی در این نما نیست. اگر تازه بررسی نکرده‌اید، «بررسی دوباره» را بزنید.
+          {t('Nothing in this view. If you have not run the check recently, press “Run the check again”.',
+             'موردی در این نما نیست. اگر تازه بررسی نکرده‌اید، «بررسی دوباره» را بزنید.')}
         </p>)}
 
       <div className="space-y-2">
@@ -196,30 +205,31 @@ export default function ExceptionRegister() {
                  className={`border rounded-lg ${isOpen ? 'border-slate-600 bg-slate-800/60'
                                                          : 'border-slate-700 bg-slate-800/40'}`}>
               <button onClick={() => setOpenId(isOpen ? null : e.id)}
-                      className="w-full flex flex-wrap items-center gap-3 px-4 py-2.5 text-right">
-                <span className="font-mono tabular-nums text-lg w-14 text-left shrink-0">
+                      className="w-full flex flex-wrap items-center gap-3 px-4 py-2.5 text-start">
+                <span className="font-mono tabular-nums text-lg w-14 text-start shrink-0">
                   {e.score.toFixed(0)}
                 </span>
                 <span className={`w-2 h-2 rounded-full shrink-0 ${sev.dot}`} />
-                <span className="font-medium text-sm">{e.title_fa}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${sev.chip}`}>{sev.label}</span>
+                <span className="font-medium text-sm">{checkTitle(lang, e.check, e.title_fa)}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${sev.chip}`}>{tp(sev.label)}</span>
                 {e.is_controlled && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded border bg-rose-500/15 text-rose-300 border-rose-500/40">
-                    تحت کنترل
+                    {t('Controlled', 'تحت کنترل')}
                   </span>)}
                 {e.status !== 'open' && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
-                    {STATUS_FA[e.status] || e.status}
+                    {STATUS[e.status] ? tp(STATUS[e.status]) : e.status}
                   </span>)}
                 <span className="text-[11px] text-slate-500 font-mono">
                   {e.entity_key !== e.check && `${e.entity_key} · `}
-                  {fa(e.row_count)} ردیف
-                  {e.occurrences > 1 && ` · تکرار ${fa(e.occurrences)}`}
-                  {e.age_days != null && e.age_days >= 1 && ` · ${fa(Math.round(e.age_days))} روز`}
+                  {t(`${fa(e.row_count)} rows`, `${fa(e.row_count)} ردیف`)}
+                  {e.occurrences > 1 && t(` · ${fa(e.occurrences)} occurrences`, ` · تکرار ${fa(e.occurrences)}`)}
+                  {e.age_days != null && e.age_days >= 1 &&
+                    t(` · ${fa(Math.round(e.age_days))} d`, ` · ${fa(Math.round(e.age_days))} روز`)}
                 </span>
                 {e.assignee_name && (
                   <span className="text-[11px] text-indigo-300">👤 {e.assignee_name}</span>)}
-                <span className="mr-auto text-slate-500 text-xs">{isOpen ? '▲' : '▼'}</span>
+                <span className="ms-auto text-slate-500 text-xs">{isOpen ? '▲' : '▼'}</span>
               </button>
 
               {isOpen && detail && detail.id === e.id && (
@@ -227,28 +237,29 @@ export default function ExceptionRegister() {
                   <p className="text-[12px] text-slate-400">{detail.detail}</p>
                   {detail.score_breakdown?.explanation && (
                     <p className="text-[11px] text-slate-500">
-                      <span className="text-slate-400">چرا این رتبه؟ </span>
+                      <span className="text-slate-400">{t('Why this rank?', 'چرا این رتبه؟')} </span>
                       <span className="font-mono">{detail.score_breakdown.explanation}</span>
                     </p>)}
                   {detail.remediation && (
                     <p className="text-[12px] text-indigo-300">
-                      <span className="text-slate-500">اقدام پیشنهادی: </span>{detail.remediation}
+                      <span className="text-slate-500">{t('Suggested action', 'اقدام پیشنهادی')}: </span>{detail.remediation}
                     </p>)}
                   {detail.disposition_reason && (
                     <p className="text-[12px] text-amber-300">
-                      <span className="text-slate-500">حکم ثبت‌شده: </span>{detail.disposition_reason}
+                      <span className="text-slate-500">{t('Recorded ruling', 'حکم ثبت‌شده')}: </span>{detail.disposition_reason}
                     </p>)}
 
                   {detail.affected_rows.length > 0 && (
                     <div>
                       <p className="text-[11px] text-slate-500 pb-1">
-                        ردیف‌های درگیر — همهٔ {fa(detail.affected_rows.length)} مورد
+                        {t(`Affected rows — all ${fa(detail.affected_rows.length)}`,
+                           `ردیف‌های درگیر — همهٔ ${fa(detail.affected_rows.length)} مورد`)}
                       </p>
                       <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-700/60 rounded">
                         <table className="w-full text-[11px] font-mono">
                           <thead className="text-slate-500 sticky top-0 bg-slate-800">
                             <tr>{Object.keys(detail.affected_rows[0]).map(k =>
-                              <th key={k} className="text-right px-2 py-1 font-normal whitespace-nowrap">{k}</th>)}</tr>
+                              <th key={k} className="text-start px-2 py-1 font-normal whitespace-nowrap">{k}</th>)}</tr>
                           </thead>
                           <tbody className="text-slate-300">
                             {detail.affected_rows.map((r, i) => (
@@ -266,32 +277,33 @@ export default function ExceptionRegister() {
                   <div className="flex flex-wrap gap-2 text-[12px]">
                     <button onClick={() => simulate(e.id)} disabled={busy}
                       className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
-                      شبیه‌سازی اصلاح (بدون تغییر)
+                      {t('Simulate the fix (changes nothing)', 'شبیه‌سازی اصلاح (بدون تغییر)')}
                     </button>
                     {e.status !== 'accepted' && (
                       <button onClick={() => dispose(e.id, 'accepted')} disabled={busy}
                         className="px-3 py-1 bg-amber-700 hover:bg-amber-600 rounded disabled:opacity-50">
-                        پذیرش با دلیل
+                        {t('Accept with a reason', 'پذیرش با دلیل')}
                       </button>)}
                     {e.status !== 'suppressed' && (
                       <button onClick={() => dispose(e.id, 'suppressed')} disabled={busy}
                         className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
-                        خاموش کردن
+                        {t('Suppress', 'خاموش کردن')}
                       </button>)}
                     {e.status !== 'resolved' && (
                       <button onClick={() => dispose(e.id, 'resolved')} disabled={busy}
                         className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded disabled:opacity-50">
-                        علامت‌گذاری به‌عنوان برطرف‌شده
+                        {t('Mark as resolved', 'علامت‌گذاری به‌عنوان برطرف‌شده')}
                       </button>)}
                   </div>
 
                   {detail.history.length > 0 && (
                     <div className="text-[11px] text-slate-400 space-y-0.5 pt-1 border-t border-slate-700/60">
-                      <p className="text-slate-500 pt-1">سابقهٔ رسیدگی (غیرقابل بازنویسی)</p>
+                      <p className="text-slate-500 pt-1">{t('Handling history (cannot be overwritten)',
+                                                                'سابقهٔ رسیدگی (غیرقابل بازنویسی)')}</p>
                       {detail.history.map((h, i) => (
                         <div key={i} className="flex flex-wrap gap-2">
                           <span className="font-mono text-slate-500">
-                            {h.at ? new Date(h.at).toLocaleString('fa-IR') : '—'}
+                            {dateTime(h.at)}
                           </span>
                           <span>{h.event}</span>
                           {h.from && h.to && <span className="text-slate-500">{h.from} → {h.to}</span>}

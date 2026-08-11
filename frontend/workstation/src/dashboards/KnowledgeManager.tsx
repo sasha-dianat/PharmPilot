@@ -77,7 +77,7 @@ interface JobStatus {
 
 const COLLECTION_OPTIONS = [
   { value: 'owner_references',     label: 'Owner References' },
-  { value: 'iranian_pharmacopeia', label: 'داروپرسی ایران (Iranian Pharmacopeia)' },
+  { value: 'iranian_pharmacopeia', label: 'Iranian Pharmacopeia — داروپرسی ایران' },
   { value: 'guidelines',           label: 'Clinical Guidelines' },
   { value: 'drug_interactions',    label: 'Drug Interactions' },
   { value: 'dosing',               label: 'Dosing References' },

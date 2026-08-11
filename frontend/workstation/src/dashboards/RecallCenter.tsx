@@ -21,6 +21,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryRecallApi, apiErrorText } from '../lib/api'
+import { useLang } from '../lib/i18n'
 
 interface RecallCase {
   id: string; reference: string; severity: string; scope: string; status: string
@@ -51,28 +52,30 @@ interface PatientList {
   warning: string | null
 }
 
-const fa = (n: number | null | undefined) =>
-  n == null ? '—' : new Intl.NumberFormat('fa-IR').format(n)
-const faDT = (s: string | null) => s ? new Date(s).toLocaleString('fa-IR') : '—'
 
-const SEVERITY: Record<string, { label: string; cls: string }> = {
-  I:   { label: 'کلاس I — خطر جدی', cls: 'bg-rose-500/15 text-rose-300 border-rose-500/50' },
-  II:  { label: 'کلاس II — خطر گذرا', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
-  III: { label: 'کلاس III — کم‌خطر', cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40' },
+type Pair = readonly [string, string]
+
+const SEVERITY: Record<string, { label: Pair; cls: string }> = {
+  I:   { label: ['Class I — serious hazard', 'کلاس I — خطر جدی'], cls: 'bg-rose-500/15 text-rose-300 border-rose-500/50' },
+  II:  { label: ['Class II — temporary hazard', 'کلاس II — خطر گذرا'], cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+  III: { label: ['Class III — low hazard', 'کلاس III — کم‌خطر'], cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40' },
 }
-const STATUS_FA: Record<string, string> = {
-  open: 'باز', contained: 'مهارشده', closed: 'بسته‌شده', cancelled: 'لغوشده',
+const STATUS: Record<string, Pair> = {
+  open: ['Open', 'باز'], contained: ['Contained', 'مهارشده'],
+  closed: ['Closed', 'بسته‌شده'], cancelled: ['Cancelled', 'لغوشده'],
 }
-const STATE_FA: Record<string, string> = {
-  on_shelf: 'روی قفسه', blocked: 'قرنطینه', dispensed: 'تحویل‌شده',
-  already_gone: 'قبلاً خارج شده', untraceable: 'غیرقابل ردیابی',
+const STATE: Record<string, Pair> = {
+  on_shelf: ['On shelf', 'روی قفسه'], blocked: ['Quarantined', 'قرنطینه'],
+  dispensed: ['Dispensed', 'تحویل‌شده'], already_gone: ['Already gone', 'قبلاً خارج شده'],
+  untraceable: ['Untraceable', 'غیرقابل ردیابی'],
 }
-const SCOPES: [string, string][] = [
-  ['lot_number', 'شماره بچ'], ['irc', 'کد IRC'],
-  ['gtin', 'بارکد GTIN'], ['supplier_batch', 'بچ تأمین‌کننده'],
+const SCOPES: [string, Pair][] = [
+  ['lot_number', ['Lot number', 'شماره بچ']], ['irc', ['IRC code', 'کد IRC']],
+  ['gtin', ['GTIN barcode', 'بارکد GTIN']], ['supplier_batch', ['Supplier batch', 'بچ تأمین‌کننده']],
 ]
 
 export default function RecallCenter() {
+  const { t, tp, n: fa, dir, dateTime: faDT } = useLang()
   const qc = useQueryClient()
   const [openId, setOpenId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
@@ -104,12 +107,15 @@ export default function RecallCenter() {
 
   const quarantine = async (id: string, units: number) => {
     if (!window.confirm(
-      `${fa(units)} واحد از قفسه برداشته و قرنطینه می‌شود.\n`
-      + 'این کار فوری است و به تأیید نیاز ندارد. امحا مرحلهٔ جداگانه‌ای است.')) return
+      t(`${fa(units)} units will be taken off the shelf and quarantined.\n`
+        + 'This is immediate and needs no approval. Destruction is a separate step.',
+        `${fa(units)} واحد از قفسه برداشته و قرنطینه می‌شود.\n`
+        + 'این کار فوری است و به تأیید نیاز ندارد. امحا مرحلهٔ جداگانه‌ای است.'))) return
     setBusy(true); setMsg(null)
     try {
       const { data: r } = await inventoryRecallApi.quarantine(id)
-      setMsg({ kind: 'ok', text: `${fa(r.lots_quarantined)} بچ قرنطینه شد. ${r.note}` })
+      setMsg({ kind: 'ok', text: t(`${fa(r.lots_quarantined)} lots quarantined. ${r.note}`,
+                                   `${fa(r.lots_quarantined)} بچ قرنطینه شد. ${r.note}`) })
       refresh()
     } catch (e) { setMsg({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -119,7 +125,8 @@ export default function RecallCenter() {
     setBusy(true); setMsg(null)
     try {
       const { data: r } = await inventoryRecallApi.lineAction(id, lineId, { action })
-      setMsg({ kind: 'ok', text: `ثبت شد — ${fa(r.patients_notified)} بیمار مطلع شده‌اند.` })
+      setMsg({ kind: 'ok', text: t(`Recorded — ${fa(r.patients_notified)} patients have been notified.`,
+                                   `ثبت شد — ${fa(r.patients_notified)} بیمار مطلع شده‌اند.`) })
       refresh()
     } catch (e) { setMsg({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -129,18 +136,21 @@ export default function RecallCenter() {
     setBusy(true); setMsg(null)
     try {
       const { data: r } = await inventoryRecallApi.close(id, {})
-      if (r.closed) { setMsg({ kind: 'ok', text: 'فراخوان بسته شد.' }); refresh(); return }
+      if (r.closed) { setMsg({ kind: 'ok', text: t('Recall closed.', 'فراخوان بسته شد.') }); refresh(); return }
       const forced = window.confirm(
-        'این فراخوان هنوز قابل بستن نیست:\n\n• ' + r.blockers.join('\n• ')
-        + '\n\nبستن با وجود این موارد؟ دلیل ثبت و نگهداری می‌شود.')
-      if (!forced) { setMsg({ kind: 'warn', text: 'باز ماند: ' + r.blockers.join(' · ') }); return }
-      const reason = window.prompt('دلیل بستن با وجود موارد باز؟')
+        t('This recall cannot be closed yet:', 'این فراخوان هنوز قابل بستن نیست:')
+        + '\n\n• ' + r.blockers.join('\n• ') + '\n\n'
+        + t('Close it anyway? The reason is recorded and kept.',
+            'بستن با وجود این موارد؟ دلیل ثبت و نگهداری می‌شود.'))
+      if (!forced) { setMsg({ kind: 'warn', text: t('Left open: ', 'باز ماند: ') + r.blockers.join(' · ') }); return }
+      const reason = window.prompt(t('Reason for closing over the open items?', 'دلیل بستن با وجود موارد باز؟'))
       if (!reason || reason.trim().length < 3) {
-        setMsg({ kind: 'err', text: 'دلیل لازم است.' }); return
+        setMsg({ kind: 'err', text: t('A reason is required.', 'دلیل لازم است.') }); return
       }
       const { data: f } = await inventoryRecallApi.close(id, { force_reason: reason })
       setMsg({ kind: 'warn', text: f.closed
-        ? 'با وجود موارد باز بسته شد؛ موارد در سابقه ثبت ماند.' : 'بسته نشد.' })
+        ? t('Closed over open items; they stay on the record.', 'با وجود موارد باز بسته شد؛ موارد در سابقه ثبت ماند.')
+        : t('Not closed.', 'بسته نشد.') })
       refresh()
     } catch (e) { setMsg({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -150,37 +160,40 @@ export default function RecallCenter() {
   const urgentUnits = active.reduce((n, r) => n + r.units_on_shelf, 0)
 
   return (
-    <div className="p-4 space-y-4 text-slate-100" dir="rtl">
+    <div className="p-4 space-y-4 text-slate-100" dir={dir}>
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-bold">فراخوان دارو</h2>
+        <h2 className="text-lg font-bold">{t('Drug recall', 'فراخوان دارو')}</h2>
         <span className="text-[11px] text-slate-500">
-          پاسخ داروخانه به فراخوان — چه داریم، کجاست، به چه کسی داده‌ایم
+          {t('The pharmacy\u2019s recall response — what we hold, where it is, who we gave it to',
+             'پاسخ داروخانه به فراخوان — چه داریم، کجاست، به چه کسی داده‌ایم')}
         </span>
         <button onClick={() => setShowForm(v => !v)}
-          className="mr-auto px-3 py-1.5 bg-rose-600 hover:bg-rose-500 rounded-lg text-sm">
-          + فراخوان جدید
+          className="ms-auto px-3 py-1.5 bg-rose-600 hover:bg-rose-500 rounded-lg text-sm">
+          + {t('New recall', 'فراخوان جدید')}
         </button>
       </div>
 
       {urgentUnits > 0 && (
         <div className="bg-rose-500/10 border border-rose-500/50 rounded-lg px-4 py-3">
           <p className="text-rose-200 font-semibold text-sm">
-            ⚠ {fa(urgentUnits)} واحد از اقلام فراخوان‌شده هنوز قابل عرضه است
+            ⚠ {t(`${fa(urgentUnits)} units of recalled items can still be sold`,
+                 `${fa(urgentUnits)} واحد از اقلام فراخوان‌شده هنوز قابل عرضه است`)}
           </p>
           <p className="text-[11px] text-rose-300/80 pt-0.5">
-            پیش از هر کار دیگری قرنطینه کنید — تا آن زمان ممکن است تحویل بیمار شود.
+            {t('Quarantine before anything else — until then they can still reach a patient.',
+               'پیش از هر کار دیگری قرنطینه کنید — تا آن زمان ممکن است تحویل بیمار شود.')}
           </p>
         </div>)}
 
       {msg && <p className={`text-sm ${msg.kind === 'ok' ? 'text-emerald-400'
         : msg.kind === 'warn' ? 'text-amber-300' : 'text-red-400'}`}>{msg.text}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
-      {isLoading && <p className="text-sm text-slate-400">در حال بارگذاری…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Loading…', 'در حال بارگذاری…')}</p>}
 
       {showForm && <OpenForm onDone={(m) => { setMsg(m); setShowForm(false); refresh() }} />}
 
       {data?.count === 0 && !showForm && (
-        <p className="text-[12px] text-slate-500 py-4">هیچ فراخوانی ثبت نشده است.</p>)}
+        <p className="text-[12px] text-slate-500 py-4">{t('No recall has been recorded.', 'هیچ فراخوانی ثبت نشده است.')}</p>)}
 
       {/* ── cases ─────────────────────────────────────────────────────── */}
       <div className="space-y-2">
@@ -194,45 +207,46 @@ export default function RecallCenter() {
                    : r.units_on_shelf > 0 ? 'border-rose-500/50 bg-slate-800/60'
                                           : 'border-slate-700 bg-slate-800/50'}`}>
               <button onClick={() => setOpenId(isOpen ? null : r.id)}
-                      className="w-full flex flex-wrap items-center gap-3 px-4 py-2.5 text-right">
+                      className="w-full flex flex-wrap items-center gap-3 px-4 py-2.5 text-start">
                 <span className={`text-[10px] px-1.5 py-0.5 rounded border ${sev.cls}`}>
-                  {sev.label}
+                  {tp(sev.label)}
                 </span>
                 <span className="font-mono text-sm">{r.reference}</span>
                 <span className="text-[11px] text-slate-400">{r.scope}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                   done ? 'bg-slate-700 text-slate-400' : 'bg-indigo-600/25 text-indigo-200'}`}>
-                  {STATUS_FA[r.status] || r.status}
+                  {STATUS[r.status] ? tp(STATUS[r.status]) : r.status}
                 </span>
                 {r.units_on_shelf > 0 && (
                   <span className="text-[11px] text-rose-300 font-semibold">
-                    {fa(r.units_on_shelf)} واحد روی قفسه
+                    {t(`${fa(r.units_on_shelf)} units on shelf`, `${fa(r.units_on_shelf)} واحد روی قفسه`)}
                   </span>)}
                 {!r.trace_complete && (
                   <span className="text-[11px] text-amber-300"
-                        title="بخشی از تحویل‌ها به بچ متصل نیست">
-                    ردیابی {fa(r.traceable_pct ?? 0)}٪
+                        title={t('Some dispenses are not linked to a lot', 'بخشی از تحویل‌ها به بچ متصل نیست')}>
+                    {t('traceability', 'ردیابی')} {fa(r.traceable_pct ?? 0)}{t('%', '٪')}
                   </span>)}
                 <span className="text-[11px] text-slate-500">
-                  {fa(r.patients_notified)}/{fa(r.patients_identified)} بیمار مطلع
+                  {t(`${fa(r.patients_notified)}/${fa(r.patients_identified)} patients notified`,
+                     `${fa(r.patients_notified)}/${fa(r.patients_identified)} بیمار مطلع`)}
                 </span>
-                <span className="mr-auto text-slate-500 text-xs">{isOpen ? '▲' : '▼'}</span>
+                <span className="ms-auto text-slate-500 text-xs">{isOpen ? '▲' : '▼'}</span>
               </button>
 
               {isOpen && detail && detail.id === r.id && (
                 <div className="px-4 pb-4 pt-2 border-t border-slate-700/60 space-y-4">
                   <p className="text-[12px] text-slate-400">
                     {detail.reason}
-                    {detail.source && <span className="text-slate-500"> · منبع: {detail.source}</span>}
-                    <span className="text-slate-500"> · باز شده {faDT(detail.opened_at)}</span>
+                    {detail.source && <span className="text-slate-500"> · {t('source', 'منبع')}: {detail.source}</span>}
+                    <span className="text-slate-500"> · {t('opened', 'باز شده')} {faDT(detail.opened_at)}</span>
                   </p>
 
                   <div className="flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
-                    <Stat label="روی قفسه" value={fa(detail.units_on_shelf)}
+                    <Stat label={t('On shelf', 'روی قفسه')} value={fa(detail.units_on_shelf)}
                           tone={detail.units_on_shelf > 0 ? 'bad' : 'ok'} />
-                    <Stat label="قرنطینه" value={fa(detail.units_blocked)} />
-                    <Stat label="تحویل‌شده" value={fa(detail.units_dispensed)} />
-                    <Stat label="بچ‌های درگیر" value={fa(detail.lots_affected)} />
+                    <Stat label={t('Quarantined', 'قرنطینه')} value={fa(detail.units_blocked)} />
+                    <Stat label={t('Dispensed', 'تحویل‌شده')} value={fa(detail.units_dispensed)} />
+                    <Stat label={t('Lots affected', 'بچ‌های درگیر')} value={fa(detail.lots_affected)} />
                   </div>
 
                   {/* the action that comes before everything else */}
@@ -241,14 +255,16 @@ export default function RecallCenter() {
                             disabled={busy}
                             className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 rounded-lg
                                        font-semibold disabled:opacity-50">
-                      قرنطینهٔ فوری همهٔ {fa(detail.outstanding.lots_to_quarantine)} بچ
+                      {t(`Quarantine all ${fa(detail.outstanding.lots_to_quarantine)} lots now`,
+                         `قرنطینهٔ فوری همهٔ ${fa(detail.outstanding.lots_to_quarantine)} بچ`)}
                     </button>)}
 
                   {/* the blind spot — a block, never a footnote */}
                   {!detail.trace_complete && (
                     <div className="bg-amber-500/10 border-2 border-amber-500/50 rounded-lg p-3">
                       <p className="text-amber-200 font-semibold text-[12px]">
-                        ⚠ فهرست بیماران کامل نیست — ردیابی {fa(detail.traceable_pct ?? 0)}٪
+                        ⚠ {t(`The patient list is incomplete — traceability ${fa(detail.traceable_pct ?? 0)}%`,
+                             `فهرست بیماران کامل نیست — ردیابی ${fa(detail.traceable_pct ?? 0)}٪`)}
                       </p>
                       <p className="text-[11px] text-amber-300/90 pt-1 leading-relaxed">
                         {detail.impact?.warning}
@@ -258,19 +274,22 @@ export default function RecallCenter() {
                   {/* patients */}
                   <div>
                     <p className="text-[12px] font-semibold pb-1">
-                      بیماران شناسایی‌شده ({fa(patients?.count ?? 0)})
+                      {t('Identified patients', 'بیماران شناسایی‌شده')} ({fa(patients?.count ?? 0)})
                     </p>
                     {patients?.count === 0
                       ? <p className="text-[11px] text-slate-500">
-                          هیچ تحویلی از این بچ به بیمار مشخصی متصل نیست.
-                          {!detail.trace_complete && ' این به معنای نبودِ بیمار متأثر نیست — هشدار بالا را بخوانید.'}
+                          {t('No dispense from this lot is linked to an identified patient.',
+                             'هیچ تحویلی از این بچ به بیمار مشخصی متصل نیست.')}
+                          {!detail.trace_complete && t(' That does not mean no patient was affected — read the warning above.',
+                                                       ' این به معنای نبودِ بیمار متأثر نیست — هشدار بالا را بخوانید.')}
                         </p>
                       : (
                       <div className="overflow-x-auto border border-slate-700/60 rounded">
                         <table className="w-full text-[11px]">
                           <thead className="text-slate-500">
-                            <tr>{['بیمار', 'تلفن', 'مقدار', 'آخرین تحویل', 'وضعیت', ''].map(h =>
-                              <th key={h} className="text-right px-2 py-1 font-normal">{h}</th>)}</tr>
+                            <tr>{[t('Patient', 'بیمار'), t('Phone', 'تلفن'), t('Quantity', 'مقدار'),
+                                  t('Last dispense', 'آخرین تحویل'), t('Status', 'وضعیت'), ''].map(h =>
+                              <th key={h} className="text-start px-2 py-1 font-normal">{h}</th>)}</tr>
                           </thead>
                           <tbody>
                             {patients?.patients.map((p, i) => {
@@ -286,15 +305,15 @@ export default function RecallCenter() {
                                   </td>
                                   <td className="px-2 py-1">
                                     {p.notified
-                                      ? <span className="text-emerald-400">مطلع شد</span>
-                                      : <span className="text-amber-300">در انتظار تماس</span>}
+                                      ? <span className="text-emerald-400">{t('Notified', 'مطلع شد')}</span>
+                                      : <span className="text-amber-300">{t('Awaiting call', 'در انتظار تماس')}</span>}
                                   </td>
                                   <td className="px-2 py-1">
                                     {!p.notified && line && (
                                       <button onClick={() => markLine(detail.id, line.id, 'notified')}
                                               disabled={busy}
                                               className="text-indigo-300 hover:underline disabled:opacity-50">
-                                        ثبت اطلاع‌رسانی
+                                        {t('Record notification', 'ثبت اطلاع‌رسانی')}
                                       </button>)}
                                   </td>
                                 </tr>)
@@ -307,12 +326,14 @@ export default function RecallCenter() {
                   {/* affected stock lines */}
                   {detail.lines.some(l => l.state !== 'dispensed') && (
                     <div>
-                      <p className="text-[12px] font-semibold pb-1">موجودی درگیر</p>
+                      <p className="text-[12px] font-semibold pb-1">{t('Affected stock', 'موجودی درگیر')}</p>
                       <div className="overflow-x-auto border border-slate-700/60 rounded">
                         <table className="w-full text-[11px]">
                           <thead className="text-slate-500">
-                            <tr>{['بچ', 'محل', 'مقدار', 'وضعیت', 'اقدام لازم', 'انجام‌شده'].map(h =>
-                              <th key={h} className="text-right px-2 py-1 font-normal">{h}</th>)}</tr>
+                            <tr>{[t('Lot', 'بچ'), t('Location', 'محل'), t('Quantity', 'مقدار'),
+                                  t('State', 'وضعیت'), t('Action required', 'اقدام لازم'),
+                                  t('Done', 'انجام‌شده')].map(h =>
+                              <th key={h} className="text-start px-2 py-1 font-normal">{h}</th>)}</tr>
                           </thead>
                           <tbody>
                             {detail.lines.filter(l => l.state !== 'dispensed').map(l => (
@@ -323,7 +344,7 @@ export default function RecallCenter() {
                                 <td className="px-2 py-1">
                                   <span className={l.state === 'on_shelf'
                                     ? 'text-rose-300' : 'text-slate-400'}>
-                                    {STATE_FA[l.state] || l.state}
+                                    {STATE[l.state] ? tp(STATE[l.state]) : l.state}
                                   </span>
                                 </td>
                                 <td className="px-2 py-1 text-slate-500 max-w-xs truncate"
@@ -343,17 +364,19 @@ export default function RecallCenter() {
                     <div className="flex flex-wrap gap-2 items-center text-[12px]">
                       <button onClick={() => close(detail.id)} disabled={busy}
                         className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
-                        بستن فراخوان
+                        {t('Close recall', 'بستن فراخوان')}
                       </button>
                       <span className="text-slate-500">
-                        باقی‌مانده: {fa(detail.outstanding.lots_to_quarantine)} بچ برای قرنطینه ·
-                        {' '}{fa(detail.outstanding.patients_to_notify)} بیمار برای تماس
+                        {t(`Remaining: ${fa(detail.outstanding.lots_to_quarantine)} lots to quarantine · `
+                           + `${fa(detail.outstanding.patients_to_notify)} patients to call`,
+                           `باقی‌مانده: ${fa(detail.outstanding.lots_to_quarantine)} بچ برای قرنطینه · `
+                           + `${fa(detail.outstanding.patients_to_notify)} بیمار برای تماس`)}
                       </span>
                     </div>)}
 
                   {done && detail.closed_over_blockers && (
                     <p className="text-[11px] text-amber-300">
-                      با وجود موارد باز بسته شد — دلیل: {detail.closure_reason}
+                      {t('Closed over open items — reason', 'با وجود موارد باز بسته شد — دلیل')}: {detail.closure_reason}
                     </p>)}
                 </div>)}
             </div>)
@@ -378,6 +401,7 @@ function Stat({ label, value, tone }: { label: string; value: string
 
 function OpenForm({ onDone }: {
   onDone: (m: { kind: 'ok' | 'err' | 'warn'; text: string }) => void }) {
+  const { t, tp, n: fa } = useLang()
   const [f, setF] = useState({ reference: '', scope_type: 'lot_number',
                                scope_value: '', severity: 'II', reason: '', source: '' })
   const [busy, setBusy] = useState(false)
@@ -395,8 +419,10 @@ function OpenForm({ onDone }: {
       onDone({
         kind: data.on_shelf > 0 ? 'warn' : 'ok',
         text: data.on_shelf > 0
-          ? `فراخوان باز شد — ${fa(data.on_shelf)} واحد هنوز روی قفسه است. فوراً قرنطینه کنید.`
-          : `فراخوان باز شد — چیزی روی قفسه نیست. ${data.next_step}`,
+          ? t(`Recall opened — ${fa(data.on_shelf)} units are still on the shelf. Quarantine now.`,
+              `فراخوان باز شد — ${fa(data.on_shelf)} واحد هنوز روی قفسه است. فوراً قرنطینه کنید.`)
+          : t(`Recall opened — nothing on the shelf. ${data.next_step}`,
+              `فراخوان باز شد — چیزی روی قفسه نیست. ${data.next_step}`),
       })
     } catch (e) { onDone({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -404,46 +430,46 @@ function OpenForm({ onDone }: {
 
   return (
     <div className="bg-slate-800/60 border border-rose-700/50 rounded-lg p-4 space-y-3">
-      <p className="text-sm font-semibold">ثبت فراخوان جدید</p>
+      <p className="text-sm font-semibold">{t('Record a new recall', 'ثبت فراخوان جدید')}</p>
       <p className="text-[11px] text-slate-500">
-        با ثبت، موجودی درگیر بلافاصله شناسایی می‌شود — نخستین عدد لازم، مقدارِ هنوز
-        قابل عرضه است.
+        {t('Recording it identifies the affected stock immediately — the first number you need is how much can still be sold.',
+           'با ثبت، موجودی درگیر بلافاصله شناسایی می‌شود — نخستین عدد لازم، مقدارِ هنوز قابل عرضه است.')}
       </p>
       <div className="flex flex-wrap gap-2 text-[12px]">
-        <Field label="شناسهٔ فراخوان">
+        <Field label={t('Recall reference', 'شناسهٔ فراخوان')}>
           <input value={f.reference} onChange={set('reference')} placeholder="REC-1405-01"
             className="w-40 bg-slate-900 border border-slate-600 rounded px-2 py-1" />
         </Field>
-        <Field label="دامنه">
+        <Field label={t('Scope', 'دامنه')}>
           <select value={f.scope_type} onChange={set('scope_type')}
             className="w-36 bg-slate-900 border border-slate-600 rounded px-2 py-1">
-            {SCOPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            {SCOPES.map(([v, l]) => <option key={v} value={v}>{tp(l)}</option>)}
           </select>
         </Field>
-        <Field label="مقدار دامنه">
+        <Field label={t('Scope value', 'مقدار دامنه')}>
           <input value={f.scope_value} onChange={set('scope_value')}
             className="w-44 bg-slate-900 border border-slate-600 rounded px-2 py-1" />
         </Field>
-        <Field label="شدت">
+        <Field label={t('Severity', 'شدت')}>
           <select value={f.severity} onChange={set('severity')}
             className="w-48 bg-slate-900 border border-slate-600 rounded px-2 py-1">
             {Object.entries(SEVERITY).map(([v, s]) =>
-              <option key={v} value={v}>{s.label}</option>)}
+              <option key={v} value={v}>{tp(s.label)}</option>)}
           </select>
         </Field>
-        <Field label="منبع">
-          <input value={f.source} onChange={set('source')} placeholder="سازنده / سازمان"
+        <Field label={t('Source', 'منبع')}>
+          <input value={f.source} onChange={set('source')} placeholder={t('Manufacturer / authority', 'سازنده / سازمان')}
             className="w-36 bg-slate-900 border border-slate-600 rounded px-2 py-1" />
         </Field>
       </div>
-      <Field label="دلیل فراخوان">
+      <Field label={t('Recall reason', 'دلیل فراخوان')}>
         <input value={f.reason} onChange={set('reason')}
           className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-[12px]" />
       </Field>
       <button onClick={submit}
         disabled={busy || !f.reference || !f.scope_value || f.reason.trim().length < 3}
         className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 rounded-lg text-sm disabled:opacity-40">
-        ثبت و شناسایی موجودی درگیر
+        {t('Record and identify affected stock', 'ثبت و شناسایی موجودی درگیر')}
       </button>
     </div>
   )

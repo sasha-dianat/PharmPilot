@@ -13,6 +13,7 @@ import {
   Stethoscope, Clipboard, ClipboardCheck, Dna, Boxes, Gauge, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
+import { LanguageToggle, useLang } from './lib/i18n'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
@@ -43,36 +44,42 @@ import CoverageAdmin         from './dashboards/CoverageAdmin'
 import LabSafetyPage         from './pages/LabSafetyPage'
 import MedReconciliationPage from './pages/MedReconciliationPage'
 
+/**
+ * Every nav entry carries both readings — `[English, فارسی]` — so the sidebar,
+ * the top-bar title and the aria-labels all follow the language switch. A label
+ * with only one reading would silently strand that panel in the wrong language.
+ */
 const SECTIONS = [
-  { id:'command',    key:'1', label:'Command Center',     icon:Home,        description:'Owner overview',      shortcut:'Alt+1' },
-  { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
-  { id:'inventory-admin', key:'v', label:'Inventory Admin',   icon:Boxes,       description:'Search, view, correct, receive', shortcut:'Alt+V' },
-  { id:'inventory-integrity', key:'i', label:'Inventory Integrity', icon:ShieldCheck, description:'Reconciliation & write-off approvals', shortcut:'Alt+I' },
-  { id:'inventory-engines', key:'e', label:'Inventory Engines', icon:Gauge, description:'Advice, counting, demand signal, valuation', shortcut:'Alt+E' },
-  { id:'recall',     key:'w', label:'Drug Recall',       icon:AlertTriangle, description:'Recall response & patient tracing', shortcut:'Alt+W' },
-  { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
-  { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
-  { id:'adr',        key:'5', label:'ADR Detective',      icon:ClipboardCheck, description:'Side-effect review', shortcut:'Alt+5' },
-  { id:'counselling', key:'c', label:'Counselling',       icon:MessageCircle, description:'Patient counselling', shortcut:'Alt+C' },
-  { id:'physmsg',    key:'m', label:'Physician Message',  icon:Send,        description:'Prescriber communication', shortcut:'Alt+M' },
-  { id:'second-brain', key:'r', label:'Second Brain',     icon:BookOpen,    description:'RAG clinical Q&A',       shortcut:'Alt+R' },
-  { id:'drug-intel', key:'d', label:'Drug Intelligence',  icon:Pill,        description:'Offline drug monograph', shortcut:'Alt+D' },
-  { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
-  { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
-  { id:'lab-safety', key:'l', label:'Lab Safety',         icon:FlaskConical, description:'Lab monitoring',       shortcut:'Alt+L' },
-  { id:'med-rec',    key:'n', label:'Med Reconciliation', icon:ClipboardList, description:'Medication comparison', shortcut:'Alt+N' },
-  { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
-  { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
-  { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
-  { id:'ai-hub',     key:'0', label:'AI Hub',             icon:Bot,         description:'Multi-AI control',     shortcut:'Alt+0' },
-  { id:'knowledge',  key:'k', label:'Knowledge Base',     icon:BookOpen,    description:'Train clinical brain', shortcut:'Alt+K' },
-  { id:'depot',      key:'t', label:'Depot Restocking',   icon:Package,     description:'Dual-verify transfer', shortcut:'Alt+T' },
-  { id:'interaction-audit', key:'a', label:'Interaction Audit', icon:ClipboardCheck, description:'Acknowledgment & letter legal trail', shortcut:'Alt+A' },
-  { id:'interaction-bundle', key:'u', label:'Interaction Bundle', icon:Database, description:'Install the DDI knowledge bundle', shortcut:'Alt+U' },
-  { id:'price-proposals', key:'p', label:'Price Proposals', icon:DollarSign, description:'Approve daily price-sync changes', shortcut:'Alt+P' },
-  { id:'drug-catalog', key:'x', label:'Drug Catalog', icon:Database, description:'NFI harvest + catalog import', shortcut:'Alt+X' },
-  { id:'coverage', key:'b', label:'Insurance Coverage', icon:ShieldCheck, description:'دارونامه sources, harvest & review', shortcut:'Alt+B' },
-] as const satisfies ReadonlyArray<{ id: string; key: string; label: string; icon: LucideIcon; description: string; shortcut: string }>
+  { id:'command',    key:'1', label:['Command Center','مرکز فرماندهی'],       icon:Home,          description:['Owner overview','نمای کلی مدیریت'],                     shortcut:'Alt+1' },
+  { id:'inventory',  key:'2', label:['Inventory AI','هوش موجودی'],            icon:Package,       description:['ML stock brain','مغز یادگیرندهٔ موجودی'],                shortcut:'Alt+2' },
+  { id:'inventory-admin', key:'v', label:['Inventory Admin','مدیریت موجودی'], icon:Boxes,         description:['Search, view, correct, receive','جست‌وجو، مشاهده، اصلاح، رسید'], shortcut:'Alt+V' },
+  { id:'inventory-integrity', key:'i', label:['Inventory Integrity','صحت موجودی'], icon:ShieldCheck, description:['Reconciliation & write-off approvals','مغایرت‌گیری و تأیید ضایعات'], shortcut:'Alt+I' },
+  { id:'inventory-engines', key:'e', label:['Inventory Engines','موتورهای موجودی'], icon:Gauge,   description:['Advice, counting, demand signal, valuation','توصیه، شمارش، سیگنال تقاضا، ارزش‌گذاری'], shortcut:'Alt+E' },
+  { id:'recall',     key:'w', label:['Drug Recall','فراخوان دارو'],           icon:AlertTriangle, description:['Recall response & patient tracing','پاسخ به فراخوان و ردیابی بیماران'], shortcut:'Alt+W' },
+  { id:'clinical',   key:'3', label:['Clinical Intel','هوش بالینی'],          icon:Brain,         description:['Patient safety','ایمنی بیمار'],                          shortcut:'Alt+3' },
+  { id:'cds',        key:'4', label:['Clinical Assistant','دستیار بالینی'],   icon:Stethoscope,   description:['CDS alerts','هشدارهای پشتیبان تصمیم'],                   shortcut:'Alt+4' },
+  { id:'adr',        key:'5', label:['ADR Detective','ردیاب عوارض دارویی'],   icon:ClipboardCheck, description:['Side-effect review','بررسی عوارض جانبی'],               shortcut:'Alt+5' },
+  { id:'counselling', key:'c', label:['Counselling','مشاورهٔ دارویی'],        icon:MessageCircle, description:['Patient counselling','مشاوره با بیمار'],                 shortcut:'Alt+C' },
+  { id:'physmsg',    key:'m', label:['Physician Message','پیام به پزشک'],     icon:Send,          description:['Prescriber communication','ارتباط با تجویزکننده'],       shortcut:'Alt+M' },
+  { id:'second-brain', key:'r', label:['Second Brain','مغز دوم'],             icon:BookOpen,      description:['RAG clinical Q&A','پرسش و پاسخ بالینی'],                 shortcut:'Alt+R' },
+  { id:'drug-intel', key:'d', label:['Drug Intelligence','اطلاعات دارویی'],   icon:Pill,          description:['Offline drug monograph','مونوگراف آفلاین دارو'],         shortcut:'Alt+D' },
+  { id:'poly',       key:'6', label:['Polypharmacy','چنددارویی'],             icon:Clipboard,     description:['Deprescribing review','بازنگری و حذف داروی زائد'],       shortcut:'Alt+6' },
+  { id:'pgx',        key:'g', label:['Pharmacogenomics','فارماکوژنومیک'],     icon:Dna,           description:['PGx rules','قواعد ژنتیک دارویی'],                        shortcut:'Alt+G' },
+  { id:'lab-safety', key:'l', label:['Lab Safety','ایمنی آزمایشگاهی'],        icon:FlaskConical,  description:['Lab monitoring','پایش آزمایش‌ها'],                       shortcut:'Alt+L' },
+  { id:'med-rec',    key:'n', label:['Med Reconciliation','تطبیق دارویی'],    icon:ClipboardList, description:['Medication comparison','مقایسهٔ فهرست داروها'],          shortcut:'Alt+N' },
+  { id:'security',   key:'7', label:['Surveillance','پایش امنیت'],            icon:ShieldCheck,   description:['Security & safety','امنیت و ایمنی'],                     shortcut:'Alt+7' },
+  { id:'financial',  key:'8', label:['Financial Ops','عملیات مالی'],          icon:DollarSign,    description:['Revenue & claims','درآمد و مطالبات'],                    shortcut:'Alt+8' },
+  { id:'adherence',  key:'9', label:['Patient Care','مراقبت از بیمار'],       icon:Users,         description:['Adherence & MTM','پایبندی و مدیریت دارودرمانی'],         shortcut:'Alt+9' },
+  { id:'ai-hub',     key:'0', label:['AI Hub','مرکز هوش مصنوعی'],             icon:Bot,           description:['Multi-AI control','کنترل چند مدل هوش مصنوعی'],           shortcut:'Alt+0' },
+  { id:'knowledge',  key:'k', label:['Knowledge Base','پایگاه دانش'],         icon:BookOpen,      description:['Train clinical brain','آموزش مغز بالینی'],               shortcut:'Alt+K' },
+  { id:'depot',      key:'t', label:['Depot Restocking','تأمین از انبار'],    icon:Package,       description:['Dual-verify transfer','انتقال با تأیید دوگانه'],         shortcut:'Alt+T' },
+  { id:'interaction-audit', key:'a', label:['Interaction Audit','ممیزی تداخلات'], icon:ClipboardCheck, description:['Acknowledgment & letter legal trail','ردّ قانونی تأییدها و نامه‌ها'], shortcut:'Alt+A' },
+  { id:'interaction-bundle', key:'u', label:['Interaction Bundle','بستهٔ تداخلات'], icon:Database, description:['Install the DDI knowledge bundle','نصب بستهٔ دانش تداخل دارویی'], shortcut:'Alt+U' },
+  { id:'price-proposals', key:'p', label:['Price Proposals','پیشنهادهای قیمت'], icon:DollarSign,  description:['Approve daily price-sync changes','تأیید تغییرات روزانهٔ قیمت'], shortcut:'Alt+P' },
+  { id:'drug-catalog', key:'x', label:['Drug Catalog','کاتالوگ دارو'],        icon:Database,      description:['NFI harvest + catalog import','برداشت NFI و ورود کاتالوگ'], shortcut:'Alt+X' },
+  { id:'coverage',   key:'b', label:['Insurance Coverage','پوشش بیمه'],       icon:ShieldCheck,   description:['دارونامه sources, harvest & review','منابع دارونامه، برداشت و بازبینی'], shortcut:'Alt+B' },
+] as const satisfies ReadonlyArray<{ id: string; key: string; label: readonly [string, string]
+  icon: LucideIcon; description: readonly [string, string]; shortcut: string }>
 
 type SectionId = typeof SECTIONS[number]['id']
 
@@ -112,6 +119,7 @@ interface Props {
 }
 
 export default function DashboardShell({ onExitDashboard }: Props) {
+  const { t, tp, n, time, dir } = useLang()
   const [activeSection, setActiveSection] = useState<SectionId>('command')
   const [collapsed, setCollapsed] = useState(false)
   const [clock, setClock] = useState(() => new Date())
@@ -179,11 +187,11 @@ export default function DashboardShell({ onExitDashboard }: Props) {
   }
 
   return (
-    <div className="flex h-screen bg-[#0f1117] text-slate-100 overflow-hidden">
+    <div dir={dir} className="flex h-screen bg-[#0f1117] text-slate-100 overflow-hidden">
 
       {/* ── Left Sidebar ──────────────────────────────────────────────── */}
       <nav
-        className={`${collapsed ? 'w-[60px]' : 'w-56'} flex-shrink-0 bg-[#0f1117] border-r border-[#1e293b]
+        className={`${collapsed ? 'w-[60px]' : 'w-56'} flex-shrink-0 bg-[#0f1117] border-e border-[#1e293b]
                     flex flex-col transition-[width] duration-200 ease-out`}
       >
         {/* Logo */}
@@ -196,7 +204,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
             {!collapsed && (
               <div className="min-w-0">
                 <p className="font-bold text-slate-100 text-sm leading-tight truncate">PharmPilot</p>
-                <p className="text-[10px] text-slate-500 leading-tight truncate">Pharmacy OS</p>
+                <p className="text-[10px] text-slate-500 leading-tight truncate">{t('Pharmacy OS', 'سامانهٔ داروخانه')}</p>
               </div>
             )}
           </div>
@@ -206,7 +214,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
         <div className="flex-1 overflow-y-auto py-3 px-2.5 space-y-0.5">
           {!collapsed && (
             <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-600">
-              Dashboards
+              {t('Dashboards', 'داشبوردها')}
             </p>
           )}
           {SECTIONS.map(section => {
@@ -217,7 +225,7 @@ export default function DashboardShell({ onExitDashboard }: Props) {
               <button
                 key={section.id}
                 onClick={() => setActiveSection(section.id)}
-                aria-label={`${section.label} — ${section.description}${badge ? `, ${badge.value} ${badge.tone === 'critical' ? 'critical alerts' : 'pending'}` : ''} (${section.shortcut})`}
+                aria-label={`${tp(section.label)} — ${tp(section.description)}${badge ? `, ${badge.value} ${badge.tone === 'critical' ? t('critical alerts', 'هشدار بحرانی') : t('pending', 'در انتظار')}` : ''} (${section.shortcut})`}
                 aria-current={isActive ? 'page' : undefined}
                 className={`group relative w-full flex items-center gap-2.5 rounded-lg text-left
                            transition-colors duration-150
@@ -226,14 +234,14 @@ export default function DashboardShell({ onExitDashboard }: Props) {
                              ? 'bg-blue-600/15 text-blue-300 ring-1 ring-inset ring-blue-500/30'
                              : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
                            }`}
-                title={`${section.label} — ${section.description} (${section.shortcut})`}
+                title={`${tp(section.label)} — ${tp(section.description)} (${section.shortcut})`}
               >
                 {isActive && (
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-blue-400" />
+                  <span className="absolute start-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-e-full bg-blue-400" />
                 )}
                 <Icon size={17} strokeWidth={isActive ? 2.25 : 1.75} className="flex-shrink-0" />
                 {!collapsed && (
-                  <span className="text-[13px] font-medium leading-tight truncate flex-1">{section.label}</span>
+                  <span className="text-[13px] font-medium leading-tight truncate flex-1">{tp(section.label)}</span>
                 )}
                 {badge && (
                   <span
@@ -253,33 +261,33 @@ export default function DashboardShell({ onExitDashboard }: Props) {
         <div className={`border-t border-[#1e293b] ${collapsed ? 'px-1.5 py-2' : 'px-3 py-3'} space-y-2`}>
           {!collapsed && (
             <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-1.5">
-              <span className="text-[10px] font-medium text-slate-500">AI spend today</span>
+              <span className="text-[10px] font-medium text-slate-500">{t('AI spend today', 'هزینهٔ هوش مصنوعی امروز')}</span>
               <span className="text-[11px] font-mono font-semibold text-slate-300 tabular-nums">${totalAICost.toFixed(3)}</span>
             </div>
           )}
           <button
             onClick={() => setCollapsed(c => !c)}
             aria-expanded={!collapsed}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? t('Expand sidebar', 'باز کردن نوار کناری') : t('Collapse sidebar', 'جمع کردن نوار کناری')}
             className="w-full flex items-center justify-center gap-2 rounded-lg py-1.5
                        text-slate-500 hover:text-slate-300 hover:bg-white/[0.04] transition-colors"
-            title={collapsed ? 'Expand sidebar (Alt+B)' : 'Collapse sidebar (Alt+B)'}
+            title={collapsed ? t('Expand sidebar (Alt+B)', 'باز کردن نوار کناری (Alt+B)') : t('Collapse sidebar (Alt+B)', 'جمع کردن نوار کناری (Alt+B)')}
           >
             {collapsed ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}
-            {!collapsed && <span className="text-[11px] font-medium">Collapse</span>}
+            {!collapsed && <span className="text-[11px] font-medium">{t('Collapse', 'جمع کردن')}</span>}
           </button>
           {!collapsed && (
-            <p className="text-[10px] text-slate-600 capitalize truncate px-1">{userRole.replace(/_/g, ' ') || 'Staff'}</p>
+            <p className="text-[10px] text-slate-600 capitalize truncate px-1">{userRole.replace(/_/g, ' ') || t('Staff', 'کارکنان')}</p>
           )}
           {onExitDashboard && (
             <button onClick={onExitDashboard}
               className={`w-full flex items-center gap-2 text-slate-500 hover:text-slate-200
                          hover:bg-white/[0.04] rounded-lg py-1.5 transition-colors
                          ${collapsed ? 'justify-center' : 'px-2'}`}
-              title="Return to workstation (Esc)"
+              title={t('Return to workstation (Esc)', 'بازگشت به میز کار (Esc)')}
             >
               <ArrowLeft size={14} />
-              {!collapsed && <span className="text-[11px] font-medium">Workstation</span>}
+              {!collapsed && <span className="text-[11px] font-medium">{t('Workstation', 'میز کار')}</span>}
             </button>
           )}
         </div>
@@ -294,55 +302,65 @@ export default function DashboardShell({ onExitDashboard }: Props) {
             <div className="min-w-0">
               {/* Section title — intentionally not an <h1>: each dashboard renders its own
                   canonical <h1>, so this is a secondary/contextual label (role=heading level 2). */}
-              <p role="heading" aria-level={2} className="text-[15px] font-semibold text-slate-100 leading-tight truncate">{activeMeta.label}</p>
-              <p className="text-[11px] text-slate-500 leading-tight truncate">{activeMeta.description}</p>
+              <p role="heading" aria-level={2} className="text-[15px] font-semibold text-slate-100 leading-tight truncate">{tp(activeMeta.label)}</p>
+              <p className="text-[11px] text-slate-500 leading-tight truncate">{tp(activeMeta.description)}</p>
             </div>
             {criticalAlerts > 0 && (
               <span className="hidden sm:inline-flex items-center gap-1.5 bg-red-500/15 text-red-300
                                ring-1 ring-inset ring-red-500/30 px-2.5 py-1 rounded-full text-[11px] font-semibold">
                 <AlertTriangle size={12} className="animate-pulse" />
-                {criticalAlerts} critical alert{criticalAlerts === 1 ? '' : 's'}
+                {t(`${criticalAlerts} critical alert${criticalAlerts === 1 ? '' : 's'}`,
+                   `${n(criticalAlerts)} هشدار بحرانی`)}
               </span>
             )}
           </div>
 
           <div className="flex items-center gap-2">
+            {/* The switch lives in the shell chrome, so it is reachable from
+                every panel without each one having to render its own. */}
+            <LanguageToggle variant="dark" />
+
             {/* Search — not yet wired to a real index, so it's presented as a clearly
                 inert placeholder (no fake keyboard-shortcut hint, default cursor, reduced
                 contrast) rather than an affordance that looks live but does nothing. */}
             <div
               aria-hidden="true"
-              title="Search is coming soon"
+              title={t('Search is coming soon', 'جست‌وجو به‌زودی افزوده می‌شود')}
               className="hidden md:flex items-center gap-2 rounded-lg bg-white/[0.02] border border-white/[0.05]
                          px-3 py-1.5 text-slate-600 w-56 lg:w-72 cursor-default select-none"
             >
               <Search size={14} className="flex-shrink-0 opacity-60" />
-              <span className="text-[12px] truncate opacity-60">Search (coming soon)</span>
+              <span className="text-[12px] truncate opacity-60">{t('Search (coming soon)', 'جست‌وجو (به‌زودی)')}</span>
             </div>
 
             <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-slate-500 px-2.5 py-1.5
                             rounded-lg bg-white/[0.03] border border-white/[0.06]">
               <Clock size={13} />
-              <span className="tabular-nums">{clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="tabular-nums">{time(clock)}</span>
             </div>
             <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-slate-500 px-2.5 py-1.5
                             rounded-lg bg-white/[0.03] border border-white/[0.06]">
               <Building2 size={13} />
-              <span className="font-mono truncate max-w-[7rem]">{pharmacyId ? `${pharmacyId.slice(0, 8)}…` : 'No pharmacy'}</span>
+              <span className="font-mono truncate max-w-[7rem]">{pharmacyId ? `${pharmacyId.slice(0, 8)}…` : t('No pharmacy', 'بدون داروخانه')}</span>
             </div>
           </div>
         </header>
 
         {/* ARIA live region for critical alerts */}
         <div aria-live="assertive" aria-atomic="true" className="sr-only">
-          {criticalAlerts > 0 && `Critical security alert: ${criticalAlerts} unresolved`}
+          {criticalAlerts > 0 && t(`Critical security alert: ${criticalAlerts} unresolved`,
+                                    `هشدار امنیتی بحرانی: ${n(criticalAlerts)} مورد رسیدگی‌نشده`)}
         </div>
 
         {/* Section content — wrapped in ErrorBoundary per section */}
-        <main className="flex-1 overflow-y-auto">
+        {/* Panels that have been made bilingual set `dir={dir}` themselves.
+            Everything else is still English-only, so the content area defaults
+            to LTR: an untranslated English panel inside an RTL frame renders
+            with its punctuation flipped to the wrong end of the line. */}
+        <main dir="ltr" className="flex-1 overflow-y-auto">
           <ErrorBoundary
             key={activeSection}
-            label={activeMeta.label}
+            label={tp(activeMeta.label)}
           >
             <ActiveComponent />
           </ErrorBoundary>

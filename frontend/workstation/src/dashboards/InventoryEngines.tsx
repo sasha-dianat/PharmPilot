@@ -19,37 +19,38 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryEnginesApi, apiErrorText } from '../lib/api'
-
-const fa = (n: number) => new Intl.NumberFormat('fa-IR').format(n)
-const faMoney = (n: number) =>
-  new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 0 }).format(n)
+import { useLang } from '../lib/i18n'
 
 type Tab = 'advice' | 'count' | 'demand' | 'value'
 
-const TABS: { id: Tab; label: string; hint: string }[] = [
-  { id: 'advice', label: 'توصیه‌ها', hint: 'پیشنهادهای موتورها و تصمیم شما' },
-  { id: 'count', label: 'شمارش دوره‌ای', hint: 'کجا وقت شمارش صرف شود' },
-  { id: 'demand', label: 'سیگنال تقاضا', hint: 'نرخ مصرف اندازه‌گیری‌شده' },
-  { id: 'value', label: 'ارزش و ضایعات', hint: 'ارزش موجودی و بهای زیان' },
+type Pair = readonly [string, string]
+
+const TABS: { id: Tab; label: Pair; hint: Pair }[] = [
+  { id: 'advice', label: ['Advice', 'توصیه‌ها'], hint: ['What the engines propose, and your decision', 'پیشنهادهای موتورها و تصمیم شما'] },
+  { id: 'count', label: ['Cycle counting', 'شمارش دوره‌ای'], hint: ['Where the counting hours go', 'کجا وقت شمارش صرف شود'] },
+  { id: 'demand', label: ['Demand signal', 'سیگنال تقاضا'], hint: ['The measured consumption rate', 'نرخ مصرف اندازه‌گیری‌شده'] },
+  { id: 'value', label: ['Value and shrinkage', 'ارزش و ضایعات'], hint: ['Stock value and the cost of losses', 'ارزش موجودی و بهای زیان'] },
 ]
 
 /** How a number was arrived at. Shown, never hidden. */
-const BASIS: Record<string, { label: string; cls: string; title: string }> = {
+const BASIS: Record<string, { label: Pair; cls: string; title: Pair }> = {
   observed: {
-    label: 'اندازه‌گیری‌شده', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
-    title: 'از سوابق واقعی این داروخانه محاسبه شده است',
+    label: ['Measured', 'اندازه‌گیری‌شده'], cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
+    title: ['Computed from this pharmacy\u2019s own records', 'از سوابق واقعی این داروخانه محاسبه شده است'],
   },
   sparse: {
-    label: 'داده کم', cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40',
-    title: 'داده‌های کافی برای یک نرخ قابل اتکا وجود ندارد؛ موقتی است',
+    label: ['Thin data', 'داده کم'], cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40',
+    title: ['Not enough data for a rate you can rely on; provisional',
+            'داده‌های کافی برای یک نرخ قابل اتکا وجود ندارد؛ موقتی است'],
   },
   no_history: {
-    label: 'سابقه‌ای نیست', cls: 'bg-slate-600/20 text-slate-400 border-slate-600',
-    title: 'هیچ مصرفی ثبت نشده؛ عددی حدس زده نمی‌شود',
+    label: ['No history', 'سابقه‌ای نیست'], cls: 'bg-slate-600/20 text-slate-400 border-slate-600',
+    title: ['No consumption recorded; no number is guessed', 'هیچ مصرفی ثبت نشده؛ عددی حدس زده نمی‌شود'],
   },
   declared_default: {
-    label: 'فرض اعلام‌شده', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
-    title: 'اندازه‌گیری نشده است؛ این یک فرض صریح است، نه مشاهده',
+    label: ['Declared assumption', 'فرض اعلام‌شده'], cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+    title: ['Not measured; this is an explicit assumption, not an observation',
+            'اندازه‌گیری نشده است؛ این یک فرض صریح است، نه مشاهده'],
   },
 }
 
@@ -60,41 +61,46 @@ const SEV: Record<string, string> = {
   info: 'bg-slate-600/20 text-slate-300 border-slate-600',
 }
 
-const VERDICT: Record<string, { label: string; cls: string; note: string }> = {
-  trusted: { label: 'قابل اتکا', cls: 'text-emerald-300', note: 'بیشتر پیشنهادها پذیرفته می‌شود' },
-  mixed: { label: 'مختلط', cls: 'text-sky-300', note: '' },
-  noisy: { label: 'پرنویز', cls: 'text-amber-300', note: 'آستانه بیش از ارزش، کار تولید می‌کند' },
+const VERDICT: Record<string, { label: Pair; cls: string; note: Pair }> = {
+  trusted: { label: ['Reliable', 'قابل اتکا'], cls: 'text-emerald-300',
+             note: ['Most of its proposals are accepted', 'بیشتر پیشنهادها پذیرفته می‌شود'] },
+  mixed: { label: ['Mixed', 'مختلط'], cls: 'text-sky-300', note: ['', ''] },
+  noisy: { label: ['Noisy', 'پرنویز'], cls: 'text-amber-300',
+           note: ['The threshold makes more work than value', 'آستانه بیش از ارزش، کار تولید می‌کند'] },
   ignored: {
-    label: 'نادیده گرفته می‌شود', cls: 'text-rose-300',
-    note: 'زیاد تولید می‌کند و تقریباً هیچ تصمیمی روی آن گرفته نمی‌شود',
+    label: ['Being ignored', 'نادیده گرفته می‌شود'], cls: 'text-rose-300',
+    note: ['Produces a lot and almost nothing is decided on it',
+           'زیاد تولید می‌کند و تقریباً هیچ تصمیمی روی آن گرفته نمی‌شود'],
   },
   unmeasured: {
-    label: 'هنوز سنجش‌پذیر نیست', cls: 'text-slate-400',
-    note: 'تصمیم‌های کافی برای اظهار نظر ثبت نشده است',
+    label: ['Not yet measurable', 'هنوز سنجش‌پذیر نیست'], cls: 'text-slate-400',
+    note: ['Too few decisions recorded to say', 'تصمیم‌های کافی برای اظهار نظر ثبت نشده است'],
   },
 }
 
 export default function InventoryEngines() {
+  const { t, tp, dir } = useLang()
   const [tab, setTab] = useState<Tab>('advice')
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
   return (
-    <div className="p-4 space-y-4 text-slate-100" dir="rtl">
+    <div className="p-4 space-y-4 text-slate-100" dir={dir}>
       <div className="flex flex-wrap items-baseline gap-3">
-        <h2 className="text-lg font-bold">موتورهای موجودی</h2>
+        <h2 className="text-lg font-bold">{t('Inventory engines', 'موتورهای موجودی')}</h2>
         <span className="text-[11px] text-slate-500">
-          هر عدد با منشأ خود نمایش داده می‌شود؛ نرخی که اندازه‌گیری نشده باشد، حدس زده نمی‌شود.
+          {t('Every number is shown with where it came from; a rate that was never measured is never guessed.',
+             'هر عدد با منشأ خود نمایش داده می‌شود؛ نرخی که اندازه‌گیری نشده باشد، حدس زده نمی‌شود.')}
         </span>
       </div>
 
       <div className="flex flex-wrap gap-1.5 border-b border-slate-700 pb-2">
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => { setTab(t.id); setMsg(null) }} title={t.hint}
+        {TABS.map(tb => (
+          <button key={tb.id} onClick={() => { setTab(tb.id); setMsg(null) }} title={tp(tb.hint)}
             className={`px-3 py-1.5 rounded-t text-[13px] border-b-2 -mb-[9px] transition-colors ${
-              tab === t.id
+              tab === tb.id
                 ? 'border-sky-400 text-sky-300 bg-slate-800/60'
                 : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
-            {t.label}
+            {tp(tb.label)}
           </button>
         ))}
       </div>
@@ -129,6 +135,7 @@ interface Score {
 }
 
 function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void }) {
+  const { t, tp, n: fa } = useLang()
   const qc = useQueryClient()
   const [rejecting, setRejecting] = useState<string | null>(null)
   const [note, setNote] = useState('')
@@ -153,14 +160,16 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
       onMsg({
         kind: 'ok',
         text: accept
-          ? 'پذیرفته شد. اجرای آن همچنان از مسیر تأیید و دفتر موجودی انجام می‌شود.'
-          : 'رد شد؛ دلیل شما ثبت گردید و مبنای تنظیم آستانه خواهد بود.',
+          ? t('Accepted. Carrying it out still goes through approval and the stock ledger.',
+              'پذیرفته شد. اجرای آن همچنان از مسیر تأیید و دفتر موجودی انجام می‌شود.')
+          : t('Rejected; your reason is recorded and will inform the threshold.',
+              'رد شد؛ دلیل شما ثبت گردید و مبنای تنظیم آستانه خواهد بود.'),
       })
       setRejecting(null); setNote('')
       qc.invalidateQueries({ queryKey: ['inv-recs'] })
       qc.invalidateQueries({ queryKey: ['inv-rec-score'] })
     } catch (e: unknown) {
-      onMsg({ kind: 'err', text: apiErrorText(e, 'ثبت تصمیم ناموفق بود.') })
+      onMsg({ kind: 'err', text: apiErrorText(e, t('The decision could not be recorded.', 'ثبت تصمیم ناموفق بود.')) })
     } finally { setBusy(false) }
   }
 
@@ -171,7 +180,8 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
       {board && board.scores.length > 0 && (
         <div className="bg-slate-800/40 border border-slate-700 rounded-lg px-4 py-3">
           <p className="text-[11px] text-slate-500 pb-2">
-            کارنامهٔ موتورها — «پذیرش» یعنی موافقت کارشناس، نه درستی نتیجه.
+            {t('Engine scorecard — “acceptance” means the reviewer agreed, not that the result was right.',
+               'کارنامهٔ موتورها — «پذیرش» یعنی موافقت کارشناس، نه درستی نتیجه.')}
           </p>
           <div className="flex flex-wrap gap-3">
             {board.scores.map(s => {
@@ -181,14 +191,16 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
                   className="bg-slate-900/60 border border-slate-700 rounded px-3 py-2 min-w-[190px]">
                   <div className="flex items-baseline justify-between gap-3">
                     <span className="text-[12px] text-slate-300">{s.kind}</span>
-                    <span className={`text-[12px] font-semibold ${v.cls}`}>{v.label}</span>
+                    <span className={`text-[12px] font-semibold ${v.cls}`}>{tp(v.label)}</span>
                   </div>
                   <div className="text-[11px] text-slate-500 tabular-nums pt-1">
-                    {fa(s.produced)} پیشنهاد · {fa(s.decided)} تصمیم
+                    {t(`${fa(s.produced)} proposed · ${fa(s.decided)} decided`,
+                       `${fa(s.produced)} پیشنهاد · ${fa(s.decided)} تصمیم`)}
                     {s.acceptance_rate !== null &&
-                      <> · پذیرش {fa(Math.round(s.acceptance_rate * 100))}٪</>}
+                      <> · {t(`${fa(Math.round(s.acceptance_rate * 100))}% accepted`,
+                              `پذیرش ${fa(Math.round(s.acceptance_rate * 100))}٪`)}</>}
                   </div>
-                  {v.note && <div className="text-[10px] text-slate-600 pt-0.5">{v.note}</div>}
+                  {tp(v.note) && <div className="text-[10px] text-slate-600 pt-0.5">{tp(v.note)}</div>}
                 </div>)
             })}
           </div>
@@ -196,15 +208,16 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
 
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-sm">پیشنهادهای باز</span>
+          <span className="font-semibold text-sm">{t('Open proposals', 'پیشنهادهای باز')}</span>
           <span className="text-[11px] text-slate-500">
-            رد کردن نیازمند دلیل است — دلیل شما تنها چیزی است که بعداً قابل بازسازی نیست.
+            {t('Rejecting requires a reason — your reason is the one thing that cannot be reconstructed later.',
+               'رد کردن نیازمند دلیل است — دلیل شما تنها چیزی است که بعداً قابل بازسازی نیست.')}
           </span>
         </div>
-        {isLoading && <p className="text-sm text-slate-400">در حال بارگذاری…</p>}
+        {isLoading && <p className="text-sm text-slate-400">{t('Loading…', 'در حال بارگذاری…')}</p>}
         {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
         {data && data.count === 0 && (
-          <p className="text-[12px] text-slate-500">پیشنهاد بازی وجود ندارد.</p>)}
+          <p className="text-[12px] text-slate-500">{t('There are no open proposals.', 'پیشنهاد بازی وجود ندارد.')}</p>)}
 
         {data?.recommendations.map(r => (
           <div key={r.id} className="border-t border-slate-700/60 pt-2 space-y-1.5">
@@ -215,19 +228,20 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
               <span className="text-slate-300">{r.explanation}</span>
               {r.confidence !== null && (
                 <span className="text-[11px] text-slate-500 tabular-nums">
-                  اطمینان {fa(Math.round(r.confidence * 100))}٪
+                  {t(`${fa(Math.round(r.confidence * 100))}% confidence`,
+                     `اطمینان ${fa(Math.round(r.confidence * 100))}٪`)}
                 </span>)}
               <span className="text-[10px] text-slate-600">{r.produced_by}</span>
 
-              <div className="mr-auto flex gap-2">
+              <div className="ms-auto flex gap-2">
                 <button onClick={() => decide(r.id, true)} disabled={busy}
                   className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">
-                  پذیرش
+                  {t('Accept', 'پذیرش')}
                 </button>
                 <button onClick={() => { setRejecting(rejecting === r.id ? null : r.id); setNote('') }}
                   disabled={busy}
                   className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-50">
-                  رد
+                  {t('Reject', 'رد')}
                 </button>
               </div>
             </div>
@@ -235,17 +249,17 @@ function AdviceTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
             {rejecting === r.id && (
               <div className="flex flex-wrap items-center gap-2 pb-1">
                 <input autoFocus value={note} onChange={e => setNote(e.target.value)}
-                  placeholder="چرا این پیشنهاد درست نیست؟"
+                  placeholder={t('Why is this proposal wrong?', 'چرا این پیشنهاد درست نیست؟')}
                   className="flex-1 min-w-[240px] bg-slate-900 border border-slate-700 rounded
                              px-2 py-1 text-[12px] focus:outline-none focus:border-sky-500" />
                 <button disabled={busy || !note.trim()}
                   onClick={() => decide(r.id, false, note.trim())}
                   className="px-3 py-1 bg-rose-600 hover:bg-rose-500 rounded text-[12px]
                              disabled:opacity-40">
-                  ثبت رد
+                  {t('Record rejection', 'ثبت رد')}
                 </button>
                 {!note.trim() && (
-                  <span className="text-[10px] text-slate-500">دلیل الزامی است</span>)}
+                  <span className="text-[10px] text-slate-500">{t('A reason is required', 'دلیل الزامی است')}</span>)}
               </div>)}
           </div>))}
       </div>
@@ -276,15 +290,16 @@ interface CountPlan {
   }
 }
 
-const RISK_FA: Record<string, string> = {
-  controlled: 'تحت کنترل',
-  recent_variance: 'مغایرت اخیر',
-  expiring: 'نزدیک انقضا',
-  unpredictable: 'مصرف نامنظم',
-  high_value_lot: 'بچ پرارزش',
+const RISK: Record<string, Pair> = {
+  controlled: ['Controlled', 'تحت کنترل'],
+  recent_variance: ['Recent variance', 'مغایرت اخیر'],
+  expiring: ['Expiring soon', 'نزدیک انقضا'],
+  unpredictable: ['Irregular consumption', 'مصرف نامنظم'],
+  high_value_lot: ['High-value lot', 'بچ پرارزش'],
 }
 
 function CountTab() {
+  const { t, tp, n: fa } = useLang()
   const [capacity, setCapacity] = useState(25)
   const { data, isLoading, error } = useQuery<CountPlan>({
     queryKey: ['inv-cyclecount', capacity],
@@ -296,21 +311,21 @@ function CountTab() {
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
                       flex flex-wrap items-center gap-x-8 gap-y-3">
         <label className="flex items-center gap-2 text-[12px]">
-          <span className="text-slate-400">ظرفیت هر نوبت</span>
+          <span className="text-slate-400">{t('Capacity per session', 'ظرفیت هر نوبت')}</span>
           <input type="number" min={1} max={500} value={capacity}
             onChange={e => setCapacity(Math.max(1, Number(e.target.value) || 1))}
             className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1
                        tabular-nums focus:outline-none focus:border-sky-500" />
         </label>
         {data && <>
-          <Metric label="اقلام طبقه‌بندی‌شده" value={fa(data.items_classified)} />
-          <Metric label="اکنون سررسید" value={fa(data.due_now)} />
-          <Metric label="در این نوبت" value={fa(data.session.counted)} />
-          <Metric label="موکول‌شده" value={fa(data.session.deferred)} />
+          <Metric label={t('Items classified', 'اقلام طبقه‌بندی‌شده')} value={fa(data.items_classified)} />
+          <Metric label={t('Due now', 'اکنون سررسید')} value={fa(data.due_now)} />
+          <Metric label={t('In this session', 'در این نوبت')} value={fa(data.session.counted)} />
+          <Metric label={t('Deferred', 'موکول‌شده')} value={fa(data.session.deferred)} />
         </>}
       </div>
 
-      {isLoading && <p className="text-sm text-slate-400">در حال محاسبه…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
 
       {data && (
@@ -319,20 +334,20 @@ function CountTab() {
               cost more than the flat sweep it replaces, and that must be visible. */}
           <div className="bg-slate-800/40 border border-slate-700 rounded-lg px-4 py-3">
             <p className="text-[11px] text-slate-500 pb-2">
-              در مقایسه با شمارش یکنواخت ۹۰ روزه
+              {t('Compared with a flat 90-day count', 'در مقایسه با شمارش یکنواخت ۹۰ روزه')}
             </p>
             <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
-              <Metric label="خطوط شمارش (این روش)" value={fa(data.effort.ranked_lines)} />
-              <Metric label="خطوط شمارش (یکنواخت)" value={fa(data.effort.flat_lines)} />
+              <Metric label={t('Count lines (this method)', 'خطوط شمارش (این روش)')} value={fa(data.effort.ranked_lines)} />
+              <Metric label={t('Count lines (flat)', 'خطوط شمارش (یکنواخت)')} value={fa(data.effort.flat_lines)} />
               <div>
-                <div className="text-[10px] text-slate-500">تغییر</div>
+                <div className="text-[10px] text-slate-500">{t('Change', 'تغییر')}</div>
                 <div className={`text-lg font-bold tabular-nums ${
                   data.effort.pct_change <= 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
-                  {data.effort.pct_change > 0 ? '+' : ''}{fa(data.effort.pct_change)}٪
+                  {data.effort.pct_change > 0 ? '+' : ''}{fa(data.effort.pct_change)}{t('%', '٪')}
                 </div>
               </div>
               <div>
-                <div className="text-[10px] text-slate-500">توجه بیشتر روی اقلام کلاس A</div>
+                <div className="text-[10px] text-slate-500">{t('Extra attention on class-A items', 'توجه بیشتر روی اقلام کلاس A')}</div>
                 <div className="text-lg font-bold tabular-nums text-sky-300">
                   {data.effort.a_class_coverage_gain > 0 ? '+' : ''}
                   {fa(data.effort.a_class_coverage_gain)}
@@ -341,36 +356,35 @@ function CountTab() {
             </div>
             {data.effort.pct_change > 0 && (
               <p className="text-[11px] text-amber-300/80 pt-2">
-                این برنامه خطوط شمارش بیشتری از روش یکنواخت می‌خواهد. صرفه‌جویی از دنبالهٔ
-                اقلام کم‌ارزش می‌آید و در فهرست‌های کوچک چنین دنباله‌ای وجود ندارد؛ آنچه
-                اکنون رخ می‌دهد جابه‌جایی توجه به سمت اقلام پرارزش است.
+                {t('This schedule asks for more count lines than the flat sweep. The saving comes from a tail of low-value items, and a small catalogue has no such tail; what happens instead is a shift of attention onto the valuable items.',
+                   'این برنامه خطوط شمارش بیشتری از روش یکنواخت می‌خواهد. صرفه‌جویی از دنبالهٔ اقلام کم‌ارزش می‌آید و در فهرست‌های کوچک چنین دنباله‌ای وجود ندارد؛ آنچه اکنون رخ می‌دهد جابه‌جایی توجه به سمت اقلام پرارزش است.')}
               </p>)}
           </div>
 
           <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-sm">برگهٔ شمارش بعدی</span>
+              <span className="font-semibold text-sm">{t('Next count sheet', 'برگهٔ شمارش بعدی')}</span>
               <span className="text-[11px] text-slate-500">{data.session.coverage_note}</span>
             </div>
             {data.session.lines.length === 0 && (
-              <p className="text-[12px] text-slate-500">موردی سررسید نشده است.</p>)}
+              <p className="text-[12px] text-slate-500">{t('Nothing is due.', 'موردی سررسید نشده است.')}</p>)}
             {data.session.lines.map(l => (
               <div key={l.ndc11}
                 className="flex flex-wrap items-center gap-3 border-t border-slate-700/60 pt-2 text-[12px]">
                 <span className="font-mono text-slate-300">{l.ndc11}</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50
                                  border border-slate-600 text-slate-300">{l.class}</span>
-                <span className="text-slate-500">هر {fa(l.interval_days)} روز</span>
+                <span className="text-slate-500">{t(`every ${fa(l.interval_days)} days`, `هر ${fa(l.interval_days)} روز`)}</span>
                 <span className="text-slate-400">{l.reason}</span>
                 {l.risks.map(r => (
                   <span key={r} className="text-[10px] px-1.5 py-0.5 rounded
                                            bg-amber-500/15 text-amber-300 border border-amber-500/40">
-                    {RISK_FA[r] ?? r}
+                    {RISK[r] ? tp(RISK[r]) : r}
                   </span>))}
               </div>))}
             {data.session.worst_deferred && (
               <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-700/60">
-                مهم‌ترین مورد موکول‌شده: <span className="font-mono">
+                {t('Most important deferred item', 'مهم‌ترین مورد موکول‌شده')}: <span className="font-mono">
                 {data.session.worst_deferred.ndc11}</span> — {data.session.worst_deferred.reason}
               </p>)}
           </div>
@@ -402,15 +416,16 @@ interface Refresh {
   }
 }
 
-const VERDICT_FA: Record<string, { label: string; cls: string }> = {
-  contradicted: { label: 'با سوابق در تضاد', cls: 'text-rose-300' },
-  understated: { label: 'کمتر از واقع', cls: 'text-amber-300' },
-  overstated: { label: 'بیش از واقع', cls: 'text-sky-300' },
-  agrees: { label: 'هم‌خوان', cls: 'text-emerald-300' },
-  indeterminate: { label: '—', cls: 'text-slate-500' },
+const PRIOR_VERDICT: Record<string, { label: Pair; cls: string }> = {
+  contradicted: { label: ['Contradicted by the record', 'با سوابق در تضاد'], cls: 'text-rose-300' },
+  understated: { label: ['Understated', 'کمتر از واقع'], cls: 'text-amber-300' },
+  overstated: { label: ['Overstated', 'بیش از واقع'], cls: 'text-sky-300' },
+  agrees: { label: ['Agrees', 'هم‌خوان'], cls: 'text-emerald-300' },
+  indeterminate: { label: ['—', '—'], cls: 'text-slate-500' },
 }
 
 function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string }) => void }) {
+  const { t, tp, n: fa } = useLang()
   const qc = useQueryClient()
   const [windowDays, setWindowDays] = useState(28)
   const [busy, setBusy] = useState(false)
@@ -425,11 +440,12 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
     setBusy(true)
     try {
       const r = await inventoryEnginesApi.refreshDemand({ apply: true, window_days: windowDays })
-      onMsg({ kind: 'ok', text: `نرخ مصرف برای ${fa(r.data.written)} قلم بازنویسی شد.` })
+      onMsg({ kind: 'ok', text: t(`Consumption rate rewritten for ${fa(r.data.written)} items.`,
+                                  `نرخ مصرف برای ${fa(r.data.written)} قلم بازنویسی شد.`) })
       qc.invalidateQueries({ queryKey: ['inv-demand'] })
       qc.invalidateQueries({ queryKey: ['inv-reconciliation'] })
     } catch (e: unknown) {
-      onMsg({ kind: 'err', text: apiErrorText(e, 'بازمحاسبه ناموفق بود.') })
+      onMsg({ kind: 'err', text: apiErrorText(e, t('Recalculation failed.', 'بازمحاسبه ناموفق بود.')) })
     } finally { setBusy(false) }
   }
 
@@ -438,56 +454,56 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
                       flex flex-wrap items-center gap-x-8 gap-y-3">
         <label className="flex items-center gap-2 text-[12px]">
-          <span className="text-slate-400">پنجرهٔ مشاهده (روز)</span>
+          <span className="text-slate-400">{t('Observation window (days)', 'پنجرهٔ مشاهده (روز)')}</span>
           <input type="number" min={7} max={365} value={windowDays}
             onChange={e => setWindowDays(Math.min(365, Math.max(7, Number(e.target.value) || 7)))}
             className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1
                        tabular-nums focus:outline-none focus:border-sky-500" />
         </label>
         {data && <>
-          <Metric label="اقلام" value={fa(data.summary.items)} />
-          <Metric label="تغییر می‌کند" value={fa(data.summary.changed)} />
-          <Metric label="نقطهٔ سفارش قابل تعیین" value={fa(data.summary.reorder_points_set)} />
+          <Metric label={t('Items', 'اقلام')} value={fa(data.summary.items)} />
+          <Metric label={t('Will change', 'تغییر می‌کند')} value={fa(data.summary.changed)} />
+          <Metric label={t('Reorder point determinable', 'نقطهٔ سفارش قابل تعیین')} value={fa(data.summary.reorder_points_set)} />
           <div>
-            <div className="text-[10px] text-slate-500">زمان تدارک</div>
+            <div className="text-[10px] text-slate-500">{t('Lead time', 'زمان تدارک')}</div>
             <div className="flex items-center gap-1.5">
               <span className="text-lg font-bold tabular-nums">{fa(data.lead_time.days)}</span>
               <BasisChip basis={data.lead_time.basis} />
             </div>
           </div>
           <button onClick={apply} disabled={busy}
-            className="mr-auto px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded
+            className="ms-auto px-4 py-1.5 bg-sky-600 hover:bg-sky-500 rounded
                        text-[13px] disabled:opacity-50">
-            بازمحاسبه و ثبت
+            {t('Recalculate and write', 'بازمحاسبه و ثبت')}
           </button>
         </>}
       </div>
 
-      {isLoading && <p className="text-sm text-slate-400">در حال محاسبه…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
 
       {data && (
         <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
           <p className="text-[11px] text-slate-500 pb-2">
-            پیش‌نمایش. ستون «وضعیت مقدار قبلی» می‌گوید عدد ذخیره‌شده در برابر سوابق تحویل
-            چه وضعی داشته است — نه فقط اینکه به چه چیزی تبدیل می‌شود.
+            {t('Preview. The “prior value” column says how the stored number stood against the dispense record — not just what it becomes.',
+               'پیش‌نمایش. ستون «وضعیت مقدار قبلی» می‌گوید عدد ذخیره‌شده در برابر سوابق تحویل چه وضعی داشته است — نه فقط اینکه به چه چیزی تبدیل می‌شود.')}
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               <thead className="text-slate-500 text-[11px]">
                 <tr className="border-b border-slate-700">
-                  <th className="text-right font-normal py-1.5">قلم</th>
-                  <th className="text-right font-normal">مقدار فعلی</th>
-                  <th className="text-right font-normal">مقدار جدید</th>
-                  <th className="text-right font-normal">منشأ</th>
-                  <th className="text-right font-normal">مصرف مشاهده‌شده</th>
-                  <th className="text-right font-normal">نقطهٔ سفارش</th>
-                  <th className="text-right font-normal">وضعیت مقدار قبلی</th>
+                  <th className="text-start font-normal py-1.5">{t('Item', 'قلم')}</th>
+                  <th className="text-start font-normal">{t('Current value', 'مقدار فعلی')}</th>
+                  <th className="text-start font-normal">{t('New value', 'مقدار جدید')}</th>
+                  <th className="text-start font-normal">{t('Basis', 'منشأ')}</th>
+                  <th className="text-start font-normal">{t('Observed consumption', 'مصرف مشاهده‌شده')}</th>
+                  <th className="text-start font-normal">{t('Reorder point', 'نقطهٔ سفارش')}</th>
+                  <th className="text-start font-normal">{t('Prior value', 'وضعیت مقدار قبلی')}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.rows.map(r => {
-                  const v = VERDICT_FA[r.verdict] ?? VERDICT_FA.indeterminate
+                  const v = PRIOR_VERDICT[r.verdict] ?? PRIOR_VERDICT.indeterminate
                   return (
                     <tr key={r.ndc11} className="border-b border-slate-800/60">
                       <td className="py-1.5 font-mono text-slate-300">{r.ndc11}</td>
@@ -495,18 +511,19 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
                         {r.stored_adq === null ? '—' : fa(r.stored_adq)}</td>
                       <td className="tabular-nums">
                         {r.new_adq === null
-                          ? <span className="text-slate-500">اندازه‌گیری نشد</span>
+                          ? <span className="text-slate-500">{t('not measured', 'اندازه‌گیری نشد')}</span>
                           : <span className="text-slate-100 font-semibold">{fa(r.new_adq)}</span>}
                       </td>
                       <td><BasisChip basis={r.basis} /></td>
                       <td className="tabular-nums text-slate-400">
-                        {fa(r.units_observed)} در {fa(r.window_days)} روز</td>
+                        {t(`${fa(r.units_observed)} in ${fa(r.window_days)} d`,
+                           `${fa(r.units_observed)} در ${fa(r.window_days)} روز`)}</td>
                       <td className="tabular-nums text-slate-400">
                         {r.signals?.reorder_point === null || r.signals?.reorder_point === undefined
                           ? <span className="text-slate-600" title={r.signals?.explanation}>—</span>
                           : fa(Math.round(r.signals.reorder_point))}
                       </td>
-                      <td className={v.cls} title={r.explanation}>{v.label}</td>
+                      <td className={v.cls} title={r.explanation}>{tp(v.label)}</td>
                     </tr>)
                 })}
               </tbody>
@@ -536,11 +553,13 @@ interface Valuation {
   cost_basis_note: string
 }
 
-const BUCKET_FA: Record<string, string> = {
-  damaged: 'آسیب‌دیده', returned: 'مرجوعی', in_transit: 'در راه',
+const BUCKET: Record<string, Pair> = {
+  damaged: ['Damaged', 'آسیب‌دیده'], returned: ['Returned', 'مرجوعی'], in_transit: ['In transit', 'در راه'],
 }
 
 function ValueTab() {
+  const { t, tp, n, money: faMoney } = useLang()
+  const fa = n
   const [method, setMethod] = useState<'fifo' | 'weighted'>('fifo')
   const { data, isLoading, error } = useQuery<Valuation>({
     queryKey: ['inv-valuation', method],
@@ -553,22 +572,22 @@ function ValueTab() {
       <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
                       flex flex-wrap items-center gap-x-8 gap-y-3">
         <label className="flex items-center gap-2 text-[12px]">
-          <span className="text-slate-400">روش</span>
+          <span className="text-slate-400">{t('Method', 'روش')}</span>
           <select value={method} onChange={e => setMethod(e.target.value as 'fifo' | 'weighted')}
             className="bg-slate-900 border border-slate-700 rounded px-2 py-1
                        focus:outline-none focus:border-sky-500">
-            <option value="fifo">اولین‌صادره از اولین‌وارده</option>
-            <option value="weighted">میانگین موزون</option>
+            <option value="fifo">{t('First in, first out', 'اولین‌صادره از اولین‌وارده')}</option>
+            <option value="weighted">{t('Weighted average', 'میانگین موزون')}</option>
           </select>
         </label>
         {data && <>
-          <Metric label="ارزش موجودی قابل فروش" value={faMoney(data.valuation.total)} />
+          <Metric label={t('Sellable stock value', 'ارزش موجودی قابل فروش')} value={faMoney(data.valuation.total)} />
           {Object.entries(data.valuation.buckets).map(([k, v]) => (
-            <Metric key={k} label={BUCKET_FA[k] ?? k} value={faMoney(v)} />))}
+            <Metric key={k} label={BUCKET[k] ? tp(BUCKET[k]) : k} value={faMoney(v)} />))}
         </>}
       </div>
 
-      {isLoading && <p className="text-sm text-slate-400">در حال محاسبه…</p>}
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
 
       {data && (
@@ -581,9 +600,10 @@ function ValueTab() {
 
           <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
             <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
-              <span className="font-semibold text-sm">ضایعات {fa(data.shrinkage.period_days)} روز اخیر</span>
-              <Metric label="از دست رفته" value={faMoney(data.shrinkage.total_lost)} />
-              <Metric label="قابل بازیافت از تأمین‌کننده" value={faMoney(data.shrinkage.recoverable)} />
+              <span className="font-semibold text-sm">{t(`Shrinkage over the last ${fa(data.shrinkage.period_days)} days`,
+                                                          `ضایعات ${fa(data.shrinkage.period_days)} روز اخیر`)}</span>
+              <Metric label={t('Lost', 'از دست رفته')} value={faMoney(data.shrinkage.total_lost)} />
+              <Metric label={t('Recoverable from the supplier', 'قابل بازیافت از تأمین‌کننده')} value={faMoney(data.shrinkage.recoverable)} />
             </div>
             <p className="text-[11px] text-slate-500">{data.shrinkage.explanation}</p>
             <div className="flex flex-wrap gap-1.5 pt-1">
@@ -596,16 +616,16 @@ function ValueTab() {
           </div>
 
           <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-            <p className="text-[11px] text-slate-500 pb-2">پرارزش‌ترین اقلام</p>
+            <p className="text-[11px] text-slate-500 pb-2">{t('Most valuable items', 'پرارزش‌ترین اقلام')}</p>
             <div className="overflow-x-auto">
               <table className="w-full text-[12px]">
                 <thead className="text-slate-500 text-[11px]">
                   <tr className="border-b border-slate-700">
-                    <th className="text-right font-normal py-1.5">قلم</th>
-                    <th className="text-right font-normal">موجودی</th>
-                    <th className="text-right font-normal">بهای واحد</th>
-                    <th className="text-right font-normal">ارزش</th>
-                    <th className="text-right font-normal">بچ‌های بدون بها</th>
+                    <th className="text-start font-normal py-1.5">{t('Item', 'قلم')}</th>
+                    <th className="text-start font-normal">{t('On hand', 'موجودی')}</th>
+                    <th className="text-start font-normal">{t('Unit cost', 'بهای واحد')}</th>
+                    <th className="text-start font-normal">{t('Value', 'ارزش')}</th>
+                    <th className="text-start font-normal">{t('Uncosted lots', 'بچ‌های بدون بها')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -620,7 +640,7 @@ function ValueTab() {
                         {i.lots_uncosted
                           ? <span className="text-amber-300" title={i.explanation}>
                               {fa(i.lots_uncosted)}</span>
-                          : <span className="text-slate-600">۰</span>}
+                          : <span className="text-slate-600">{fa(0)}</span>}
                       </td>
                     </tr>))}
                 </tbody>
@@ -636,11 +656,12 @@ function ValueTab() {
 /* ── shared bits ─────────────────────────────────────────────────────── */
 
 function BasisChip({ basis }: { basis: string }) {
+  const { tp } = useLang()
   const b = BASIS[basis] ?? BASIS.no_history
   return (
-    <span title={b.title}
+    <span title={tp(b.title)}
       className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${b.cls}`}>
-      {b.label}
+      {tp(b.label)}
     </span>)
 }
 

@@ -5,6 +5,7 @@
  */
 import { useState, useRef, useEffect } from 'react'
 import { authApi } from '../lib/api'
+import { LanguageToggle, useLang } from '../lib/i18n'
 
 interface Props {
   onLoginSuccess: (role: string, pharmacyId: string) => void
@@ -59,28 +60,34 @@ export default function LoginPage({ onLoginSuccess }: Props) {
     }
   }
 
+  const { t, dir } = useLang()
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-indigo-900 flex items-center justify-center p-4">
+    <div dir={dir} className="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-indigo-900 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
+
+        {/* The language switch must be reachable before sign-in — a pharmacist
+            who cannot read the form cannot get past it. */}
+        <div className="flex justify-center mb-4"><LanguageToggle variant="dark" /></div>
 
         {/* Logo & title */}
         <div className="text-center mb-8">
           <div className="text-5xl mb-3">💊</div>
           <h1 className="text-3xl font-bold text-white tracking-tight">PharmPilot</h1>
-          <p className="text-blue-300 text-sm mt-1">Pharmacy Intelligence Platform</p>
+          <p className="text-blue-300 text-sm mt-1">{t('Pharmacy Intelligence Platform', 'سامانهٔ هوشمند داروخانه')}</p>
         </div>
 
         {/* Card */}
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <h2 className="text-xl font-semibold text-gray-800 mb-6 text-center">
-            Staff Sign In
+            {t('Staff Sign In', 'ورود کارکنان')}
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Username */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Username
+                {t('Username', 'نام کاربری')}
               </label>
               <input
                 ref={usernameRef}
@@ -88,7 +95,7 @@ export default function LoginPage({ onLoginSuccess }: Props) {
                 value={username}
                 onChange={e => setUsername(e.target.value)}
                 autoComplete="username"
-                placeholder="Enter your username"
+                placeholder={t('Enter your username', 'نام کاربری خود را وارد کنید')}
                 className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm
                            focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
                            disabled:bg-gray-50"
@@ -99,14 +106,14 @@ export default function LoginPage({ onLoginSuccess }: Props) {
             {/* Password */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Password
+                {t('Password', 'گذرواژه')}
               </label>
               <input
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 autoComplete="current-password"
-                placeholder="Enter your password"
+                placeholder={t('Enter your password', 'گذرواژهٔ خود را وارد کنید')}
                 className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm
                            focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
                            disabled:bg-gray-50"
@@ -135,9 +142,9 @@ export default function LoginPage({ onLoginSuccess }: Props) {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
                   </svg>
-                  Signing in…
+                  {t('Signing in…', 'در حال ورود…')}
                 </span>
-              ) : 'Sign In'}
+              ) : t('Sign In', 'ورود')}
             </button>
           </form>
 
@@ -147,16 +154,19 @@ export default function LoginPage({ onLoginSuccess }: Props) {
               apiStatus === 'ok' ? 'bg-green-500' :
               apiStatus === 'error' ? 'bg-red-500' : 'bg-yellow-400 animate-pulse'
             }`}/>
-            {apiStatus === 'ok' ? 'Server connected' :
-             apiStatus === 'error' ? 'Server unreachable — run bash scripts/dev.sh' :
-             'Connecting…'}
+            {apiStatus === 'ok' ? t('Server connected', 'اتصال به سرور برقرار است') :
+             apiStatus === 'error' ? t('Server unreachable — run bash scripts/dev.sh',
+                                       'سرور در دسترس نیست — دستور bash scripts/dev.sh را اجرا کنید') :
+             t('Connecting…', 'در حال اتصال…')}
           </div>
         </div>
 
         {/* Demo credentials hint */}
         <div className="mt-6 bg-white/10 rounded-xl p-4 text-xs text-blue-200">
-          <p className="font-semibold text-blue-100 mb-2">Demo credentials:</p>
-          <div className="space-y-1 font-mono">
+          <p className="font-semibold text-blue-100 mb-2">{t('Demo credentials:', 'اطلاعات ورود نمونه:')}</p>
+          {/* Credentials are Latin text: pinned LTR so bidi never reorders the
+              punctuation in a password. */}
+          <div dir="ltr" className="space-y-1 font-mono">
             <div className="flex justify-between">
               <span>admin</span><span className="text-blue-300">PharmPilot2024!</span>
             </div>
@@ -170,7 +180,7 @@ export default function LoginPage({ onLoginSuccess }: Props) {
         </div>
 
         <p className="text-center text-blue-400 text-xs mt-4">
-          PharmPilot AI v0.1 · Development Mode
+          {t('PharmPilot AI v0.1 · Development Mode', 'پارم‌پایلوت هوشمند نسخهٔ ۰٫۱ · حالت توسعه')}
         </p>
       </div>
     </div>

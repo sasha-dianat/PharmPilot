@@ -56,7 +56,11 @@ apiClient.interceptors.response.use(
  * probe's `{message, diagnostics}`) — rendering any non-string as a React child
  * throws "Objects are not valid as a React child". Always run errors through this.
  */
-export function apiErrorText(e: unknown, fallback = 'خطای ناشناخته'): string {
+export function apiErrorText(e: unknown, fallback?: string): string {
+  // Called from catch blocks and non-component code, so it cannot use the
+  // language hook — it reads the same stored preference the provider writes.
+  fallback ??= localStorage.getItem('pharmpilot_lang') === 'en'
+    ? 'Unknown error' : 'خطای ناشناخته'
   const d = (e as any)?.response?.data?.detail
   if (d == null) return (e as any)?.message || fallback
   if (typeof d === 'string') return d

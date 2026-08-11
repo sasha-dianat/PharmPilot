@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { clinicalApi } from '../lib/api'
+import { useLang } from '../lib/i18n'
 
 interface Finding { rule_id?: string; participants: { name: string }[]; mechanism: string; severity: string }
 
 export default function PhysicianLetterModal({
   patientId, rxId, findings, onClose,
 }: { patientId: string; rxId?: string; findings: Finding[]; onClose: () => void }) {
+  const { t } = useLang()
   const [language, setLanguage] = useState('fa')
   const [physician, setPhysician] = useState('')
   const [councilId, setCouncilId] = useState('')
@@ -93,7 +95,8 @@ export default function PhysicianLetterModal({
         {editing && (
           <div className="space-y-2">
             <p className="cd-ui text-[11px] text-ink3">
-              Correct any wrong surname / آقا-خانم. Saving overwrites the recorded legal version (the edit is audited).
+              {t('Correct any wrong surname or honorific. Saving overwrites the recorded legal version (the edit is audited).',
+                 'نام خانوادگی یا عنوان نادرست را اصلاح کنید. ذخیره، نسخهٔ حقوقی ثبت‌شده را بازنویسی می‌کند (ویرایش ممیزی می‌شود).')}
             </p>
             <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={12}
               dir={language === 'en' ? 'ltr' : 'rtl'}

@@ -16,6 +16,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { apiClient, rxApi } from './lib/api'
 import { useAbbreviationScanner } from './lib/useAbbreviationScanner'
 import OfflineIndicator from './components/OfflineIndicator'
+import { LanguageProvider, LanguageToggle, useLang } from './lib/i18n'
 
 const queryClient = new QueryClient()
 
@@ -132,6 +133,8 @@ function WorkstationApp() {
   // Global abbreviation tooltip scanner — runs on every render/route change
   useAbbreviationScanner()
 
+  const { t, dir } = useLang()
+
   const handleLogout = () => {
     localStorage.clear()
     window.location.reload()
@@ -142,7 +145,7 @@ function WorkstationApp() {
     return <DashboardShell onExitDashboard={() => setShowDashboard(false)} />
   }
   return (
-    <div className="cd-scope h-screen flex flex-col overflow-hidden">
+    <div dir={dir} className="cd-scope h-screen flex flex-col overflow-hidden">
       {/* Phase 33 — offline indicator always visible when connection lost */}
       <OfflineIndicator />
       <div className="bg-surface border-b border-line px-4 py-2 flex items-center justify-between">
@@ -150,11 +153,12 @@ function WorkstationApp() {
           <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-intel text-white text-sm font-semibold">℞</span>
           <span className="cd-ui font-semibold text-ink text-base">PharmPilot</span>
           <span className="text-line2">|</span>
-          <span className="cd-ui text-sm text-ink2">Dispensing Workstation</span>
+          <span className="cd-ui text-sm text-ink2">{t('Dispensing Workstation', 'میز کار تحویل دارو')}</span>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          <LanguageToggle variant="light" />
           <span className="cd-data text-xs text-ink3 tabular-nums">{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-          <span className="cd-inset px-2 py-0.5 text-xs text-ink2"><b className="cd-data text-ink">{activeCount}</b> in queue</span>
+          <span className="cd-inset px-2 py-0.5 text-xs text-ink2"><b className="cd-data text-ink">{activeCount}</b> {t('in queue', 'در صف')}</span>
           {userRole && (
             <span className={`text-xs px-2 py-0.5 rounded-md font-medium ${ROLE_COLORS[userRole] || 'bg-surface2 text-ink2'}`}>
               {ROLE_LABELS[userRole] || userRole}
@@ -162,31 +166,31 @@ function WorkstationApp() {
           )}
           <span className={`flex items-center gap-1.5 text-xs ${wsConnected ? 'text-safe' : 'text-blocker'}`}>
             <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-safe' : 'bg-blocker animate-pulse'}`} />
-            {wsConnected ? 'Live' : 'Reconnecting…'}
+            {wsConnected ? t('Live', 'برخط') : t('Reconnecting…', 'در حال اتصال دوباره…')}
           </span>
           <button
             onClick={() => setShowDashboard(true)}
             className="cd-hover text-xs bg-intel text-white px-3 py-1.5 rounded-lg hover:brightness-110 font-medium flex items-center gap-1.5"
           >
-            📊 Dashboards
+            📊 {t('Dashboards', 'داشبوردها')}
           </button>
           <button
             onClick={handleLogout}
             className="text-xs text-ink3 hover:text-blocker px-2 py-1 rounded-lg hover:bg-surface2"
           >
-            Sign out
+            {t('Sign out', 'خروج')}
           </button>
         </div>
       </div>
       <div className="flex-1 flex overflow-hidden">
         <div className="w-72 flex-shrink-0 bg-surface border-r border-line overflow-hidden"><RxQueue /></div>
         <div className="flex-1 overflow-hidden bg-canvas">
-          <ErrorBoundary label="Verification Center">
+          <ErrorBoundary label={t('Verification Center', 'مرکز بازبینی')}>
             <VerificationCenter />
           </ErrorBoundary>
         </div>
         <div className="w-72 flex-shrink-0 bg-surface border-l border-line overflow-hidden">
-          <ErrorBoundary label="Patient Panel">
+          <ErrorBoundary label={t('Patient Panel', 'پروندهٔ بیمار')}>
             <PatientPanel patientId={selectedRx?.patient_id || ''} />
           </ErrorBoundary>
         </div>
@@ -202,19 +206,23 @@ export default function App() {
     () => !!localStorage.getItem('access_token')
   )
 
+  // The provider wraps the auth gate as well: the language preference has to
+  // survive a logout and be changeable from the login screen.
   if (!isLoggedIn) {
     return (
-      <LoginPage
-        onLoginSuccess={() => setIsLoggedIn(true)}
-      />
+      <LanguageProvider>
+        <LoginPage onLoginSuccess={() => setIsLoggedIn(true)} />
+      </LanguageProvider>
     )
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ErrorBoundary label="Workstation">
-        <WorkstationApp />
-      </ErrorBoundary>
-    </QueryClientProvider>
+    <LanguageProvider>
+      <QueryClientProvider client={queryClient}>
+        <ErrorBoundary label="Workstation">
+          <WorkstationApp />
+        </ErrorBoundary>
+      </QueryClientProvider>
+    </LanguageProvider>
   )
 }

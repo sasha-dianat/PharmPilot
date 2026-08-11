@@ -45,6 +45,102 @@ LANE_FA = {
     LANE_BLOCKED: "مسدود",
 }
 
+LANE_EN = {
+    LANE_AUTO: "Auto-fixable",
+    LANE_BULK: "One group ruling",
+    LANE_RESEARCH: "Needs research",
+    LANE_JUDGEMENT: "Needs expert judgement",
+    LANE_EXPECTED: "Structurally normal — acknowledge",
+    LANE_BLOCKED: "Blocked",
+}
+
+# English readings of the cause catalogue, kept beside the Persian rather than
+# in the frontend: this text IS the vocabulary of the triage board, and a second
+# copy in another repo layer is a copy that goes stale. Missing keys fall back
+# to the Persian, so a new cause is never blank.
+CAUSES_EN: dict[str, dict[str, str]] = {
+    "nfi_spliced": {
+        "title": "Spliced monograph in NFI",
+        "why": "The source NFI page shows one drug's product block against another drug's monograph.",
+        "action": "Auto-repair from a healthy sibling record; the result is stored as a field_override.",
+    },
+    "coverage_review_agrees": {
+        "title": "Same-molecule match awaiting confirmation",
+        "why": "The row's active ingredient agrees with the proposed product; it is held for review only because the evidence is cross-insurer.",
+        "action": "“Confirm all” — each confirmation writes a permanent crosswalk entry.",
+    },
+    "coverage_review_conflict": {
+        "title": "Active ingredient or strength disagrees",
+        "why": "The row name and the proposed product do not agree on the active ingredient or the strength.",
+        "action": "Review case by case; reject with a coded reason so the matcher learns.",
+    },
+    "coverage_unmatched_absent": {
+        "title": "Drug is not in the NFI list",
+        "why": "The active ingredient is absent from the whole NFI catalog — either it is not marketed in Iran, or NFI names it differently.",
+        "action": "Acknowledge as a group; add a synonym if an equivalent exists.",
+    },
+    "coverage_unmatched_bulk": {
+        "title": "Compounding raw material (bulk)",
+        "why": "It is a raw material for compounding, not a finished product — it has no IRC by nature.",
+        "action": "Acknowledge as a group; the price is kept as a compounding basis.",
+    },
+    "coverage_unmatched_device": {
+        "title": "Device or consumable",
+        "why": "It is a medical product, not a drug; it has no place in the drug catalog.",
+        "action": "Acknowledge as a group; it will be classified by a future devices module.",
+    },
+    "coverage_unmatched_researchable": {
+        "title": "Ambiguous name — needs research",
+        "why": "The name is a brand or an abbreviation and the active ingredient cannot be read out of it.",
+        "action": "Send to “Smart enrichment” to extract ingredient, form and strength.",
+    },
+    "nfi_missing_country": {
+        "title": "Manufacturing country unknown",
+        "why": "The NFI crawl did not capture the country column; only a full crawl fills it.",
+        "action": "Re-crawl NFI behind an Iran proxy (the parser now stores the country).",
+    },
+    "nfi_price_expired_registration": {
+        "title": "No price — registration expired",
+        "why": "The licence validity date has passed; a deregistered product has no current tariff.",
+        "action": "Acknowledge as a group — no price for an expired licence is correct data, not a gap.",
+    },
+    "nfi_missing_price_active": {
+        "title": "No announced price (licence valid)",
+        "why": "The licence is valid or unknown, yet the NFI page carried no price — a real gap.",
+        "action": "Re-crawl; whatever remains can be priced from the insurer reference.",
+    },
+    "nfi_missing_atc": {
+        "title": "No ATC code",
+        "why": "The ATC tree was absent from the source page, or was not read.",
+        "action": "Re-crawl (the full atc_path is stored now) or complete it through enrichment.",
+    },
+    "nfi_missing_strength": {
+        "title": "Strength unknown",
+        "why": "The composition on the source page did not state a strength.",
+        "action": "Extract it from the product name or through enrichment; it affects the same-molecule key.",
+    },
+    "price_gap_extreme": {
+        "title": "Extreme gap between announced price and insurer reference",
+        "why": "The insurer reference is more than 10× the announced price — a stale price, a broken source row, or a wrong match.",
+        "action": "Review case by case; if it is right, update the price from that same run.",
+    },
+    "price_gap_moderate": {
+        "title": "Ordinary price gap",
+        "why": "The distance between the announced price and the insurer reference is within the usual tariff-adjustment range.",
+        "action": "Acknowledge as a group, or refresh prices in bulk from the latest run.",
+    },
+    "price_below_reference": {
+        "title": "Market price below the insurer reference",
+        "why": "For a product of the same form, brand and strength, the real market price cannot be lower than the insurer reference — an insurer deliberately caps its liability low, not high. So any such row is either linked to the wrong product (form, strength or pack size) or carries a stale NFI price. A large gap usually means the former.",
+        "action": "Open the link: check the insurer row's form, strength and pack size against the product. If they are right, the announced price is stale and needs refreshing.",
+    },
+    "group_price_dispersion": {
+        "title": "Implausible price spread within one group",
+        "why": "Members of one equivalence group differ in price by more than 100×. A brand premium is normal and rarely exceeds 20×; beyond that it usually means the grouping key is wrong or one of the prices is broken — \"vitamin|12|tablet\" was built from an overflow of \"vitamin B12\" and put 2 and 750,000 IRR side by side.",
+        "action": "Open the group: fix the key if the members are not really equivalent, otherwise fix the broken price. While they share a group, the insurer reference spreads across all of them.",
+    },
+}
+
 DISPOSITIONS = ("accepted", "wont_fix", "resolved", "deferred")
 
 
@@ -482,6 +578,11 @@ async def board(db, *, include_closed: bool = False) -> dict:
             "sub_rulings": sorted(subs, key=lambda x: x["subject_key"]),
             "lane_fa": LANE_FA[meta["lane"]], "title": meta["title"],
             "why": meta["why"], "action": meta["action"], "route": meta["route"],
+            # English beside Persian — the panel picks, the catalogue stays single
+            "lane_en": LANE_EN[meta["lane"]],
+            "title_en": CAUSES_EN.get(key, {}).get("title", meta["title"]),
+            "why_en": CAUSES_EN.get(key, {}).get("why", meta["why"]),
+            "action_en": CAUSES_EN.get(key, {}).get("action", meta["action"]),
             "closed": closed,
             "disposition": (ruling or {}).get("disposition"),
             "reason": (ruling or {}).get("reason"),
@@ -498,4 +599,4 @@ async def board(db, *, include_closed: bool = False) -> dict:
     return {"causes": causes,
             "totals": {"open": open_n, "acknowledged": ack_n,
                        "all": open_n + ack_n, "by_lane": by_lane},
-            "lanes": LANE_FA}
+            "lanes": LANE_FA, "lanes_en": LANE_EN}
