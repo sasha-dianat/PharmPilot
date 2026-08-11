@@ -1319,3 +1319,42 @@ trigger, edits a row, and asserts the break lands at that row's index.
   insurer itself is prepared to reimburse against.
 - Verification: `pytest tests/unit -p no:randomly` → 1,536 passed, 1 failed
   (`test_integrations_sandbox`, pre-existing).
+
+### 2026-08-09 — Claude (Opus 5) — the owner's invariant, turned into a detector
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- **Owner corrected my reading, and the correction matters.** Prices sitting
+  ABOVE the reference are not staleness — the insurer caps its liability
+  deliberately, to carry less of the cost. So the differential is policy, by
+  design, and there is nothing to "fix" there.
+- The owner's invariant is the useful half: **for an identical dosage form,
+  brand and strength, the market price CANNOT be below the insurer reference.**
+  An insurer does not overpay. Every below-reference row is therefore a defect,
+  and the size of the gap says which kind: a large gap means the link is to a
+  different product (wrong strength, form or pack), a small one means our NFI
+  price is stale.
+- **Correcting my own earlier number**: I reported 5–6% of below-reference rows
+  as pack-vs-unit basis. That was wrong — the test required `package_count > 1`
+  and so silently skipped the ~3,600 rows that have no pack count at all.
+  Re-run over all 7,123:
+
+  | n | class | remedy |
+  |---|---|---|
+  | 3,971 | unexplained, >1.5× — wrong form/strength/pack | matching defect |
+  | 1,895 | <50% below — stale NFI price | price refresh |
+  | 955 | pack-vs-unit basis | not a defect |
+  | 302 | ≤1% rounding | nothing |
+
+  The wide end reads exactly as the owner predicted: warfarin 5 mg at 1,500 rial
+  against a 127,770 reference (×85 — the reference is for a ~100-tab pack),
+  insulin glulisine SoloStar 192,000 against 8,000,000, furosemide ampoules
+  11,100 against 468,600.
+- Implemented as a new cause `price_below_reference` (judgement lane) at >1.5×,
+  excluding rows a pack-vs-unit reading explains. **2,728 products** raised.
+- Board: 896 → 3,624 open. That is a real backlog surfacing on a rule that did
+  not exist before, not a regression — and it is the most directly monetary of
+  the lot, since each one is either a mis-linked reference or a price the
+  pharmacy is selling below.
+- Verification: targeted suites pass (15). Full suite last green at 1,536 with
+  the same single pre-existing `test_integrations_sandbox` failure.

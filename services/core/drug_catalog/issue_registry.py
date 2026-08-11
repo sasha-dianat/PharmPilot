@@ -170,6 +170,16 @@ CAUSES: dict[str, dict] = {
         "action": "پذیرش گروهی یا به‌روزرسانی دسته‌ای قیمت‌ها از آخرین اجرا.",
         "route": "price_review",
     },
+    "price_below_reference": {
+        "lane": LANE_JUDGEMENT, "title": "قیمت بازار پایین‌تر از مرجع بیمه",
+        "why": "برای یک فرآورده با شکل، برند و قدرتِ یکسان، قیمت واقعی بازار نمی‌تواند "
+               "از مرجع بیمه کمتر باشد — بیمه سقف تعهدش را عمداً پایین می‌گذارد، نه بالا. "
+               "پس هر ردیفی که این‌طور باشد یا به فرآوردهٔ اشتباهی وصل شده (شکل، قدرت یا "
+               "اندازهٔ بسته) یا قیمت NFI آن کهنه است. اختلاف بزرگ معمولاً یعنی اولی.",
+        "action": "پیوند را باز کنید: شکل و قدرت و اندازهٔ بستهٔ ردیف بیمه را با فرآورده "
+                  "بسنجید. اگر درست است، قیمت اعلامی کهنه است و باید تازه شود.",
+        "route": "price_review",
+    },
     "group_price_dispersion": {
         "lane": LANE_JUDGEMENT, "title": "پراکندگی غیرمنطقی قیمت در یک گروه",
         "why": "اعضای یک گروه هم‌ارز بیش از ۱۰۰ برابر اختلاف قیمت دارند. مابه‌التفاوت "
@@ -187,6 +197,13 @@ CAUSES: dict[str, dict] = {
 # at different prices (normal — that is what مابه‌التفاوت is for), but only 30
 # exceed 100×.
 GROUP_DISPERSION_RATIO = 100
+
+# Below this the gap reads as a stale NFI price, which the price lane already
+# handles; above it the reference is describing a different product — a wrong
+# strength, form, or pack size. Measured over 7,123 below-reference pairs:
+# 1,895 sit under 1.5× (stale), 3,971 above it (wrong product), the rest being
+# pack-basis or rounding.
+BELOW_REFERENCE_RATIO = 1.5
 
 
 def cause_key(cause: str, scope: str = "*") -> str:
@@ -325,9 +342,30 @@ async def _price_counts(db, extreme_pct: int = 1000,
            AND max(announced_price)::numeric / min(announced_price)::numeric >= :ratio
       ) t"""), {"ratio": GROUP_DISPERSION_RATIO,
                 **({"excl": ex_d} if ex_d else {})})).scalar() or 0
+    # Owner's rule (2026-08-09): for an identical form, brand and strength the
+    # market price CANNOT sit below the insurer reference — an insurer caps its
+    # liability deliberately, it does not overpay. So a below-reference row is a
+    # defect. Counted only where the gap is wide enough to mean a wrong product
+    # rather than a stale price, and only where a pack-vs-unit basis does not
+    # explain it (the reference quoting a pack while we hold the unit).
+    ex_b = sorted(ruled.get("price_below_reference", ()))
+    below = (await db.execute(text(f"""
+      SELECT count(*) FROM drug_catalog d, jsonb_each(d.coverage) e
+      WHERE d.announced_price > 0 AND jsonb_typeof(e.value)='object'
+        {"AND d.irc <> ALL(:excl)" if ex_b else ""}
+        AND coalesce((e.value->>'reference_price')::numeric, 0) > 0
+        AND (e.value->>'reference_price')::numeric
+            > d.announced_price * :ratio
+        AND NOT (d.package_count > 1 AND
+                 (e.value->>'reference_price')::numeric
+                 BETWEEN d.announced_price * d.package_count * 0.75
+                     AND d.announced_price * d.package_count * 1.35)"""),
+        {"ratio": BELOW_REFERENCE_RATIO,
+         **({"excl": ex_b} if ex_b else {})})).scalar() or 0
     return {"price_gap_extreme": extreme,
             "price_gap_moderate": max(0, any_gap - extreme),
-            "group_price_dispersion": int(disp)}
+            "group_price_dispersion": int(disp),
+            "price_below_reference": int(below)}
 
 
 async def _coverage_counts(db) -> dict[str, int]:
