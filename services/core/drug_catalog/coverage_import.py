@@ -691,6 +691,43 @@ _COND_FLAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("price_stability",  ("ثبات قیمت",)),
 )
 _NOT_INSURED = ("غیر بیمه", "غیربیمه")
+
+# ── pack-basis references: two flags, deliberately ──────────────────────────
+# Neither insurer publishes WHICH basis its reference price is on. Some are per
+# unit and some per pack — warfarin 5 mg reads 127,770 against a market price of
+# 1,500 a tablet, which is the reference quoting a ~100-tablet pack. Nothing in
+# the file says so; it has to be inferred from the ratio.
+#
+# Because it is INFERRED, one flag is not enough and the two have different jobs:
+#
+#   reference_basis / reference_unit_price   for the MACHINE. The engine must
+#       divide a pack reference down to a unit before it multiplies by quantity,
+#       or it bills a whole pack for every tablet dispensed.
+#   reference_basis_note                     for the HUMAN. It says the basis was
+#       inferred and shows the arithmetic, so a supervisor can overrule it. A
+#       silent machine flag on a guessed value is how a wrong number becomes
+#       policy.
+_PACK_LO, _PACK_HI = 0.75, 1.35
+
+
+def _mark_reference_basis(entry: dict, record) -> None:
+    """Stamp both flags on a coverage entry when the reference looks pack-based."""
+    ref = entry.get("reference_price")
+    pc = getattr(record, "package_count", None) or 0
+    unit = getattr(record, "announced_price", None) or 0
+    if not ref or pc <= 1 or unit <= 0:
+        return
+    ratio = float(ref) / float(unit)
+    if _PACK_LO <= ratio / pc <= _PACK_HI:
+        per_unit = int(round(float(ref) / pc))
+        entry["reference_basis"] = "pack"
+        entry["reference_unit_price"] = per_unit
+        entry["reference_basis_note"] = (
+            f"قیمت مرجع بر مبنای بستهٔ {pc} عددی است (هر واحد ≈ {per_unit:,} ریال) — "
+            "استنباط‌شده از نسبت قیمت، لطفاً پیش از استفاده تأیید کنید."
+        )
+    else:
+        entry["reference_basis"] = "unit"
 # Funding channels tamin names inside its «تعهد» column. Ordinary insurance pays
 # 0 % on these; the entitlement exists somewhere else and the patient must claim
 # it, so "covered" alone is a dangerous summary.
@@ -794,6 +831,7 @@ def build_coverage(links: list[LinkResult], *, insurer: str,
                 c = conv(v)
                 if c is not None:
                     entry[k] = c
+        _mark_reference_basis(entry, link.record)
         if link.row.get("inpatient") not in (None, ""):
             entry["inpatient"] = _to_bool(link.row["inpatient"])
         # the شرایط تعهد text is policy, and it OVERRIDES the columns: it is where

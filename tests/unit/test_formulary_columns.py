@@ -93,3 +93,53 @@ def test_a_missing_field_cannot_refuse():
     from services.core.drug_catalog.succession import same_product_refusal
     assert same_product_refusal(_Row(price=None, pack=30), _Row(price=75000, pack=30)) is None
     assert same_product_refusal(None, _Row(price=1)) is None
+
+
+# ── pack-basis: two flags, one for the machine and one for the human ────────
+class _Rec:
+    def __init__(self, price, pack, coverage=None):
+        self.announced_price, self.package_count = price, pack
+        self.coverage = coverage or {}
+
+
+def test_a_pack_reference_is_divided_down_for_the_engine():
+    """warfarin: the insurer quotes 127,770 for a 40-tablet pack while the
+    market price is 2,770 a tablet. Multiplied per unit that bills 46× too
+    much, so the MACHINE flag carries a per-unit figure."""
+    from services.core.drug_catalog.coverage_import import _mark_reference_basis
+    e = {"reference_price": 127770}
+    _mark_reference_basis(e, _Rec(2770, 40))
+    assert e["reference_basis"] == "pack"
+    assert e["reference_unit_price"] == round(127770 / 40)
+
+
+def test_the_human_note_says_it_was_inferred():
+    """No insurer publishes the basis — it is read off a price ratio. The note
+    must say so, or a guess becomes policy the moment it is applied."""
+    from services.core.drug_catalog.coverage_import import _mark_reference_basis
+    e = {"reference_price": 127770}
+    _mark_reference_basis(e, _Rec(2770, 40))
+    note = e["reference_basis_note"]
+    assert "40" in note and "استنباط" in note and "تأیید" in note
+
+
+def test_a_unit_reference_is_left_alone():
+    from services.core.drug_catalog.coverage_import import _mark_reference_basis
+    e = {"reference_price": 20400}
+    _mark_reference_basis(e, _Rec(20400, 30))
+    assert e["reference_basis"] == "unit"
+    assert "reference_unit_price" not in e and "reference_basis_note" not in e
+
+
+def test_the_router_feeds_the_engine_the_unit_price_and_flags_the_human():
+    from services.platform.routers.pricing import _coverage, _channel_of
+    cov = {"salamat": {"covered": True, "reference_price": 127770,
+                       "reference_basis": "pack", "reference_unit_price": 3194,
+                       "reference_basis_note": "..."}}
+    rec = _Rec(2770, 40, cov)
+    rec.category = None
+    covered, ref, _vat = _coverage(rec, "salamat")
+    assert covered and int(ref) == 3194           # machine: per unit, not 127,770
+    ann = _channel_of(rec, "salamat")
+    assert ann["needs_price_confirmation"] is True    # human: stop and check
+    assert ann["reference_price_pack"] == 127770      # both numbers stay visible

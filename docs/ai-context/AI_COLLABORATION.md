@@ -1358,3 +1358,43 @@ trigger, edits a row, and asserts the break lands at that row's index.
   pharmacy is selling below.
 - Verification: targeted suites pass (15). Full suite last green at 1,536 with
   the same single pre-existing `test_integrations_sandbox` failure.
+
+### 2026-08-09 — Claude (Opus 5) — pack-basis references: a flag for the machine, a note for the human
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner's directive: NFI's price is not authoritative. The insurer reference
+  drives the insurer's share; the patient's remainder is computed from the price
+  registered in the INVENTORY engine. And pack-basis references need TWO
+  markers — one the pricing engine obeys, one a supervising human can see.
+- **Why two is right, not belt-and-braces**: neither insurer publishes which
+  basis its reference is on. It has to be INFERRED from the ratio of reference
+  to unit price. A machine flag on a guessed value, applied silently, is how a
+  wrong number becomes policy — so the human note states that it was inferred
+  and shows the arithmetic.
+- Implemented:
+  - `coverage_import._mark_reference_basis` writes `reference_basis`
+    (`unit`/`pack`), `reference_unit_price` (MACHINE) and a Persian
+    `reference_basis_note` (HUMAN) naming the pack size, the per-unit figure and
+    the fact that it is an inference awaiting confirmation.
+  - `routers/pricing._coverage` feeds the engine the PER-UNIT figure when the
+    basis is pack, so quantity multiplication is correct.
+  - `_channel_of` carries `reference_basis`, both prices, the note and
+    `needs_price_confirmation: true` onto the quote line.
+  - Backfilled over the live catalog: 30,668 unit, **171 pack**, 19,641 with no
+    reference. Snapshot `coverage_backup_pre_basis` (28,448 rows).
+- Verified end to end on آلدوکومار (warfarin, 40-tab pack): stored reference
+  127,770, engine receives **3,194 per unit**, and dispensing 30 tablets gives
+  covered_base 83,100 with conservation holding. Without the flag the base would
+  have been 3,833,100 — **46× too much**.
+- Four tests, including one asserting the human note says «استنباط‌شده» and
+  «تأیید کنید» so it cannot be quietly reduced to a bare machine flag.
+- Verification: `pytest tests/unit -p no:randomly` → 1,540 passed, 1 failed
+  (`test_integrations_sandbox`, pre-existing).
+- **Still open, and it is the owner's larger point**: `resolve_consumer_price`
+  still returns `max(NFI announced, last invoice)`. Per the directive the
+  patient's remainder should come from the inventory-registered price, with NFI
+  not consulted. That is a money-path change touching every quote, so it is
+  flagged rather than done — and it needs one decision first: whether the
+  inventory price is a PURCHASE price (in which case a margin belongs on top)
+  or already the sale price.

@@ -148,6 +148,10 @@ def price_line(line: LineInput, plan: InsurerPlan, *, setting: str) -> LineBreak
     # 19,663 was collected on a 5,750 item and the invariant this module
     # documents (insurer_share + patient_total == gross + vat) was violated by
     # 13,913 rial on a single line.
+    # The caller must hand us a PER-UNIT reference. Where the insurer quoted a
+    # pack, `coverage_import` divides it down and records the fact; the router
+    # passes the divided figure. This assert-by-construction is the machine half
+    # of the two-flag rule — see `_mark_reference_basis`.
     ref_unit = d.insurer_reference_price if d.insurer_reference_price is not None else d.consumer_price
     ref_unit = min(ref_unit, d.consumer_price)
     covered_base = _round(ref_unit * qty)

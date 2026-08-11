@@ -63,7 +63,14 @@ def _coverage(rec: CatalogRecord, insurer: str) -> tuple[bool, Decimal | None, D
     entry = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
     if entry is not None:
         covered = bool(entry.get("covered", True))
-        ref = entry.get("reference_price")
+        # A pack-basis reference must be divided down before the engine
+        # multiplies by quantity, or a whole pack is billed for every tablet.
+        # `reference_unit_price` is the machine flag written by
+        # coverage_import._mark_reference_basis; the human-readable
+        # `reference_basis_note` rides alongside it on the quote line.
+        ref = (entry.get("reference_unit_price")
+               if entry.get("reference_basis") == "pack"
+               else entry.get("reference_price"))
         return covered, (Decimal(str(ref)) if ref is not None else None), vat
     covered = rec.category in (ItemCategory.DRUG, ItemCategory.OTC)
     return covered, None, vat
@@ -76,16 +83,32 @@ _CHANNEL_FA = {
 
 
 def _channel_of(rec: CatalogRecord, insurer: str) -> dict:
-    """The funding channel this insurer named, if any — quote-ready.
+    """Quote-line annotations that must not be silent: the funding channel, and
+    the HUMAN half of the pack-basis pair.
 
-    Empty for the ordinary case, so it costs nothing on the 99% of lines that
-    have no channel and cannot be mistaken for one.
+    Both are empty for the ordinary line, so they cost nothing on the lines that
+    have neither and cannot be mistaken for one.
+
+    The pack-basis note is deliberately separate from the machine flag the
+    engine consumes. The basis is INFERRED from a price ratio — no insurer
+    publishes it — so a supervisor has to be able to see the inference and
+    overrule it. A guessed number applied silently is how it becomes policy.
     """
-    entry = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
-    ch = (entry or {}).get("funding_channel")
-    if not ch:
-        return {}
-    return {"funding_channel": ch, "funding_channel_fa": _CHANNEL_FA.get(ch, ch)}
+    raw = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
+    entry: dict = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    ch = entry.get("funding_channel")
+    if ch:
+        out |= {"funding_channel": ch, "funding_channel_fa": _CHANNEL_FA.get(ch, ch)}
+    if entry.get("reference_basis") == "pack":
+        out |= {
+            "reference_basis": "pack",
+            "reference_price_pack": entry.get("reference_price"),
+            "reference_unit_price": entry.get("reference_unit_price"),
+            "reference_basis_note": entry.get("reference_basis_note"),
+            "needs_price_confirmation": True,
+        }
+    return out
 
 
 @router.post("/quote")
