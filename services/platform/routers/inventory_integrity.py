@@ -675,13 +675,32 @@ async def list_approvals(
         InventoryApproval.pharmacy_id == staff.pharmacy_id,
         InventoryApproval.status == status,
     ).order_by(InventoryApproval.created_at.desc()).limit(200))).scalars().all()
-    return {"approvals": [{
-        "id": str(a.id), "irc": a.irc, "ndc11": a.ndc11,
-        "movement_type": a.movement_type, "quantity": float(a.quantity),
-        "reason": a.reason, "is_controlled": a.is_controlled, "status": a.status,
-        "requested_by": str(a.requested_by_id), "payload": a.payload,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
-    } for a in rows], "count": len(rows)}
+    # The queue is useless without its clock: a write-off waiting three days
+    # looks identical to one raised this morning, and the stock it covers is on
+    # the books either way.
+    overdue = {o.approval_id: o for o in SLA.overdue(
+        [{"id": str(a.id), "movement_type": a.movement_type, "status": a.status,
+          "is_controlled": a.is_controlled, "created_at": a.created_at,
+          "due_at": a.due_at, "escalation_level": a.escalation_level}
+         for a in rows])}
+
+    def out(a):
+        o = overdue.get(str(a.id))
+        return {
+            "id": str(a.id), "irc": a.irc, "ndc11": a.ndc11,
+            "movement_type": a.movement_type, "quantity": float(a.quantity),
+            "reason": a.reason, "is_controlled": a.is_controlled, "status": a.status,
+            "requested_by": str(a.requested_by_id), "payload": a.payload,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "due_at": a.due_at.isoformat() if a.due_at else None,
+            "overdue": o is not None,
+            "hours_late": round(o.hours_late, 1) if o else 0.0,
+            "escalation_level": o.level if o else 0,
+            "audience": o.audience if o else None,
+        }
+
+    return {"approvals": [out(a) for a in rows], "count": len(rows),
+            "overdue_count": len(overdue)}
 
 
 @router.post("/approvals/{approval_id}/decide")

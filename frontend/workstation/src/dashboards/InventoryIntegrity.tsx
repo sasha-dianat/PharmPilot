@@ -28,7 +28,15 @@ interface Approval {
   id: string; irc: string | null; ndc11: string | null; movement_type: string
   quantity: number; reason: string; is_controlled: boolean; status: string
   requested_by: string; created_at: string | null
+  // The clock. A queue with no deadline stalls silently, and a stalled
+  // maker-checker control looks exactly like one that is working.
+  due_at: string | null; overdue: boolean; hours_late: number
+  escalation_level: number; audience: string | null
 }
+
+const ESCALATION_FA = ['', 'به مسئول فنی اطلاع داده شود',
+                       'به مالک داروخانه اطلاع داده شود',
+                       'نقص کنترلی حل‌نشده — به مالک اعلام شود']
 
 const fa = (n: number) => new Intl.NumberFormat('fa-IR').format(n)
 
@@ -49,7 +57,8 @@ export default function InventoryIntegrity() {
     queryFn: () => inventoryIntegrityApi.reconciliation().then(r => r.data),
     refetchInterval: 60_000,
   })
-  const { data: approvals } = useQuery<{ approvals: Approval[]; count: number }>({
+  const { data: approvals } = useQuery<{ approvals: Approval[]; count: number
+                                         overdue_count: number }>({
     queryKey: ['inv-approvals'],
     queryFn: () => inventoryIntegrityApi.approvals('pending').then(r => r.data),
     refetchInterval: 30_000,
@@ -98,6 +107,12 @@ export default function InventoryIntegrity() {
             <Metric label="بررسی‌های هشداردهنده" value={fa(report.checks_firing)} />
             <Metric label="ردیف‌های درگیر" value={fa(report.total_rows_affected)} />
             <Metric label="در انتظار تأیید" value={fa(approvals?.count ?? 0)} />
+            {!!approvals?.overdue_count && (
+              <div>
+                <div className="text-[10px] text-slate-500">از مهلت گذشته</div>
+                <div className="text-lg font-bold tabular-nums text-amber-300">
+                  {fa(approvals.overdue_count)}</div>
+              </div>)}
           </div>
 
           {/* ── Check health: which of the twelve fire, at a glance ────────── */}
@@ -133,6 +148,7 @@ export default function InventoryIntegrity() {
           <span className="font-semibold text-sm">تأییدهای در انتظار (کسر موجودی)</span>
           <span className="text-[11px] text-slate-500">
             درخواست‌کننده نمی‌تواند درخواست خود را تأیید کند؛ اقلام تحت کنترل به شاهد نیاز دارند.
+            مهلت‌ها با تصمیم بسته می‌شوند، نه با گذشت زمان.
           </span>
         </div>
         {!approvals?.count && <p className="text-[12px] text-slate-500">موردی در انتظار نیست.</p>}
@@ -146,6 +162,14 @@ export default function InventoryIntegrity() {
             <span className="font-mono tabular-nums">{fa(a.quantity)}</span>
             <span className="text-slate-400">{a.irc || a.ndc11}</span>
             <span className="text-slate-500 truncate max-w-md">{a.reason}</span>
+            {a.overdue && (
+              <span title={ESCALATION_FA[a.escalation_level] || a.audience || ''}
+                className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                  a.escalation_level >= 2
+                    ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                    : 'bg-amber-500/15 text-amber-300 border-amber-500/40'}`}>
+                {fa(Math.round(a.hours_late))} ساعت از مهلت گذشته
+              </span>)}
             <div className="mr-auto flex gap-2">
               <button onClick={() => decide(a.id, true)} disabled={busy}
                       className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50">

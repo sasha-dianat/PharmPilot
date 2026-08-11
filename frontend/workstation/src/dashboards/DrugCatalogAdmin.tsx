@@ -92,7 +92,7 @@ export default function DrugCatalogAdmin() {
                                        min_id: number; max_id: number; retryable: boolean }[] }>({
     queryKey: ['nfi-failures'],
     queryFn: () => pricingApi.nfiFailures().then(r => r.data),
-    refetchInterval: q => (hs?.running ? 10_000 : 60_000),
+    refetchInterval: () => (hs?.running ? 10_000 : 60_000),
   })
   const retryFailed = async () => {
     setBusy(true); setMsg(null)
@@ -110,7 +110,7 @@ export default function DrugCatalogAdmin() {
   const { data: audit } = useQuery<AuditSummary>({
     queryKey: ['nfi-audit-summary'],
     queryFn: () => pricingApi.nfiAuditSummary().then(r => r.data),
-    refetchInterval: q => (hs?.running && hs?.mode === 'audit' ? 5_000 : 60_000),
+    refetchInterval: () => (hs?.running && hs?.mode === 'audit' ? 5_000 : 60_000),
   })
 
   const importCatalog = async (file: File) => {

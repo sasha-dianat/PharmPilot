@@ -212,15 +212,15 @@ export default function InventoryAdmin() {
         <table className="w-full text-[12px]">
           <thead className="text-slate-500 text-[10px] border-b border-slate-700">
             <tr>
-              {['دارو', 'موجودی', 'رزرو', 'روز پوشش', 'حد سفارش', 'نزدیک‌ترین انقضا',
-                'بچ‌ها', 'ارزش', 'وضعیت'].map(h =>
+              {['دارو', 'موجودی', 'رزرو', 'قابل تعهد', 'روز پوشش', 'حد سفارش',
+                'نزدیک‌ترین انقضا', 'بچ‌ها', 'ارزش', 'وضعیت'].map(h =>
                 <th key={h} className="text-right px-3 py-2 font-normal whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {isLoading && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">در حال بارگذاری…</td></tr>}
+            {isLoading && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-500">در حال بارگذاری…</td></tr>}
             {data?.items.length === 0 && (
-              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">موردی یافت نشد.</td></tr>)}
+              <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-500">موردی یافت نشد.</td></tr>)}
             {data?.items.map(it => (
               <tr key={it.ndc11}
                   onClick={() => setOpenNdc(openNdc === it.ndc11 ? null : it.ndc11)}
@@ -234,6 +234,17 @@ export default function InventoryAdmin() {
                 </td>
                 <td className="px-3 py-2 font-mono tabular-nums">{fa(it.on_hand)}</td>
                 <td className="px-3 py-2 font-mono tabular-nums text-slate-400">{fa(it.quantity_reserved)}</td>
+                {/* Available, not on-hand, is what can be promised to the next
+                    patient. Reservations were never written before, so this
+                    column always equalled on-hand and told nobody anything. */}
+                <td className={`px-3 py-2 font-mono tabular-nums ${
+                  it.on_hand - it.quantity_reserved <= 0 && it.on_hand > 0
+                    ? 'text-amber-300' : ''}`}
+                    title={it.quantity_reserved > 0
+                      ? 'موجودی منهای آنچه به نسخه‌های تحویل‌نشده تعهد شده است'
+                      : undefined}>
+                  {fa(it.on_hand - it.quantity_reserved)}
+                </td>
                 <td className={`px-3 py-2 font-mono tabular-nums ${
                   it.days_supply != null && it.days_supply < 14 ? 'text-amber-300' : ''}`}>
                   {it.days_supply != null ? fa(it.days_supply) : '—'}

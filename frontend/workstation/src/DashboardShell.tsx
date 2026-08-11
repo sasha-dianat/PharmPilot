@@ -10,13 +10,14 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Home, Package, Brain, ShieldCheck, DollarSign, Users, Bot, BookOpen,
   AlertTriangle, Search, Clock, Building2, ArrowLeft, ChevronsLeft, ChevronsRight,
-  Stethoscope, Clipboard, ClipboardCheck, Dna, Boxes, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
+  Stethoscope, Clipboard, ClipboardCheck, Dna, Boxes, Gauge, MessageCircle, Send, Pill, FlaskConical, ClipboardList, Database, type LucideIcon,
 } from 'lucide-react'
 import { apiClient } from './lib/api'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import CommandCenter         from './dashboards/CommandCenter'
 import InventoryIntelligence from './dashboards/InventoryIntelligence'
 import InventoryIntegrity    from './dashboards/InventoryIntegrity'
+import InventoryEngines      from './dashboards/InventoryEngines'
 import InventoryAdmin        from './dashboards/InventoryAdmin'
 import RecallCenter          from './dashboards/RecallCenter'
 import ClinicalIntelligence  from './dashboards/ClinicalIntelligence'
@@ -47,6 +48,7 @@ const SECTIONS = [
   { id:'inventory',  key:'2', label:'Inventory AI',       icon:Package,     description:'ML stock brain',       shortcut:'Alt+2' },
   { id:'inventory-admin', key:'v', label:'Inventory Admin',   icon:Boxes,       description:'Search, view, correct, receive', shortcut:'Alt+V' },
   { id:'inventory-integrity', key:'i', label:'Inventory Integrity', icon:ShieldCheck, description:'Reconciliation & write-off approvals', shortcut:'Alt+I' },
+  { id:'inventory-engines', key:'e', label:'Inventory Engines', icon:Gauge, description:'Advice, counting, demand signal, valuation', shortcut:'Alt+E' },
   { id:'recall',     key:'w', label:'Drug Recall',       icon:AlertTriangle, description:'Recall response & patient tracing', shortcut:'Alt+W' },
   { id:'clinical',   key:'3', label:'Clinical Intel',     icon:Brain,       description:'Patient safety',       shortcut:'Alt+3' },
   { id:'cds',        key:'4', label:'Clinical Assistant', icon:Stethoscope, description:'CDS alerts',           shortcut:'Alt+4' },
@@ -58,7 +60,7 @@ const SECTIONS = [
   { id:'poly',       key:'6', label:'Polypharmacy',       icon:Clipboard,   description:'Deprescribing review', shortcut:'Alt+6' },
   { id:'pgx',        key:'g', label:'Pharmacogenomics',   icon:Dna,         description:'PGx rules',             shortcut:'Alt+G' },
   { id:'lab-safety', key:'l', label:'Lab Safety',         icon:FlaskConical, description:'Lab monitoring',       shortcut:'Alt+L' },
-  { id:'med-rec',    key:'i', label:'Med Reconciliation', icon:ClipboardList, description:'Medication comparison', shortcut:'Alt+I' },
+  { id:'med-rec',    key:'n', label:'Med Reconciliation', icon:ClipboardList, description:'Medication comparison', shortcut:'Alt+N' },
   { id:'security',   key:'7', label:'Surveillance',       icon:ShieldCheck, description:'Security & safety',    shortcut:'Alt+7' },
   { id:'financial',  key:'8', label:'Financial Ops',      icon:DollarSign,  description:'Revenue & claims',     shortcut:'Alt+8' },
   { id:'adherence',  key:'9', label:'Patient Care',       icon:Users,       description:'Adherence & MTM',      shortcut:'Alt+9' },
@@ -78,6 +80,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   command:   CommandCenter,
   inventory: InventoryIntelligence,
   'inventory-integrity': InventoryIntegrity,
+  'inventory-engines': InventoryEngines,
   'inventory-admin': InventoryAdmin,
   'recall': RecallCenter,
   clinical:  ClinicalIntelligence,

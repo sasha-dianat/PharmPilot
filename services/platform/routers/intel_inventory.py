@@ -6,6 +6,8 @@ EXISTING stock-ML panel (InventoryIntelligence), per the Master Prompt.
 """
 from __future__ import annotations
 
+import logging
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -158,12 +160,18 @@ async def demand_forecast(
             "stockout_probability_7d": round(float(f.stockout_probability_7d), 4),
             "trend": f.trend,
             "seasonal_factor": round(float(f.seasonal_factor), 3),
+            # How much of a measurement this is. A consumer that ignores it
+            # cannot tell a rate derived from 180 days of dispensing from one
+            # derived from nothing, and will plot both the same way.
+            "basis": getattr(f, "basis", "observed"),
             "degraded": False,
         }
-    except Exception:  # never fail the dashboard — fall back to flat estimate
+    except Exception:  # never fail the dashboard — say so rather than guess
+        log.exception("forecast failed for %s; reporting no signal", ndc11)
         return {"ndc11": ndc11, "avg_daily_demand": 0.0, "std_dev_daily": 0.0,
                 "forecast_7d": 0.0, "forecast_30d": 0.0, "stockout_probability_7d": 0.0,
-                "trend": "stable", "seasonal_factor": 1.0, "degraded": True}
+                "trend": "stable", "seasonal_factor": 1.0, "basis": "no_history",
+                "degraded": True}
 
 
 @router.get("/shrinkage")

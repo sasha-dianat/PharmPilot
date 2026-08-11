@@ -6,7 +6,8 @@ tariffs; these tests pin the *calculation logic*, not the exact tariffs.
 from decimal import Decimal
 
 from services.core.pricing_ir.engine import (
-    DrugPrice, LineInput, ItemCategory, price_prescription, resolve_consumer_price,
+    DrugPrice, LineInput, ItemCategory, price_line, price_prescription,
+    resolve_consumer_price,
 )
 from services.core.pricing_ir.config import InsurerPlan
 
@@ -115,3 +116,48 @@ def test_mixed_basket_conservation():
     p = price_prescription(lines, PLAN, technical_fee=TECH_FEE)
     assert p.totals.insurer + p.totals.patient == p.totals.gross + p.totals.vat + TECH_FEE
     assert p.totals.grand_total == p.totals.insurer + p.totals.patient
+
+
+# ── the covered base can never exceed what the item actually costs ──────────
+def test_reference_above_the_sale_price_does_not_over_bill_the_insurer():
+    """Iranian prices rise continuously while a published reference stays frozen
+    until the formulary is reissued, so reference < consumer is the ordinary
+    case and yields مابه‌التفاوت. The reverse happens too — our catalog price
+    lags the market, or the insurer's reference is simply higher — and uncapped
+    it billed the insurer ABOVE the sale price.
+
+    Measured on live data 2026-08-09: ketotifen 1 mg at 5,750 rial against a
+    salamat reference of 19,663 charged the insurer 13,764 and the patient
+    5,899, collecting 19,663 on a 5,750 item. 4,175 tamin and 2,948 salamat
+    products sat in that state.
+    """
+    plan = InsurerPlan(code="salamat", name_fa="سلامت",
+                       outpatient_patient_share=Decimal("0.30"),
+                       inpatient_patient_share=Decimal("0.10"),
+                       covers_technical_fee=True,
+                       technical_fee_patient_share=Decimal("0.30"))
+    d = DrugPrice(irc="K", name="ketotifen", consumer_price=Decimal("5750"),
+                  insurer_reference_price=Decimal("19663"), is_covered=True)
+    b = price_line(LineInput(drug=d, quantity=Decimal("1"), setting="outpatient"),
+                   plan, setting="outpatient")
+
+    assert b.covered_base == Decimal("5750")          # capped at the sale price
+    assert b.differential == Decimal("0")             # nothing to add
+    assert b.insurer_share + b.patient_total == b.gross + b.vat   # the invariant
+    assert b.insurer_share < Decimal("5750")
+
+
+def test_a_reference_below_the_price_still_yields_the_differential():
+    """The cap must not touch the ordinary direction."""
+    plan = InsurerPlan(code="salamat", name_fa="سلامت",
+                       outpatient_patient_share=Decimal("0.30"),
+                       inpatient_patient_share=Decimal("0.10"),
+                       covers_technical_fee=True,
+                       technical_fee_patient_share=Decimal("0.30"))
+    d = DrugPrice(irc="Z", name="zaditen", consumer_price=Decimal("29200"),
+                  insurer_reference_price=Decimal("19663"), is_covered=True)
+    b = price_line(LineInput(drug=d, quantity=Decimal("1"), setting="outpatient"),
+                   plan, setting="outpatient")
+    assert b.covered_base == Decimal("19663")
+    assert b.differential == Decimal("29200") - Decimal("19663")
+    assert b.insurer_share + b.patient_total == b.gross + b.vat

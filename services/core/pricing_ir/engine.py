@@ -138,7 +138,18 @@ def price_line(line: LineInput, plan: InsurerPlan, *, setting: str) -> LineBreak
             vat=vat, patient_total=_round(gross + vat),
         )
 
+    # The covered base is the reference — but never MORE than the item actually
+    # costs. Iranian prices rise continuously while a published reference stays
+    # frozen until the formulary is reissued, so reference < consumer is the
+    # ordinary case and produces مابه‌التفاوت. The reverse happens too — a stale
+    # or mistaken catalog price below the reference — and uncapped it billed the
+    # insurer above the sale price: ketotifen at 5,750 rial against a salamat
+    # reference of 19,663 charged the insurer 13,764 and the patient 5,899, so
+    # 19,663 was collected on a 5,750 item and the invariant this module
+    # documents (insurer_share + patient_total == gross + vat) was violated by
+    # 13,913 rial on a single line.
     ref_unit = d.insurer_reference_price if d.insurer_reference_price is not None else d.consumer_price
+    ref_unit = min(ref_unit, d.consumer_price)
     covered_base = _round(ref_unit * qty)
     differential = _round(max(Decimal("0"), d.consumer_price - ref_unit) * qty)
     franchise = _franchise(plan, eff_setting)

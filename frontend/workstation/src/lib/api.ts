@@ -309,6 +309,29 @@ export const inventoryIntegrityApi = {
     apiClient.post(`/inventory/approvals/${id}/decide`, body),
 }
 
+// ── The measured engines: demand, counting, advice, value ─────────────────
+//
+// Every read here returns a `basis` alongside its number — observed, sparse,
+// no_history or declared_default. The UI must show it. A rate rendered without
+// its provenance is indistinguishable from a measurement, which is the defect
+// this whole layer was built to remove.
+export const inventoryEnginesApi = {
+  // Preview by default. `apply: true` writes the measured rates.
+  refreshDemand: (params: { apply?: boolean; window_days?: number } = {}) =>
+    apiClient.post('/inventory/demand/refresh', {}, { params }),
+  cycleCountPlan: (capacity = 25) =>
+    apiClient.get('/inventory/cycle-count/plan', { params: { capacity } }),
+  valuation: (params: { method?: 'fifo' | 'weighted'; shrinkage_days?: number } = {}) =>
+    apiClient.get('/inventory/valuation', { params }),
+  recommendations: (params: { kind?: string; status?: string; limit?: number } = {}) =>
+    apiClient.get('/inventory/recommendations', { params }),
+  // A rejection must carry a reason — it is the labelled negative, and the
+  // backend refuses one without it.
+  decideRecommendation: (id: string, body: { accept: boolean; note?: string }) =>
+    apiClient.post(`/inventory/recommendations/${id}/decide`, body),
+  scoreboard: () => apiClient.get('/inventory/recommendations/scoreboard'),
+}
+
 // ── Recall cases: the pharmacy's response, not the notice ─────────────────
 export const inventoryRecallApi = {
   list: (status?: string) =>
