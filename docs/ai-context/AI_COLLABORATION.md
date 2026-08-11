@@ -1280,3 +1280,42 @@ trigger, edits a row, and asserts the break lands at that row's index.
   family and exactly what the differential line exists to show.
 - Verification: `pytest tests/unit -p no:randomly` → 1,534 passed, 1 failed
   (`test_integrations_sandbox`, pre-existing).
+
+### 2026-08-09 — Claude (Opus 5) — salamat verification found a conservation bug in the money path
+
+- Workstream: `drug-data-integrity`
+- Branch/commit: `feat/inventory-integrity`
+- Owner's economic point, and it is the key to this: Iranian prices rise
+  continuously while a published reference stays FROZEN until the formulary is
+  reissued. So the differential is not really a brand premium — it is reference
+  staleness, and it grows on the insured generic too.
+- Measured, and the two insurers are in very different states:
+
+  | | priced+referenced | price ABOVE ref | equal | BELOW ref |
+  |---|---|---|---|---|
+  | tamin | 22,248 | 3,027 (13.6%) | 15,046 (67.6%) | 4,175 (18.8%) |
+  | salamat | 24,244 | **18,143 (74.8%)** | 3,153 (13.0%) | 2,948 (12.2%) |
+
+  salamat's references are far staler: three quarters of covered products now
+  sit above them, 117.4 billion rial of differential in total. tamin's are
+  fresh — two thirds sit exactly AT the reference.
+- **The bug.** `price_line` took the reference as the covered base with no cap,
+  so when reference > consumer it billed the insurer ABOVE the sale price and
+  broke the invariant this module documents. Live: ketotifen 1 mg at 5,750 rial
+  against a salamat reference of 19,663 charged insurer 13,764 + patient 5,899 =
+  19,663 collected on a 5,750 item — 13,913 rial of phantom money on ONE line.
+  7,123 product-insurer pairs were in that state.
+  Fixed: `ref_unit = min(reference, consumer_price)`. You cannot reimburse
+  against a base higher than the thing costs. Two regression tests, one per
+  direction, both asserting the invariant.
+- Checked before claiming the cap was the whole answer: only 5–6% of the
+  below-reference rows are the pack-vs-unit basis artifact. The other ~94% are
+  genuinely below reference on the same basis.
+- **Operational finding worth acting on**: those ~3,344 products are ones where
+  OUR catalog price is stale-LOW and the insurer's own reference is independent
+  evidence of a higher market price. The owner notes prices rise even without a
+  new purchase, so the insurer reference is a usable freshness signal for the
+  price-refresh worklist — the pharmacy is currently selling below what the
+  insurer itself is prepared to reimburse against.
+- Verification: `pytest tests/unit -p no:randomly` → 1,536 passed, 1 failed
+  (`test_integrations_sandbox`, pre-existing).
