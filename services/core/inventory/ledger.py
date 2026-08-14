@@ -107,6 +107,18 @@ APPROVAL_ALWAYS = {"WASTE", "EXPIRY_REMOVAL", "RECALL_REMOVAL",
                    "SUPPLIER_CREDIT", "COUNT_LOSS", "COUNT_GAIN"}
 
 
+# The schema stores quantities as NUMERIC(10,3), so this is the largest value a
+# lot or an aggregate can physically hold. It is a bound, not a business rule:
+# a receipt above it is refused here with an explanation, because the
+# alternative is Postgres raising a numeric overflow halfway through the
+# transaction and the caller seeing a 500 with nothing actionable in it.
+#
+# A mistyped receipt (99999999 for 999) used to be accepted, and then wedged
+# the item: every subsequent receipt on that SKU failed on the aggregate update
+# until somebody wrote the phantom stock off.
+MAX_QUANTITY = Decimal("9999999.999")
+
+
 @dataclass(frozen=True)
 class Lot:
     """The subset of an `inventory_lots` row the allocator needs."""
@@ -469,9 +481,15 @@ def plan_receipt(lot: Lot, quantity, *, movement_type: str, reason: str,
     if lot.is_recalled:
         raise LedgerError("cannot receive into a recalled lot")
     before = q(lot.quantity_on_hand)
+    after = q(before + add)
+    if after > MAX_QUANTITY:
+        raise LedgerError(
+            f"receipt of {add} would take lot {lot.lot_number} to {after}, "
+            f"beyond the {MAX_QUANTITY} a quantity column can hold — check the "
+            f"figure, and split the delivery across lots if it is genuine")
     return MovementPlan(
         lot_id=lot.lot_id, movement_type=movement_type, quantity_delta=add,
-        quantity_before=before, quantity_after=q(before + add),
+        quantity_before=before, quantity_after=after,
         lot_number=lot.lot_number, expiry_date=lot.expiry_date, reason=reason,
         requires_approval=(movement_type in APPROVAL_ALWAYS) or is_controlled,
     )

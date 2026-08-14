@@ -472,3 +472,40 @@ def test_transfers_out_and_returns_are_no_longer_removals():
         assert t not in L.ISSUE_TYPES
         with pytest.raises(L.LedgerError, match="not an issue movement"):
             L.plan_issue([lot("a", 10)], 1, movement_type=t, reason="x", as_of=TODAY)
+
+
+# ── quantities the schema cannot hold ─────────────────────────────────────
+# Found by the simulator (phase 3, "huge receipt"): a receipt of ~10^7 units was
+# accepted, and the *next* receipt on that SKU then failed with a raw numeric
+# overflow from inside the flush. A mistyped 99999999 wedged the item.
+
+def test_a_receipt_beyond_what_a_quantity_column_holds_is_refused():
+    lot = L.Lot(lot_id="L1", lot_number="A", expiry_date=date(2027, 1, 1),
+                quantity_on_hand=Decimal("0"))
+    with pytest.raises(L.LedgerError) as e:
+        L.plan_receipt(lot, Decimal("10000000"), movement_type="RECEIPT",
+                       reason="delivery")
+    assert "beyond the" in str(e.value)
+    assert "split the delivery" in str(e.value)
+
+
+def test_a_receipt_that_tips_an_existing_lot_over_the_limit_is_refused():
+    """The overflow is reached by accumulation, not by one large number."""
+    lot = L.Lot(lot_id="L1", lot_number="A", expiry_date=date(2027, 1, 1),
+                quantity_on_hand=L.MAX_QUANTITY)
+    with pytest.raises(L.LedgerError):
+        L.plan_receipt(lot, Decimal("0.001"), movement_type="RECEIPT",
+                       reason="one more unit")
+
+
+def test_a_receipt_landing_exactly_on_the_limit_is_allowed():
+    lot = L.Lot(lot_id="L1", lot_number="A", expiry_date=date(2027, 1, 1),
+                quantity_on_hand=Decimal("0"))
+    plan = L.plan_receipt(lot, L.MAX_QUANTITY, movement_type="RECEIPT",
+                          reason="a very large but storable delivery")
+    assert plan.quantity_after == L.MAX_QUANTITY
+
+
+def test_the_limit_matches_what_the_column_can_store():
+    """NUMERIC(10,3) holds up to 9999999.999. If the schema widens, this moves."""
+    assert L.MAX_QUANTITY == Decimal("9999999.999")

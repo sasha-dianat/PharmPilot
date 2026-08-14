@@ -313,3 +313,59 @@ async def test_the_aggregate_is_derived_from_the_lots_not_incremented(env):
         "SELECT quantity_reserved FROM stock_levels WHERE pharmacy_id=:p AND ndc11=:n"),
         {"p": staff.pharmacy_id, "n": ndc})).scalar()
     assert Decimal(str(agg)) == Decimal("0.000")
+
+
+async def test_damaging_reserved_stock_releases_the_promise_it_broke(env):
+    """Found by the simulator: a crushed carton left `reserved` above `on_hand`.
+
+    The carton really is crushed, so the movement is a fact and is recorded.
+    What must not survive it is a reservation still claiming units that have
+    gone — `available` would be negative and FEFO would refuse to fill the very
+    prescription the stock was held for.
+    """
+    db, staff, ndc = env
+    r = await _receive(db, staff, ndc, f"L{uuid.uuid4().hex[:6]}", qty=10)
+    rx = await make_rx(db, staff.pharmacy_id, ndc, 10)
+    await RS.reserve(db, rx, staff_id=staff.id)
+    assert await _reserved_on_lots(db, staff, ndc) == Decimal("10.000")
+
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=10,
+        reason="carton crushed in transit"), staff=staff, db=db)
+
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_reserved, quantity_damaged "
+        "FROM inventory_lots WHERE id = :i"), {"i": r["lot_id"]})).mappings().first()
+    assert Decimal(str(row["quantity_damaged"])) == Decimal("10.000")
+    assert Decimal(str(row["quantity_on_hand"])) == Decimal("0.000")
+    # The invariant the simulator caught breaking.
+    assert Decimal(str(row["quantity_reserved"])) <= Decimal(str(row["quantity_on_hand"]))
+
+    status, reason = (await db.execute(text(
+        "SELECT status, reason FROM inventory_reservations WHERE prescription_id = :r"),
+        {"r": rx.id})).first()
+    assert status == "released"
+    assert "no longer available" in reason
+
+
+async def test_a_partial_damage_keeps_the_promises_the_stock_still_covers(env):
+    """Only what cannot be backed is released — the rest of the queue stands."""
+    db, staff, ndc = env
+    r = await _receive(db, staff, ndc, f"L{uuid.uuid4().hex[:6]}", qty=20)
+    first = await make_rx(db, staff.pharmacy_id, ndc, 8)
+    await RS.reserve(db, first, staff_id=staff.id)
+    second = await make_rx(db, staff.pharmacy_id, ndc, 8)
+    await RS.reserve(db, second, staff_id=staff.id)
+
+    # Down to 9 units on hand: the first promise fits, the second does not.
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=11,
+        reason="water damage on the lower shelf"), staff=staff, db=db)
+
+    def status_of(rx_id):
+        return db.execute(text(
+            "SELECT status FROM inventory_reservations WHERE prescription_id = :r"),
+            {"r": rx_id})
+    assert (await status_of(first.id)).scalar() == "active"
+    assert (await status_of(second.id)).scalar() == "released"
+    assert await _reserved_on_lots(db, staff, ndc) == Decimal("8.000")

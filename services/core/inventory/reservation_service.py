@@ -206,6 +206,45 @@ async def consume(db: AsyncSession, rx, *, fill_id=None,
         return ReservationResult(ok=False, error=str(exc))
 
 
+async def shrink_to_capacity(db: AsyncSession, lot_id, *, pharmacy_id,
+                             now: datetime | None = None) -> dict:
+    """Release reservations a lot can no longer back.
+
+    Called after anything removes units from sellable stock. Without it a
+    damaged carton leaves `reserved` above `on_hand`: the patient's medicine
+    has been written off, the reservation still claims it, and `available` goes
+    negative — a promise against stock that does not exist.
+    """
+    now = now or datetime.now(timezone.utc)
+    row = (await db.execute(text(
+        "SELECT ndc11, quantity_on_hand, quantity_reserved FROM inventory_lots "
+        "WHERE id = :id FOR UPDATE"), {"id": lot_id})).mappings().first()
+    if row is None:
+        return {"released": 0}
+    on_hand, reserved = q(row["quantity_on_hand"]), q(row["quantity_reserved"])
+    if reserved <= on_hand:
+        return {"released": 0}
+
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT id, inventory_lot_id, ndc11, quantity, status, created_at,
+               prescription_id
+        FROM inventory_reservations
+        WHERE inventory_lot_id = :lot AND status = 'active' AND is_deleted = false
+        FOR UPDATE"""), {"lot": lot_id})).mappings().all()]
+
+    drop = RSV.plan_shrink(rows, on_hand)
+    if not drop:
+        return {"released": 0}
+    n = await _terminate(db, drop, pharmacy_id=pharmacy_id, status="released",
+                         reason=RSV.SHRINK_REASON, now=now)
+    log.warning("Released %d reservation(s) on lot %s: stock fell to %s but %s "
+                "was promised. Affected prescriptions: %s",
+                n, lot_id, on_hand, reserved,
+                ", ".join(str(r["prescription_id"]) for r in drop))
+    return {"released": n,
+            "prescriptions": [str(r["prescription_id"]) for r in drop]}
+
+
 async def sweep_expired(db: AsyncSession, pharmacy_id, *,
                         now: datetime | None = None) -> dict:
     """Return the units held by lapsed reservations.

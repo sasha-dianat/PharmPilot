@@ -42,6 +42,8 @@ from .ledger import Lot, LedgerError, pick_fefo, q
 RESERVE_ON = "READY_TO_FILL"
 
 # Terminal or backward states that must return the units to the pool.
+SHRINK_REASON = "stock no longer available — removed from the shelf"
+
 RELEASE_ON = {
     "CANCELLED": "prescription cancelled",
     "ON_HOLD": "prescription put on hold",
@@ -171,6 +173,41 @@ def release_for_transition(rows: list[dict], to_status: str) -> list[dict]:
     if reason is None:
         return []
     return plan_release(rows, reason=reason)
+
+
+def plan_shrink(rows: list[dict], capacity) -> list[dict]:
+    """Which reservations to release when the stock behind them is gone.
+
+    A crushed carton is a fact. Refusing to record it because units were
+    promised would make the books describe a shelf that no longer exists, so
+    the movement proceeds and the promises it invalidates are released here.
+
+    Newest first, deliberately. When there is not enough stock for everyone who
+    was promised some, the earlier promise keeps its place — that is the same
+    rule a queue uses, and any other order means whoever asked first can be
+    displaced by whoever asked last.
+
+    Releases whole reservations rather than trimming them. A prescription for
+    thirty tablets that is quietly reduced to eleven is not a smaller promise,
+    it is a promise nobody can fill, and the shortfall would only be discovered
+    with the patient at the counter.
+    """
+    cap = q(capacity)
+    if cap < 0:
+        cap = q(0)
+    active = [r for r in rows if r.get("status") == "active"]
+    # Oldest first by creation, so the newest are the ones dropped.
+    active.sort(key=lambda r: (r.get("created_at") is None, r.get("created_at")))
+
+    kept = q(0)
+    survive: list[dict] = []
+    for r in active:
+        want = q(r.get("quantity") or 0)
+        if q(kept + want) <= cap:
+            kept = q(kept + want)
+            survive.append(r)
+    keep_ids = {id(r) for r in survive}
+    return [r for r in active if id(r) not in keep_ids]
 
 
 def expired_rows(rows: list[dict], *, now: datetime | None = None) -> list[dict]:

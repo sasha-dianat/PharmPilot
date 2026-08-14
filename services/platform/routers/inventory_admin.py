@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.core.inventory import admin_rules as A
 from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import ledger as L
+from services.core.inventory import reservation_service as RS
 from services.platform.auth import require_permission
 from services.platform.database import get_db
 from services.platform.routers.inventory_integrity import append_movement, iso_utc
@@ -569,7 +570,17 @@ async def receive_stock(
                            quantity_on_hand=0, quantity_reserved=0, quantity_on_order=0)
         db.add(stock)
         await db.flush()
-    stock.quantity_on_hand = L.q(float(stock.quantity_on_hand or 0) + units)
+    # The per-lot cap in the ledger does not bound the aggregate: enough lots
+    # of legitimate size still sum past what the column holds. Checked here,
+    # before the write, so the caller gets an explanation rather than a numeric
+    # overflow raised from inside the flush.
+    new_aggregate = L.q(float(stock.quantity_on_hand or 0) + units)
+    if new_aggregate > L.MAX_QUANTITY:
+        raise HTTPException(422,
+            f"receiving {units} would take total stock of {body.ndc11} to "
+            f"{new_aggregate}, beyond the {L.MAX_QUANTITY} a quantity column "
+            f"can hold — check the figure before receiving it")
+    stock.quantity_on_hand = new_aggregate
     stock.last_received_at = now
     if body.irc and not stock.irc:
         stock.irc = body.irc
@@ -660,6 +671,12 @@ async def record_damage(
     movement = await append_movement(
         db, pharmacy_id=staff.pharmacy_id, ndc11=lot.ndc11, irc=lot.irc,
         lot_id=lot.id, plan=plan, actor_id=staff.id)
+
+    # Units just left sellable stock, and some of them may have been promised to
+    # a patient. The movement is a fact and is not refused; the promises it can
+    # no longer back are released here, newest first, so `reserved` cannot end
+    # up above `on_hand` — a reservation against stock that does not exist.
+    freed = await RS.shrink_to_capacity(db, lot.id, pharmacy_id=staff.pharmacy_id)
     await db.commit()
     return {"lot_id": str(lot.id), "moved": float(abs(plan.quantity_delta)),
             "movement_type": plan.movement_type,
@@ -668,6 +685,8 @@ async def record_damage(
             "from_bucket": plan.from_bucket,
             "damaged": float(plan.bucket_after) if plan.to_bucket == "damaged" else None,
             "movement_id": str(movement.id), "event_hash": movement.event_hash,
+            "reservations_released": freed.get("released", 0),
+            "affected_prescriptions": freed.get("prescriptions", []),
             "note": "units are held, not written off — they remain the "
                     "pharmacy's asset until an approved write-off or release"}
 
@@ -682,6 +701,80 @@ class WriteOffRequest(BaseModel):
     from_bucket: Optional[str] = Field(
         None, description="damaged | returned | in_transit — draw from a holding "
                           "bucket instead of sellable stock")
+
+
+class ReleaseRequest(BaseModel):
+    lot_id: UUID
+    quantity: float = Field(..., gt=0)
+    from_bucket: str = Field(..., description="damaged | returned | in_transit")
+    reason: str = Field(..., min_length=3)
+
+
+@router.post("/admin/release", status_code=201)
+async def request_release(
+    body: ReleaseRequest,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask for held stock to be put back on sale.
+
+    Units could enter a holding bucket and never leave it except by being
+    destroyed. `plan_bucket_release` existed, and `_apply_movement` knew how to
+    apply one, but nothing ever created the approval that would reach it — the
+    releasing branch was unreachable, so a carton marked damaged by mistake
+    could only be written off. Found by the simulator, which could move stock
+    into a bucket and had no way to move it back.
+
+    Approved rather than immediate, and deliberately the opposite way round
+    from `record_damage`: taking stock out of use is a safety action and applies
+    at once, while putting blocked stock back on sale is the direction that can
+    hurt a patient, so it needs a second person.
+    """
+    if body.from_bucket not in L.BUCKETS:
+        raise HTTPException(422, f"unknown bucket {body.from_bucket!r}; "
+                                 f"allowed: {sorted(L.BUCKETS)}")
+
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == body.lot_id,
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "lot not found")
+
+    held = L.q(getattr(lot, L.BUCKETS[body.from_bucket], 0) or 0)
+    if L.q(body.quantity) > held:
+        raise HTTPException(422,
+            f"cannot release {body.quantity} from {body.from_bucket} — only "
+            f"{float(held)} is held there")
+    if lot.is_recalled:
+        raise HTTPException(422,
+            "a recalled lot is never released back to sale, whatever bucket it "
+            "is sitting in")
+    if lot.expiry_date and lot.expiry_date < date.today():
+        raise HTTPException(422,
+            f"lot {lot.lot_number} expired on {lot.expiry_date.isoformat()}; "
+            f"releasing it would put expired stock back on the shelf")
+
+    drug = (await db.execute(select(DrugProduct).where(
+        DrugProduct.id == lot.drug_product_id))).scalar_one_or_none()
+
+    appr = InventoryApproval(
+        pharmacy_id=staff.pharmacy_id, irc=lot.irc, ndc11=lot.ndc11,
+        inventory_lot_id=lot.id, movement_type="TRANSFER_IN",
+        quantity=body.quantity, is_controlled=bool(drug and drug.is_controlled),
+        status="pending", reason=body.reason[:240],
+        payload={"from_bucket": body.from_bucket, "release": True},
+        due_at=SLA.deadline("TRANSFER_IN", requested_at=datetime.now(timezone.utc),
+                            is_controlled=bool(drug and drug.is_controlled)).due_at,
+        requested_by_id=staff.id, created_by=staff.id, updated_by=staff.id)
+    db.add(appr)
+    await db.commit()
+    return {"approval_id": str(appr.id), "status": "pending", "stock_changed": False,
+            "from_bucket": body.from_bucket, "quantity": body.quantity,
+            "requires_witness": appr.is_controlled,
+            "message": "درخواست بازگرداندن به موجودی قابل فروش ثبت شد؛ "
+                       "تا تأیید نفر دوم تغییری اعمال نمی‌شود."}
 
 
 @router.post("/admin/write-off", status_code=201)

@@ -186,3 +186,58 @@ def test_a_counter_holding_units_no_reservation_claims_is_drift():
 def test_a_reservation_the_counter_does_not_know_about_is_drift():
     d = RSV.drift({}, [rsv("r1", "L1", 4)])
     assert d[0]["drift"] == -4.0
+
+
+# ── stock removed from under a promise ────────────────────────────────────
+# Found by the simulator (seed 200, phase 4): damaging or writing off a lot
+# left `reserved` above `on_hand` — the patient's medicine gone and the
+# reservation still claiming it, with `available` negative.
+
+def resv(rid, qty, *, created, status="active", lot="L1"):
+    return {"id": rid, "inventory_lot_id": lot, "quantity": Decimal(str(qty)),
+            "status": status, "created_at": created,
+            "prescription_id": f"rx-{rid}"}
+
+
+def test_nothing_is_released_when_the_stock_still_covers_the_promises():
+    rows = [resv("a", 5, created=NOW), resv("b", 3, created=NOW)]
+    assert RSV.plan_shrink(rows, Decimal("10")) == []
+
+
+def test_the_promise_that_cannot_be_backed_is_released():
+    rows = [resv("a", 5, created=NOW), resv("b", 3, created=NOW + timedelta(minutes=1))]
+    dropped = [r["id"] for r in RSV.plan_shrink(rows, Decimal("5"))]
+    assert dropped == ["b"]
+
+
+def test_the_earlier_promise_keeps_its_place():
+    """Any other order lets whoever asked last displace whoever asked first."""
+    rows = [resv("first", 6, created=NOW),
+            resv("second", 6, created=NOW + timedelta(hours=1)),
+            resv("third", 6, created=NOW + timedelta(hours=2))]
+    dropped = [r["id"] for r in RSV.plan_shrink(rows, Decimal("6"))]
+    assert dropped == ["second", "third"]
+
+
+def test_everything_goes_when_the_shelf_is_emptied():
+    rows = [resv("a", 5, created=NOW), resv("b", 3, created=NOW)]
+    assert len(RSV.plan_shrink(rows, Decimal("0"))) == 2
+
+
+def test_a_reservation_is_released_whole_rather_than_trimmed():
+    """A prescription for 30 quietly reduced to 11 is not a smaller promise, it
+    is one nobody can fill — and the shortfall surfaces at the counter."""
+    rows = [resv("big", 30, created=NOW)]
+    dropped = RSV.plan_shrink(rows, Decimal("11"))
+    assert len(dropped) == 1
+    assert dropped[0]["quantity"] == Decimal("30")
+
+
+def test_negative_capacity_is_treated_as_none():
+    rows = [resv("a", 1, created=NOW)]
+    assert len(RSV.plan_shrink(rows, Decimal("-5"))) == 1
+
+
+def test_already_released_rows_are_not_released_again():
+    rows = [resv("a", 50, created=NOW, status="released")]
+    assert RSV.plan_shrink(rows, Decimal("0")) == []

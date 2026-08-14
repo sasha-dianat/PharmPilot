@@ -746,6 +746,12 @@ async def decide_approval(
                 "field_changed": applied}
 
     movement = await _apply_movement(db, a, staff)
+    # An approved write-off removes sellable stock, so the same rule applies as
+    # for damage: promises the lot can no longer back are released rather than
+    # left claiming units that have gone.
+    if a.inventory_lot_id is not None:
+        await RS.shrink_to_capacity(db, a.inventory_lot_id,
+                                    pharmacy_id=staff.pharmacy_id)
     a.status = "applied"
     await db.commit()
     return {"id": str(a.id), "status": a.status, "stock_changed": True,

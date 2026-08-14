@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -906,3 +907,74 @@ async def test_the_trigger_refuses_an_update_through_the_application(env):
             {"i": mid})
     assert "append-only" in str(e.value).lower() or "immutable" in str(e.value).lower()
     await db.rollback()
+
+
+# ── the way back out of a holding bucket ──────────────────────────────────
+# Found by the simulator: units could enter `damaged`/`returned`/`in_transit`
+# and only ever leave by being written off. `plan_bucket_release` existed and
+# `_apply_movement` knew how to apply one, but nothing created the approval that
+# would reach it — the releasing branch was unreachable.
+
+async def test_damaged_stock_found_sound_can_go_back_on_sale(env):
+    db, alice, bob, carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=100)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=40,
+        reason="suspected water damage"), staff=alice, db=db)
+
+    req = await AD.request_release(AD.ReleaseRequest(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=40, from_bucket="damaged",
+        reason="inspected: outer carton only, product sound"),
+        staff=alice, db=db)
+    assert req["stock_changed"] is False        # a release needs a second person
+
+    await IG.decide_approval(uuid.UUID(req["approval_id"]),
+                             IG.ApprovalDecision(approve=True, witness_id=carl),
+                             staff=bob, db=db)
+
+    row = (await db.execute(text(
+        "SELECT quantity_on_hand, quantity_damaged FROM inventory_lots WHERE id=:i"),
+        {"i": r["lot_id"]})).mappings().first()
+    assert float(row["quantity_damaged"]) == 0.0
+    assert float(row["quantity_on_hand"]) == 100.0
+
+
+async def test_a_release_cannot_exceed_what_the_bucket_holds(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=50)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=10, reason="dented"),
+        staff=alice, db=db)
+    with pytest.raises(HTTPException) as e:
+        await AD.request_release(AD.ReleaseRequest(
+            lot_id=uuid.UUID(r["lot_id"]), quantity=25, from_bucket="damaged",
+            reason="optimistic"), staff=alice, db=db)
+    assert e.value.status_code == 422
+    assert "only 10.0 is held there" in str(e.value.detail)
+
+
+async def test_a_recalled_lot_is_never_released_back_to_sale(env):
+    """Whatever bucket it is sitting in."""
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=50)
+    await AD.record_damage(AD.RecordDamage(
+        lot_id=uuid.UUID(r["lot_id"]), quantity=10, reason="dented"),
+        staff=alice, db=db)
+    await db.execute(text("UPDATE inventory_lots SET is_recalled = true WHERE id=:i"),
+                     {"i": r["lot_id"]})
+    with pytest.raises(HTTPException) as e:
+        await AD.request_release(AD.ReleaseRequest(
+            lot_id=uuid.UUID(r["lot_id"]), quantity=10, from_bucket="damaged",
+            reason="looks fine"), staff=alice, db=db)
+    assert "recalled lot is never released" in str(e.value.detail)
+    await db.rollback()
+
+
+async def test_an_unknown_bucket_is_refused(env):
+    db, alice, _bob, _carl, pid, ndc = env
+    r = await _receive(db, alice, ndc, qty=10)
+    with pytest.raises(HTTPException) as e:
+        await AD.request_release(AD.ReleaseRequest(
+            lot_id=uuid.UUID(r["lot_id"]), quantity=1, from_bucket="shelf",
+            reason="nope"), staff=alice, db=db)
+    assert e.value.status_code == 422
