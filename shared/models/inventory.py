@@ -86,6 +86,17 @@ class InventoryLot(AuditedBase):
 
     unit_cost: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
 
+    # The middle link of the price chain (migration 0040). The insurer's share
+    # comes from the insurer's reference price; the patient's remainder is what
+    # is left of the SHELF price, and nothing here used to hold one — `unit_cost`
+    # is what the distributor charged, not what the customer pays. Quotes fell
+    # back on NFI's announced price, which is not authoritative for either side.
+    # Per lot, because the buy price is per invoice: a lot bought later at a
+    # higher cost keeps its own pair instead of rewriting what earlier stock
+    # cost, which is what makes a margin auditable back to the invoice.
+    margin_pct: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
+    sell_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
+
     # What the person at the bench actually counted (migration 0038). A receipt
     # used to record a bare number: "3" of a 30-count pack is 3 units or 90
     # depending on what they meant, and nothing recorded which.

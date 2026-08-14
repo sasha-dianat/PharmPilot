@@ -1398,3 +1398,49 @@ trigger, edits a row, and asserts the break lands at that row's index.
   flagged rather than done — and it needs one decision first: whether the
   inventory price is a PURCHASE price (in which case a margin belongs on top)
   or already the sale price.
+
+### 2026-08-09 — Claude (Opus 5) — HANDOFF: inventory gains a shelf price
+
+- **Scope change across a boundary, recorded before the edit.** This entry
+  extends CL-003's owned scope (`shared/models/inventory.py`) from the
+  `drug-data-integrity` line of work. Both are Claude Code, same branch
+  `feat/inventory-integrity`; base commit af8b49a. CL-003 was
+  READY_FOR_REVIEW, so **its pending review is now invalidated for the inventory
+  model and must be re-run against 0040.**
+- Why it had to cross: the owner ruled that NFI's price is not authoritative.
+  The insurer's reference sets the insurer's share; the patient's remainder is
+  what is left of the SHELF price — and no shelf price existed anywhere in the
+  database. `inventory_lots.unit_cost` is the distributor's charge, and the two
+  `drug_products` price columns are `awp_unit_price` and `wac_price`, which are
+  US wholesale concepts. The chain was broken at the middle link, which is why
+  `resolve_consumer_price` still falls back on NFI.
+- Owner's specification, both parts implemented:
+  - buy price + profit percentage + sell price, held **per lot** — the buy price
+    is per invoice, so a later, dearer lot keeps its own pair instead of
+    rewriting what earlier stock cost.
+  - the product's shelf price is the **highest** `sell_price` among lots still
+    holding sellable units. Replacement cost only rises; selling old stock at
+    its old price funds the next purchase at a loss.
+  - **never mix brands** — stated twice by the owner. The maximum is taken
+    within one `drug_product_id`. «زادیتن» from Switzerland and an Iranian
+    ketotifen are separate products at separate prices, exactly as different
+    salts and presentations are.
+- Delivered: migration `0040`, two nullable columns plus a
+  `(drug_product_id, sell_price)` index, model fields, and
+  `services/core/inventory/shelf_price.py`. A lot with no `sell_price` is
+  skipped rather than read as zero — silence is not a price, and reading it as
+  one hands the customer a free item. Holding buckets (in-transit, damaged,
+  returned) do not count as sellable.
+- Gates evidenced: single head `0040`; applied to a **disposable** database,
+  downgraded to 0039 (columns verified gone), re-upgraded, database dropped;
+  then applied to `pharmpilot_test` and `pharmpilot`. Seven unit tests. Full
+  suite 1,567 passed, 1 failed (`test_integrations_sandbox`, pre-existing).
+- **Still not wired, deliberately**: `resolve_consumer_price` continues to
+  return `max(NFI announced, last invoice)`. Switching it to the shelf price
+  changes every quote and is exactly the "pricing work requires independent
+  review before merge" case. The pieces are in place; the switch is a separate,
+  reviewed change.
+- Next action/owner: independent review of `0040` and of the shelf-price rule,
+  then the `resolve_consumer_price` switch. Also worth a decision: the
+  `awp_unit_price` / `wac_price` columns on `drug_products` appear to be US
+  leftovers with no Iranian meaning.
