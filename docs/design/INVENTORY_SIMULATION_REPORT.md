@@ -222,3 +222,106 @@ by unit tests and one invariant, not by adversarial pressure.
 
 **Crash recovery and scale: low — untested.** These are the next things worth
 building, and the honest answer today is that nobody knows.
+
+---
+
+## 8. Round two — the areas section 6 listed as untested
+
+### Crash recovery · **no defect found**
+
+The backend is terminated from a second connection (`pg_terminate_backend`)
+while a transaction is open — a killed pod, an OOM or a severed socket, not a
+polite refusal. Two windows were attacked: after a receipt is written and after
+reservations are written, both before commit.
+
+Both came back clean: no lot without its movement, no movement without its lot,
+no reservation row without its counter, and every structural invariant held
+afterwards. A static pass first looked for the shape that *would* tear — a
+single logical operation committing twice — and found the two candidates
+(`edit_lot`, `decide_approval`) are mutually exclusive branches with early
+returns, not sequential commits.
+
+One correction worth recording: the first run reported a tear that had not
+happened. The detector matched movements by `reason LIKE '%lot number%'`, and a
+receipt's default reason is "goods receipt", which never contains it. Joined on
+`inventory_lot_id` instead.
+
+### Timezones · **one real defect, fixed**
+
+Three clocks were in play, and on this installation they disagree by 8.5 hours:
+
+| Clock | Value here |
+|---|---|
+| Database session (`CURRENT_DATE`, `col::date`) | `Asia/Kabul` (+04:30) |
+| API process (`date.today()`) | wherever it runs |
+| The pharmacy (`pharmacies.timezone`) | `America/New_York` (−04:00) |
+
+Demonstrated concretely: a dispense at **20:00 on 14 August in New York** is cast
+to `2026-08-15` by `created_at::date`. It fell in the wrong demand window, on the
+wrong side of an expiry check, and a day out in the cycle-count interval. The
+instant was never wrong — `created_at` is `timestamptz` — the bug is always in
+the *cast to a day*, which silently uses the reader's zone.
+
+Worse, `_demand_inputs` did `COALESCE(pf.fill_date, pf.created_at::date)`, mixing
+a local date with a session-derived one, so the same fill landed in different
+windows depending on which column happened to be populated.
+
+**Fix.** `services/core/inventory/clock.py` — one definition of the day, derived
+from the pharmacy's own timezone and passed down. `CURRENT_DATE` and bare
+`::date` casts are gone from the demand window; the expiry check, the demand
+refresh and the cycle-count planner now take the shop's `today` rather than the
+process's. A missing or invalid timezone falls back to **UTC, not the server's
+zone**, because the server's is an accident of deployment and would make the same
+data read differently after a move.
+
+**Regression:** 12 tests, including both DST transitions in New York and Iran's
+flat +03:30 (DST abolished 2022). The guard that asserts the query no longer
+uses the session clock parses the function and strips its docstring first — the
+first version failed against correct code because the docstring explains the bug
+using the strings it forbids.
+
+### Scale · **measured, no fix warranted yet**
+
+Loaded a single tenant to 8,000 SKUs / 24,000 lots / 96,000 movements and
+measured warm (best of three, after cache warm-up):
+
+| Path | Warm | Verdict |
+|---|---|---|
+| Admin search, expiring filter | 52 ms | interactive |
+| Admin search, sort by value | 105 ms | interactive |
+| Admin search, sort by name | 118 ms | interactive |
+| Demand refresh (preview) | 349 ms | acceptable |
+| Cycle-count plan | 539 ms | acceptable |
+| Valuation | 1,869 ms | slow — a report |
+| Reconciliation (15 checks) | 2,412 ms | slow — a scheduled report |
+
+Growth from 2,000 to 8,000 SKUs was roughly linear for the report paths
+(reconciliation 5.0x for 4x data, valuation 4.7x). The admin search *appeared*
+superlinear at 11.6x, and that turned out to be cold cache plus the planner
+switching to a sequential scan once the tenant held most of the table — a step
+change, not an algorithmic blow-up. Warm, it is 105 ms.
+
+**No index was added.** A covering index on `(pharmacy_id, ndc11) INCLUDE
+(quantity_on_hand, unit_cost, expiry_date)` was built and measured: 17%
+improvement, which does not earn the write cost it imposes on every receipt and
+dispense. It was dropped rather than kept on the theory that an index is always
+good.
+
+The honest structural note: the admin search aggregates **every lot in the
+pharmacy** in a CTE to return fifty rows, so its cost tracks the catalogue rather
+than the page. At the sizes measured that is 105 ms and not worth restructuring.
+If a tenant reaches six figures of lots it will need a lateral join or a
+maintained aggregate, and that is a decision to take with real data rather than
+in advance.
+
+## 9. Revised residual risk
+
+Now covered: crash-mid-transaction (clean), timezone and DST day boundaries
+(defect found and fixed), and catalogue-scale query behaviour (measured, budget
+recorded).
+
+Still untested, unchanged from section 6: multi-tenant interleaving under
+concurrent load; dashboard and cache consistency above the API; and the ML
+engines' *outputs* — a wrong reorder point is not a conservation failure and
+none of these numbers would catch one. Month-end and fiscal-period effects
+remain untested; only day boundaries were addressed.

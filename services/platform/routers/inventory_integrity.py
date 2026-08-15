@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.core.inventory import demand as DM
 from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import anomaly_bridge as AB
+from services.core.inventory import clock as CLK
 from services.core.inventory import cycle_count as CC
 from services.core.inventory import recommendations as RC
 from services.core.inventory import valuation as VAL
@@ -82,6 +83,20 @@ class _ReadOnly:
     def __init__(self, pharmacy_id):
         self.pharmacy_id = pharmacy_id
         self.id = None
+
+
+
+async def _pharmacy_clock(db: AsyncSession, pharmacy_id) -> tuple[str, "date"]:
+    """The pharmacy's timezone and the date it currently is there.
+
+    Not `CURRENT_DATE` (the database session's zone) and not `date.today()`
+    (the API process's). Measured on this installation those differ by 8.5
+    hours, so for a third of every day they name different days.
+    """
+    tz = (await db.execute(text(
+        "SELECT timezone FROM pharmacies WHERE id = :p"),
+        {"p": pharmacy_id})).scalar()
+    return (tz or CLK.FALLBACK_TZ), CLK.pharmacy_today(tz)
 
 
 async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
@@ -214,21 +229,12 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
                s.demand_basis, COALESCE(s.quantity_on_hand, 0) AS on_hand
         FROM stock_levels s WHERE s.pharmacy_id = :pid"""), p)).mappings().all()
 
-    demand_fills = (await db.execute(text("""
-        SELECT pf.ndc_dispensed AS ndc11, pf.quantity_dispensed,
-               COALESCE(pf.fill_date, pf.created_at::date) AS fill_date
-        FROM prescription_fills pf
-        JOIN prescriptions pr ON pr.id = pf.prescription_id
-        WHERE pf.is_deleted = false AND pr.pharmacy_id = :pid
-          AND COALESCE(pf.fill_date, pf.created_at::date)
-              > (CURRENT_DATE - CAST(:window AS integer))"""),
-        {**p, "window": DEMAND_WINDOW_DAYS})).mappings().all()
+    # One source for the demand inputs rather than a second copy of the query
+    # that could drift from it — and it already had, on the timezone.
+    _stock_unused, by_ndc = await _demand_inputs(db, pharmacy_id,
+                                                 DEMAND_WINDOW_DAYS)
 
-    by_ndc: dict[str, list[dict]] = {}
-    for r in demand_fills:
-        by_ndc.setdefault(r["ndc11"], []).append(dict(r))
-
-    today = DM.utc_date()
+    _tz, today = await _pharmacy_clock(db, pharmacy_id)
     divergences, stale, blind = [], [], []
     for r in signal:
         est = DM.estimate(r["ndc11"], by_ndc.get(r["ndc11"], []),
@@ -254,7 +260,7 @@ async def _gather(db: AsyncSession, pharmacy_id) -> list[R.Finding]:
         R.check_untraceable_fills([dict(r) for r in fills]),
         R.check_dispense_shortfall([dict(r) for r in shortfalls]),
         R.check_formulary_binding([dict(r) for r in lots], ambiguous),
-        R.check_expired_on_hand([dict(r) for r in lots]),
+        R.check_expired_on_hand([dict(r) for r in lots], as_of=today),
         R.check_suspicious_adjustments([dict(r) for r in movements]),
         R.check_duplicate_lots([dict(r) for r in lots]),
         R.check_unit_conversion([dict(r) for r in conv]),
@@ -281,22 +287,30 @@ async def reconciliation_report(
 # ── Demand signal ─────────────────────────────────────────────────────────
 
 async def _demand_inputs(db: AsyncSession, pharmacy_id, window_days: int):
-    """Stock rows and their in-window fills, both scoped to one pharmacy."""
+    """Stock rows and their in-window fills, both scoped to one pharmacy.
+
+    Every day boundary here is the pharmacy's local midnight. `created_at::date`
+    casts in the *session's* timezone, so a dispense at 20:00 in New York was
+    filed under the next day and fell in the wrong window; `CURRENT_DATE` moved
+    the boundary itself by the same accident.
+    """
+    tz, today = await _pharmacy_clock(db, pharmacy_id)
     p = {"pid": pharmacy_id}
     stock = (await db.execute(text("""
         SELECT ndc11, avg_daily_demand, forecast_updated_at
         FROM stock_levels WHERE pharmacy_id = :pid ORDER BY ndc11"""),
         p)).mappings().all()
 
-    fills = (await db.execute(text("""
+    day = CLK.local_date_sql("pf.created_at")
+    fills = (await db.execute(text(f"""
         SELECT pf.ndc_dispensed AS ndc11, pf.quantity_dispensed,
-               COALESCE(pf.fill_date, pf.created_at::date) AS fill_date
+               COALESCE(pf.fill_date, {day}) AS fill_date
         FROM prescription_fills pf
         JOIN prescriptions pr ON pr.id = pf.prescription_id
         WHERE pf.is_deleted = false AND pr.pharmacy_id = :pid
-          AND COALESCE(pf.fill_date, pf.created_at::date)
-              > (CURRENT_DATE - CAST(:window AS integer))"""),
-        {**p, "window": window_days})).mappings().all()
+          AND COALESCE(pf.fill_date, {day})
+              > (CAST(:today AS date) - CAST(:window AS integer))"""),
+        {**p, "window": window_days, "tz": tz, "today": today})).mappings().all()
 
     by_ndc: dict[str, list[dict]] = {}
     for r in fills:
@@ -323,7 +337,7 @@ async def refresh_demand(
     this replaces, was a fallback constant that produced confident orders for
     drugs nobody dispenses.
     """
-    today = DM.utc_date()
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
     stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, window_days)
     plan = DM.plan_refresh(stock, by_ndc, window_days=window_days, as_of=today)
 
@@ -951,7 +965,7 @@ async def cycle_count_plan(
     cost more than the one it replaced — and that should be visible now, not
     discovered a year later.
     """
-    today = DM.utc_date()
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
     items = [dict(r) for r in (await db.execute(text("""
         SELECT s.ndc11, s.avg_daily_demand, s.demand_basis,
                dp.is_controlled,
