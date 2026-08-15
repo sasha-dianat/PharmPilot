@@ -40,6 +40,11 @@ Inventory Expiry Waste Prevention · Smart Prescriber Enrichment · End-to-End R
 Automation · Patient Lifetime Trajectory · Supply-Chain Early Warning · Automated Clinical
 Documentation · Financial Margin Optimization.
 
+**Added after the original fourteen** (2026-08-15, owner's extension — recorded here so this
+document stays the source of truth rather than the code): ⑳ Distributor Negotiation Mentor ·
+㉑ Seasonal Demand Decomposition. Both are specified in PART 3 and rostered with their data
+prerequisites in `docs/design/INVENTORY_INTELLIGENCE_ENGINES.md`.
+
 ---
 
 ## PART 1 — THE OFFLINE-FIRST DOCTRINE (non-negotiable law)
@@ -400,6 +405,49 @@ service, mounted under sub-prefixes below).
 - **Frontend:** "Margin Optimizer" section in **`FinancialOperations.tsx`**: below-cost alert
   list, substitution-opportunity table (current vs optimal margin + patient-cost delta), DIR
   exposure gauge with the specific patient/switch actions that reduce it.
+
+---
+
+### ⑳ Distributor Negotiation Mentor  *(added 2026-08-15 — not in the original fourteen)*
+- **Purpose:** Prepare the owner for a conversation with a distributor: what this
+  pharmacy is worth to them, where current terms lag the alternatives, and which
+  concessions are cheap to give. It prepares a person; it does not negotiate.
+- **LOCAL:** Volume leverage (annual spend per supplier and share of their categories);
+  realised unit cost per molecule after discounts/freight/credit terms, compared across
+  suppliers who sell the same thing; **reliability cost** — fill-rate translated into the
+  money short-fills actually cost in lost sales and emergency substitution; a concession
+  ledger ranking asks by what they cost this pharmacy, from safety stock and the
+  cash-conversion cycle. Preparation brief written by the **Ollama local LLM** from those
+  numbers. **Fully offline** on the pharmacy's own purchasing records.
+- **CLOUD:** Anonymised cross-pharmacy benchmark terms for the same molecule and supplier;
+  national price indices. Offline → local-only with `degraded:true`.
+- **Never:** invents a benchmark. With one supplier or no history it says the comparison
+  cannot be made — a fabricated "market rate" is worse than silence here, because the owner
+  would repeat it to a distributor who knows the real number. No patient data; volumes only.
+- **Data:** `purchase_orders`, `purchase_order_lines`, `receiving_records`, lot `unit_cost`
+  history, supplier reliability (E12), safety stock (E8).
+- **Endpoint:** `GET /api/v1/intelligence/procurement/negotiation-brief?supplier=…`
+- **Frontend:** "Negotiation brief" in the procurement panel — leverage summary, per-molecule
+  term gaps, the reliability bill, and a ranked ask list with what each concession costs.
+
+---
+
+### ㉑ Seasonal Demand Decomposition  *(added 2026-08-15 — not in the original fourteen)*
+- **Purpose:** Separate a real annual pattern from noise so ordering anticipates the season
+  instead of reacting a month late.
+- **LOCAL:** STL decomposition (trend / seasonal / residual) per molecule with an explicit
+  seasonality-strength statistic. **Persian-calendar aware** — Nowruz, Ramadan and the school
+  year move against the Gregorian calendar, and a model keyed to Gregorian months smears
+  them. **Fully offline.**
+- **CLOUD:** Regional epidemiological signals; cross-pharmacy seasonal priors for molecules
+  with too little local history.
+- **Two guards on whether it may speak at all:** fewer than two complete cycles → no seasonal
+  claim, ever (one cold season is an anecdote); seasonal component not exceeding the residual
+  → "no detectable seasonality" rather than a flat line presented as a finding.
+- **Data:** dispense history (≥2 years for a confident annual claim), Jalali calendar.
+- **Endpoint:** `GET /api/v1/intelligence/inventory/seasonality`
+- **Frontend:** Seasonality strip in `InventoryEngines.tsx` — decomposition chart with the
+  cycle count and strength shown beside it, so a weak signal is visibly weak.
 
 ---
 
