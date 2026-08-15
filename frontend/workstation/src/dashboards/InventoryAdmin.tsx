@@ -14,7 +14,7 @@
  */
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { inventoryAdminApi, apiErrorText } from '../lib/api'
+import { inventoryAdminApi, inventoryApi, apiErrorText } from '../lib/api'
 import { useLang } from '../lib/i18n'
 import { FILTER_LABEL_EN, SORT_LABEL, serverLabel } from '../lib/serverLabels'
 
@@ -324,6 +324,9 @@ export default function InventoryAdmin() {
             <button onClick={() => setOpenNdc(null)} className="ms-auto text-slate-400 text-sm">{t('Close', 'بستن')} ✕</button>
           </div>
 
+          <ShelfPriceCard productId={String(detail.item.drug_product_id ?? '')}
+                          onDone={setMsg} />
+
           {/* lots */}
           <div>
             <p className="text-[12px] font-semibold mb-1">{t('Lots — in issue order (nearest expiry first)',
@@ -504,5 +507,80 @@ function In({ label, v, on, type = 'text', w }: {
       <input type={type} value={v} onChange={on}
              className={`${w} bg-slate-900 border border-slate-600 rounded px-2 py-1`} />
     </label>
+  )
+}
+
+
+/**
+ * The shelf price — what the customer is charged, and every price it has been.
+ *
+ * Setting it is an OWNER act: the endpoint requires `inventory:price`, which
+ * INVENTORY_STAFF deliberately do not hold. They receive goods and record what
+ * those cost; what the customer pays is a commercial decision. A 403 here is
+ * the control working, so it is reported plainly rather than hidden.
+ *
+ * The history is shown beside the box on purpose. A price that changed with no
+ * record of what it was before is the one number nobody can explain afterwards
+ * — to a patient who remembers paying less, or to an auditor.
+ */
+function ShelfPriceCard({ productId, onDone }:
+    { productId: string; onDone: (m: { kind: 'ok' | 'err' | 'warn'; text: string }) => void }) {
+  const { t } = useLang()
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const { data } = useQuery({
+    queryKey: ['shelf-price', productId],
+    queryFn: () => inventoryApi.getShelfPrice(productId).then(r => r.data),
+    enabled: !!productId,
+  })
+  if (!productId) return null
+  const price = data?.shelf_price as number | null | undefined
+  const history = (data?.history ?? []) as { value: number; valid_from: string; valid_to: string | null }[]
+
+  const reprice = async () => {
+    const raw = window.prompt(t('New shelf price (Rial) — applies to every sellable lot',
+                                'قیمت جدید فروش (ریال) — روی همهٔ بچ‌های قابل فروش اعمال می‌شود'),
+                              price ? String(price) : '')
+    if (raw === null) return
+    const value = Number(raw.replace(/[^\d.]/g, ''))
+    if (!value || value <= 0) { onDone({ kind: 'err', text: t('Enter a price above zero.', 'قیمتی بزرگ‌تر از صفر وارد کنید.') }); return }
+    const reason = window.prompt(t('Reason for the change?', 'دلیل تغییر؟')) || undefined
+    setBusy(true)
+    try {
+      const { data: res } = await inventoryApi.setShelfPrice(productId, { sell_price: value, reason })
+      onDone({ kind: 'ok', text: t(`Priced at ${fa(res.new_shelf_price)} — ${fa(res.lots_updated)} lots, previous ${fa(res.previous_shelf_price ?? 0)}.`,
+                                   `قیمت ${fa(res.new_shelf_price)} ثبت شد — ${fa(res.lots_updated)} بچ، قیمت قبلی ${fa(res.previous_shelf_price ?? 0)}.`) })
+      qc.invalidateQueries({ queryKey: ['shelf-price', productId] })
+    } catch (e) { onDone({ kind: 'err', text: apiErrorText(e) }) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-slate-900/40 border border-slate-700 rounded-lg p-3">
+      <div className="flex flex-wrap items-baseline gap-3">
+        <p className="text-[12px] font-semibold">{t('Shelf price', 'قیمت فروش')}</p>
+        <span className="font-mono tabular-nums text-lg">
+          {price != null ? fa(price) : <span className="text-slate-500 text-sm">{t('not set', 'ثبت نشده')}</span>}
+        </span>
+        <span className="text-[10px] text-slate-500">
+          {t('highest sellable lot, this product only', 'بالاترین بچ قابل فروش، فقط همین فرآورده')}
+        </span>
+        <button onClick={reprice} disabled={busy}
+                className="ms-auto text-[11px] px-2 py-1 rounded bg-sky-600/80 hover:bg-sky-600 disabled:opacity-50">
+          {busy ? t('Saving…', 'در حال ثبت…') : t('Set price', 'تعیین قیمت')}
+        </button>
+      </div>
+      {history.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+          <span className="text-slate-500">{t('Previously:', 'پیش از این:')}</span>
+          {history.slice(0, 6).map((h, i) => (
+            <span key={i} className="font-mono tabular-nums">
+              {fa(h.value)}
+              <span className="text-slate-600"> · {String(h.valid_from).slice(0, 10)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }

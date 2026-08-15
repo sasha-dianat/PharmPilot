@@ -76,3 +76,61 @@ async def shelf_price_for_product(db, drug_product_id) -> Decimal | None:
     lots = (await db.execute(select(InventoryLot).where(
         InventoryLot.drug_product_id == drug_product_id))).scalars().all()
     return shelf_price_of(lots)
+
+
+async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None = None,
+                          staff_id=None, margin_pct=None) -> dict:
+    """The owner reprices a product. Every sellable lot takes the new price.
+
+    All sellable lots, not just the dearest, because the shelf price is the
+    MAXIMUM across them: leaving an older lot at a higher figure would silently
+    overrule the number the owner just typed.
+
+    The old price is not overwritten quietly — each change is appended to
+    `price_history` as a `shelf` point, keyed by the lot's IRC, through
+    `record_price`, which is SCD type-2 and closes the previous open row. That
+    is deliberately the same path every other price in this system takes; a
+    manual repricing that bypassed it would be the one price movement with no
+    history, which is precisely the one anybody would later want to explain.
+    """
+    from decimal import InvalidOperation
+    from sqlalchemy import select
+    from shared.models.inventory import InventoryLot
+    from services.core.drug_catalog.price_history import record_price
+
+    try:
+        price = Decimal(str(new_price))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("قیمت نامعتبر است.")
+    if price <= 0:
+        raise ValueError("قیمت باید بزرگ‌تر از صفر باشد.")
+
+    lots = (await db.execute(select(InventoryLot).where(
+        InventoryLot.drug_product_id == drug_product_id))).scalars().all()
+    sellable = [l for l in lots if _sellable(l) > 0]
+    if not sellable:
+        raise ValueError("این فرآورده موجودی قابل فروش ندارد.")
+
+    previous = shelf_price_of(sellable)
+    ircs, recorded = set(), []
+    for lot in sellable:
+        lot.sell_price = price
+        if margin_pct is not None:
+            lot.margin_pct = Decimal(str(margin_pct))
+        elif lot.unit_cost and Decimal(str(lot.unit_cost)) > 0:
+            # Keep the margin honest against what THIS lot actually cost, so the
+            # figure stays auditable back to its own invoice.
+            cost = Decimal(str(lot.unit_cost))
+            lot.margin_pct = ((price - cost) / cost * Decimal("100")).quantize(Decimal("0.001"))
+        if lot.irc:
+            ircs.add(lot.irc)
+    for irc in sorted(ircs):
+        recorded.append(await record_price(
+            db, irc, "shelf", price,
+            source=f"owner:{staff_id}" if staff_id else "owner"))
+    await db.commit()
+    return {"lots_updated": len(sellable),
+            "previous_shelf_price": int(previous) if previous is not None else None,
+            "new_shelf_price": int(price),
+            "history_points": [r for r in recorded if r in ("inserted", "changed")],
+            "reason": reason}

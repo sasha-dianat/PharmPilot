@@ -17,7 +17,6 @@ interface Drug {
   dea_schedule?: string
   is_controlled: boolean
   requires_refrigeration: boolean
-  awp_unit_price?: number
 }
 
 interface Props {
@@ -107,9 +106,6 @@ export default function DrugSearch({ onSelect, placeholder = 'Search drug name o
                   )}
                   {drug.requires_refrigeration && (
                     <span className="text-xs" title="Requires refrigeration">❄️</span>
-                  )}
-                  {drug.awp_unit_price && (
-                    <span className="text-xs text-gray-400">${drug.awp_unit_price.toFixed(2)}/u</span>
                   )}
                 </div>
               </div>

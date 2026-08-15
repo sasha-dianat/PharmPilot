@@ -289,6 +289,14 @@ export const inventoryApi = {
   getStockForNdc: (ndc: string) => apiClient.get(`/inventory/stock/${ndc}`),
   getExpiring: (days?: number) => apiClient.get('/inventory/expiring', { params: { days } }),
   createOrder: (data: PurchaseOrderData) => apiClient.post('/inventory/orders', data),
+  // Shelf price. Owner-only to SET (permission `inventory:price`); anyone with
+  // inventory:read may look, because the history is the point — a price that
+  // changed with no record of what it was before is the one number nobody can
+  // explain to a patient who remembers paying less.
+  getShelfPrice: (productId: string) =>
+    apiClient.get(`/inventory/products/${productId}/price`),
+  setShelfPrice: (productId: string, body: { sell_price: number; margin_pct?: number; reason?: string }) =>
+    apiClient.post(`/inventory/products/${productId}/price`, body),
 }
 
 // ── Inventory integrity: reconciliation, counts, approvals ────────────────

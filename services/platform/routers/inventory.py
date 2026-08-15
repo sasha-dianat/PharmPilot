@@ -63,7 +63,6 @@ async def search_drugs(
             "dea_schedule": d.dea_schedule,
             "is_controlled": d.is_controlled,
             "requires_refrigeration": d.requires_refrigeration,
-            "awp_unit_price": float(d.awp_unit_price) if d.awp_unit_price else None,
         }
         for d in drugs
     ]
@@ -95,8 +94,6 @@ async def get_drug(
         "is_controlled": drug.is_controlled,
         "is_hazardous": drug.is_hazardous,
         "requires_refrigeration": drug.requires_refrigeration,
-        "awp_unit_price": float(drug.awp_unit_price) if drug.awp_unit_price else None,
-        "wac_price": float(drug.wac_price) if drug.wac_price else None,
     }
 
 
@@ -292,7 +289,10 @@ async def create_purchase_order(
         if not drug:
             raise HTTPException(404, f"Drug NDC {ndc} not in catalog")
 
-        unit_cost = line_data.get("unit_cost") or (float(drug.wac_price) if drug.wac_price else 0.0)
+        # No invented fallback. `wac_price` used to stand in here, which turned
+        # a missing cost into a US dollar figure read as rial. A purchase line
+        # without a cost has no cost, and the total must not pretend otherwise.
+        unit_cost = float(line_data.get("unit_cost") or 0.0)
         qty = float(line_data["quantity_ordered"])
         total += qty * unit_cost
 
@@ -340,3 +340,72 @@ async def submit_purchase_order(
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+# ── Shelf price: an owner act, with its history kept ─────────────────────────
+
+class ShelfPriceIn(BaseModel):
+    sell_price: float
+    margin_pct: float | None = None
+    reason: str | None = None
+
+
+@router.get("/products/{product_id}/price")
+async def get_shelf_price(
+    product_id: UUID,
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Current shelf price and every price this product has been set at.
+
+    The history is the point. A price that changed with no record of what it was
+    before is the one number nobody can explain afterwards — to a patient who
+    remembers paying less, or to an auditor.
+    """
+    from sqlalchemy import select as _select
+    from services.core.inventory.shelf_price import shelf_price_for_product
+    from shared.models.price_history import PriceHistory
+
+    product = (await db.execute(
+        select(DrugProduct).where(DrugProduct.id == product_id))).scalar_one_or_none()
+    if not product:
+        raise HTTPException(404, "فرآورده یافت نشد")
+    current = await shelf_price_for_product(db, product_id)
+
+    ircs = [i for (i,) in (await db.execute(_select(InventoryLot.irc).where(
+        InventoryLot.drug_product_id == product_id,
+        InventoryLot.irc.isnot(None)).distinct())).all()]
+    history = []
+    if ircs:
+        rows = (await db.execute(_select(PriceHistory).where(
+            PriceHistory.irc.in_(ircs), PriceHistory.price_type == "shelf")
+            .order_by(PriceHistory.valid_from.desc()).limit(100))).scalars().all()
+        history = [{"value": r.value, "valid_from": r.valid_from,
+                    "valid_to": r.valid_to, "source": r.source} for r in rows]
+    return {"product_id": str(product_id),
+            "name": product.brand_name or product.generic_name,
+            "shelf_price": int(current) if current is not None else None,
+            "history": history}
+
+
+@router.post("/products/{product_id}/price")
+async def set_price(
+    product_id: UUID,
+    body: ShelfPriceIn,
+    staff: Staff = Depends(require_permission("inventory:price")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reprice a product. Owner-only, and the previous price is kept.
+
+    `inventory:price` is deliberately NOT held by INVENTORY_STAFF. They receive
+    goods and record what those cost; what the customer is charged is a
+    commercial decision, and the same separation that stops a requester
+    approving their own write-off stops a receiver repricing the shelf.
+    """
+    from services.core.inventory.shelf_price import set_shelf_price
+    try:
+        return await set_shelf_price(db, product_id, body.sell_price,
+                                     reason=body.reason, staff_id=staff.id,
+                                     margin_pct=body.margin_pct)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

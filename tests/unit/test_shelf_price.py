@@ -92,3 +92,24 @@ def test_the_maximum_is_taken_within_one_product_only():
     assert shelf_price_of(swiss) == Decimal("29200")
     # and the mixed call, which the caller must never make, would be wrong:
     assert shelf_price_of(iranian + swiss) == Decimal("29200")
+
+
+# ── the owner reprices, and the old price survives ─────────────────────────
+def test_only_the_owner_may_reprice():
+    """INVENTORY_STAFF receive goods and record what they cost. What the
+    customer is charged is a commercial decision — the same separation that
+    stops a requester approving their own write-off."""
+    from shared.models.auth import ROLE_PERMISSIONS, StaffRole
+    assert "inventory:price" in ROLE_PERMISSIONS[StaffRole.PHARMACY_MANAGER]
+    assert ROLE_PERMISSIONS[StaffRole.SUPER_ADMIN] == ["*"]
+    for role in (StaffRole.INVENTORY_STAFF, StaffRole.PHARMACY_TECHNICIAN,
+                 StaffRole.PHARMACIST, StaffRole.CASHIER, StaffRole.PHARMACY_INTERN):
+        assert "inventory:price" not in ROLE_PERMISSIONS[role], role
+
+
+def test_shelf_is_a_price_type_in_its_own_right():
+    """A repricing must be queryable apart from an authority announcement or a
+    distributor invoice, so it cannot be mistaken for either."""
+    from services.core.drug_catalog.price_history import PRICE_TYPES
+    assert "shelf" in PRICE_TYPES
+    assert {"announced", "invoice", "insurer_reference"} <= set(PRICE_TYPES)

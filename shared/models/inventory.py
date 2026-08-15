@@ -34,10 +34,12 @@ class DrugProduct(AuditedBase):
     is_generic: Mapped[bool] = mapped_column(Boolean, default=True)
     is_otc: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Pricing
-    awp_unit_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
+    # Pricing. AWP and WAC were removed in migration 0041: they are US
+    # wholesale benchmarks, they only ever held dollar-denominated seed data for
+    # sixteen American brands, and `wac_price` was silently standing in as an
+    # acquisition cost in rial. What a product costs and what it sells for are
+    # per purchase, and live on `InventoryLot` as `unit_cost` and `sell_price`.
     awp_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    wac_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
 
     # Drug database metadata
     fdb_drug_id: Mapped[str | None] = mapped_column(String(50), nullable=True)

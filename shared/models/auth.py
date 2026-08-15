@@ -26,6 +26,12 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "patient:read", "patient:write",
         "inventory:read", "inventory:write", "inventory:order",
         "inventory:approve",
+        # Setting a shelf price is an OWNER act, not a stocking act. Inventory
+        # staff receive goods and record what they cost; what the customer is
+        # charged is a commercial decision, and the same maker-checker logic
+        # that keeps a requester from approving their own write-off keeps a
+        # receiver from repricing the shelf.
+        "inventory:price",
         # The owner administers the biometric gallery: enrolment, retirement and
         # calibration. Read alone cannot change who the system can recognise.
         "biometric:write",

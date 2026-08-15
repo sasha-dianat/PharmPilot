@@ -89,8 +89,13 @@ _CLAIMS_SQL = """
            dp.brand_name,
            dp.gpi,
            COALESCE(dp.is_generic, true)  AS is_generic,
-           COALESCE(dp.wac_price, 0)      AS wac_price,
-           COALESCE(dp.awp_unit_price, 0) AS awp_price,
+           -- Acquisition cost is what the pharmacy actually PAID, averaged
+           -- over the lots it holds. It used to be dp.wac_price, a US wholesale
+           -- benchmark that only ever held dollar seed data (migration 0041).
+           COALESCE((SELECT avg(l.unit_cost) FROM inventory_lots l
+                     WHERE l.drug_product_id = dp.id AND l.unit_cost > 0), 0) AS wac_price,
+           COALESCE((SELECT max(l.sell_price) FROM inventory_lots l
+                     WHERE l.drug_product_id = dp.id AND l.sell_price > 0), 0) AS awp_price,
            dp.awp_updated_at,
            c.created_at
     FROM   claim_transactions c
@@ -106,14 +111,17 @@ _GENERIC_ALT_SQL = """
            dp.gpi,
            dp.ndc11        AS generic_ndc,
            dp.generic_name,
-           COALESCE(dp.wac_price, 0) AS wac_price,
-           COALESCE(dp.awp_unit_price, 0) AS awp_price
+           COALESCE((SELECT avg(l.unit_cost) FROM inventory_lots l
+                     WHERE l.drug_product_id = dp.id AND l.unit_cost > 0), 0) AS wac_price,
+           COALESCE((SELECT max(l.sell_price) FROM inventory_lots l
+                     WHERE l.drug_product_id = dp.id AND l.sell_price > 0), 0) AS awp_price
     FROM   drug_products dp
     WHERE  dp.gpi = ANY(:gpis)
       AND  COALESCE(dp.is_generic, true) = true
       AND  COALESCE(dp.is_active, true) = true
-      AND  COALESCE(dp.wac_price, 0) > 0
-    ORDER  BY dp.gpi, dp.wac_price ASC
+      AND  EXISTS (SELECT 1 FROM inventory_lots l
+                   WHERE l.drug_product_id = dp.id AND l.unit_cost > 0)
+    ORDER  BY dp.gpi, 3 ASC
 """
 
 

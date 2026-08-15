@@ -1444,3 +1444,43 @@ trigger, edits a row, and asserts the break lands at that row's index.
   then the `resolve_consumer_price` switch. Also worth a decision: the
   `awp_unit_price` / `wac_price` columns on `drug_products` appear to be US
   leftovers with no Iranian meaning.
+
+### 2026-08-09 — Claude (Opus 5) — AWP/WAC removed; the owner can reprice, with history
+
+- Workstream: `drug-data-integrity` + CL-003 scope (handoff recorded above)
+- Branch/commit: `feat/inventory-integrity`
+- **Migration 0041 drops `drug_products.awp_unit_price` and `wac_price`.** They
+  are US wholesale benchmarks and held exactly that: sixteen American brands —
+  Amoxil, Lipitor, Lantus at 19.84 — priced in DOLLARS, seeded by
+  `seed_fda_ndc.py`. No Iranian product ever had a value in either.
+  They were not inert. `routers/inventory.py` used `wac_price` as the fallback
+  acquisition cost for a purchase-order line, so a missing cost silently became
+  a dollar figure read as rial; `DrugSearch.tsx` rendered AWP with a `$` in a
+  pharmacy trading in rial. Both removed — a line with no cost now has no cost,
+  and the total does not pretend otherwise.
+  Six dependents updated. `margin_optimizer` now reads acquisition from
+  `inventory_lots.unit_cost` (what was actually paid) and price from
+  `sell_price`, which is more correct than a benchmark ever was.
+  340B keeps its `wac_price` FUNCTION parameter — that is a US program's own
+  input, not this column; I removed it in error and restored it.
+- **Owner repricing, with the history kept.** `POST /inventory/products/{id}/price`
+  behind a NEW permission `inventory:price`, held by SUPER_ADMIN and
+  PHARMACY_MANAGER and deliberately **not** by INVENTORY_STAFF — they receive
+  goods and record what those cost; what the customer is charged is a commercial
+  decision, the same separation that stops a requester approving their own
+  write-off. `GET` returns the current price and every previous one.
+  Every change appends a `shelf` point through `record_price`, the same SCD
+  type-2 path every other price takes. A manual repricing that bypassed it would
+  be the one price movement in the system with no history — precisely the one
+  anyone would later need to explain to a patient who remembers paying less.
+  Repricing sets EVERY sellable lot, because the shelf price is the maximum
+  across them: leaving an older lot dearer would silently overrule the owner.
+  The margin is recomputed against each lot's own `unit_cost`, so it stays
+  auditable back to that lot's invoice.
+- UI: `ShelfPriceCard` in the InventoryAdmin drawer — current price, the last
+  six prices with dates, and a Set-price button. Bilingual, Persian digits.
+- Verification: `pytest tests/unit -p no:randomly` → **1,581 passed**, 1 failed
+  (`test_integrations_sandbox`, pre-existing). `tsc --noEmit` clean. Migration
+  0041 applied to a disposable DB, downgraded (columns verified restored),
+  re-upgraded, dropped; then applied to `pharmpilot_test` and `pharmpilot`.
+  Single head 0041.
