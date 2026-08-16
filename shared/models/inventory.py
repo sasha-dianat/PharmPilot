@@ -41,6 +41,16 @@ class DrugProduct(AuditedBase):
     # per purchase, and live on `InventoryLot` as `unit_cost` and `sell_price`.
     awp_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # The owner's own price (migration 0042), held BESIDE the batch prices and
+    # not over them. The shelf price is the maximum of every candidate — each
+    # lot's purchase-derived `sell_price` and this — because a batch bought
+    # dearer than the owner last typed must still set the shelf, or that batch
+    # sells below its own replacement cost.
+    manual_shelf_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
+    manual_price_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    manual_price_set_by: Mapped[UUID | None] = mapped_column(nullable=True)
+
     # Drug database metadata
     fdb_drug_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     medspan_drug_id: Mapped[str | None] = mapped_column(String(50), nullable=True)

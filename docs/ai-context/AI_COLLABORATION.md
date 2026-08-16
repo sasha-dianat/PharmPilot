@@ -1484,3 +1484,30 @@ trigger, edits a row, and asserts the break lands at that row's index.
   0041 applied to a disposable DB, downgraded (columns verified restored),
   re-upgraded, dropped; then applied to `pharmpilot_test` and `pharmpilot`.
   Single head 0041.
+
+### 2026-08-09 — Claude (Opus 5) — correction: the owner's price COMPETES with the batches
+
+- Workstream: `drug-data-integrity` + CL-003 scope (handoff recorded above)
+- Branch/commit: `feat/inventory-integrity`
+- **Correcting the entry above.** I implemented repricing as an override: it
+  wrote the owner's number onto every sellable lot. That was wrong twice over —
+  it destroyed each batch's own derived `sell_price`, and with it the answer to
+  what that batch needed to sell for; and it inverted the rule.
+- The owner's rule is a MAXIMUM over every candidate: each batch registered
+  through purchasing, and whatever the owner entered by hand. Neither source
+  overwrites the other, they compete. A lot bought dearer than the owner last
+  typed must still lift the shelf, or that lot sells below its own replacement
+  cost — which is the whole reason the highest-lot rule exists.
+- Migration `0042` puts `manual_shelf_price` (+ `set_at`, `set_by`) on
+  `drug_products`, beside the lots rather than over them.
+  `shelf_price_of(lots, manual_price)` takes the max of both. Verified:
+  batches 3,000/3,324 with the owner typing 3,100 → **3,324** (batch wins);
+  the same batches with 5,000 → **5,000** (owner wins).
+- `set_shelf_price` now returns `entered_price`, `effective_shelf_price` and
+  `overridden_by_batch`, and the UI warns when they differ — otherwise the owner
+  types 3,100, the till charges 3,324 and nobody can see why.
+- A zero or negative manual price is not a candidate, so nothing can price a
+  product at zero by accident.
+- Verification: `pytest tests/unit -p no:randomly` → **1,606 passed**, 1 failed
+  (`test_integrations_sandbox`, pre-existing). `tsc --noEmit` clean. 0042
+  applied to `pharmpilot_test` and `pharmpilot`; head 0042.

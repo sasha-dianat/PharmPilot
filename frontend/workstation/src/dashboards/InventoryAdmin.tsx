@@ -548,8 +548,16 @@ function ShelfPriceCard({ productId, onDone }:
     setBusy(true)
     try {
       const { data: res } = await inventoryApi.setShelfPrice(productId, { sell_price: value, reason })
-      onDone({ kind: 'ok', text: t(`Priced at ${fa(res.new_shelf_price)} — ${fa(res.lots_updated)} lots, previous ${fa(res.previous_shelf_price ?? 0)}.`,
-                                   `قیمت ${fa(res.new_shelf_price)} ثبت شد — ${fa(res.lots_updated)} بچ، قیمت قبلی ${fa(res.previous_shelf_price ?? 0)}.`) })
+      // The entered price and the effective one differ whenever a batch is
+      // dearer — say so, or the owner wonders why the till charges more than
+      // the number they just typed.
+      onDone(res.overridden_by_batch
+        ? { kind: 'warn', text: t(
+            `Entered ${fa(res.entered_price)}, but a batch is priced higher — the shelf stays at ${fa(res.effective_shelf_price)}.`,
+            `${fa(res.entered_price)} ثبت شد، اما یک بچ گران‌تر است — قیمت فروش ${fa(res.effective_shelf_price)} می‌ماند.`) }
+        : { kind: 'ok', text: t(
+            `Shelf price ${fa(res.effective_shelf_price)} (was ${fa(res.previous_shelf_price ?? 0)}).`,
+            `قیمت فروش ${fa(res.effective_shelf_price)} (پیش‌تر ${fa(res.previous_shelf_price ?? 0)}).`) })
       qc.invalidateQueries({ queryKey: ['shelf-price', productId] })
     } catch (e) { onDone({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -563,7 +571,8 @@ function ShelfPriceCard({ productId, onDone }:
           {price != null ? fa(price) : <span className="text-slate-500 text-sm">{t('not set', 'ثبت نشده')}</span>}
         </span>
         <span className="text-[10px] text-slate-500">
-          {t('highest sellable lot, this product only', 'بالاترین بچ قابل فروش، فقط همین فرآورده')}
+          {t('highest of every batch and your own price — this product only',
+             'بالاترین قیمت میان همهٔ بچ‌ها و قیمت دستی شما — فقط همین فرآورده')}
         </span>
         <button onClick={reprice} disabled={busy}
                 className="ms-auto text-[11px] px-2 py-1 rounded bg-sky-600/80 hover:bg-sky-600 disabled:opacity-50">

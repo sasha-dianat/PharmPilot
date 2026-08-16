@@ -53,6 +53,32 @@ def test_the_highest_sellable_lot_sets_the_price():
     assert shelf_price_of(lots) == Decimal("3324")
 
 
+# ── the owner's price competes with the batches, it does not silence them ───
+def test_a_dearer_batch_outranks_the_price_the_owner_typed():
+    """Owner's rule: the shelf price is max(every batch, the manual price). A lot
+    bought dearer than the owner last entered must still set the shelf, or that
+    lot sells below its own replacement cost."""
+    lots = [Lot(sell_price=3000), Lot(sell_price=3324)]
+    assert shelf_price_of(lots, manual_price=3100) == Decimal("3324")
+
+
+def test_the_owner_outranks_the_batches_when_higher():
+    lots = [Lot(sell_price=3000), Lot(sell_price=3324)]
+    assert shelf_price_of(lots, manual_price=5000) == Decimal("5000")
+
+
+def test_either_source_alone_is_enough():
+    assert shelf_price_of([], manual_price=5000) == Decimal("5000")
+    assert shelf_price_of([Lot(sell_price=3324)], manual_price=None) == Decimal("3324")
+    assert shelf_price_of([], manual_price=None) is None
+
+
+def test_a_zero_or_negative_manual_price_is_not_a_candidate():
+    """Nothing may price a product at zero by accident."""
+    assert shelf_price_of([Lot(sell_price=3324)], manual_price=0) == Decimal("3324")
+    assert shelf_price_of([], manual_price=0) is None
+
+
 def test_a_lot_with_no_sellable_units_does_not_set_the_price():
     """The expensive lot is entirely reserved or damaged — it cannot be handed
     over, so it cannot be what the customer is charged."""

@@ -10,11 +10,14 @@ pricing engine asks of inventory: **what does this product sell for today?**
 
 Two rules, both the owner's, and both load-bearing:
 
-1. **The highest sellable lot wins.** Where several lots of one product are in
-   stock at different prices, the shelf price is the largest `sell_price` among
-   those still holding sellable units. In a market where replacement cost only
-   rises, selling older stock at its older price funds the next purchase at a
-   loss — the pharmacy buys back higher than it sold.
+1. **The highest candidate wins.** The candidates are every batch registered
+   through purchasing — each lot's own `sell_price`, counted only while it still
+   holds sellable units — AND whatever the owner has entered by hand. The
+   maximum of all of them is the shelf price. In a market where replacement cost
+   only rises, selling older stock at its older price funds the next purchase at
+   a loss, so a dearer batch must be able to lift the shelf even above a figure
+   the owner typed earlier; and the owner's figure must be able to lift it above
+   the batches. Neither source overwrites the other — they compete.
 
 2. **Never mix brands.** The maximum is taken WITHIN ONE `drug_product_id`.
    Brands of the same molecule are separate products at separate prices, exactly
@@ -46,9 +49,19 @@ def lot_sell_price(unit_cost, margin_pct) -> Decimal | None:
     return (cost * (Decimal("1") + pct / Decimal("100"))).quantize(Decimal("1"))
 
 
-def shelf_price_of(lots) -> Decimal | None:
-    """The product's current shelf price: the highest sell_price among lots that
-    still hold sellable stock.
+def shelf_price_of(lots, manual_price=None) -> Decimal | None:
+    """The product's shelf price: the highest of EVERY candidate price.
+
+    Two sources, and neither overrules the other:
+
+      * each lot's `sell_price` — what that batch, bought at its own cost and
+        margin, needs to sell for. Only lots still holding sellable stock count.
+      * `manual_price` — what the owner entered by hand.
+
+    The maximum decides. An owner's figure does not silence the batches: a lot
+    bought dearer than the owner last typed must still set the shelf, or that
+    lot sells below its own replacement cost. And a batch does not silence the
+    owner either — whichever is higher is the price.
 
     `lots` must be the lots of ONE product. Passing a mixed set would price a
     generic at an imported brand's price — see the module docstring.
@@ -56,6 +69,8 @@ def shelf_price_of(lots) -> Decimal | None:
     prices = [Decimal(str(l.sell_price)) for l in lots
               if getattr(l, "sell_price", None) is not None
               and _sellable(l) > 0]
+    if manual_price is not None and Decimal(str(manual_price)) > 0:
+        prices.append(Decimal(str(manual_price)))
     return max(prices) if prices else None
 
 
@@ -73,29 +88,35 @@ async def shelf_price_for_product(db, drug_product_id) -> Decimal | None:
     """Shelf price for one product, read from its own lots only."""
     from sqlalchemy import select
     from shared.models.inventory import InventoryLot
+    from shared.models.inventory import DrugProduct
     lots = (await db.execute(select(InventoryLot).where(
         InventoryLot.drug_product_id == drug_product_id))).scalars().all()
-    return shelf_price_of(lots)
+    product = (await db.execute(select(DrugProduct).where(
+        DrugProduct.id == drug_product_id))).scalar_one_or_none()
+    return shelf_price_of(lots, getattr(product, "manual_shelf_price", None))
 
 
 async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None = None,
-                          staff_id=None, margin_pct=None) -> dict:
-    """The owner reprices a product. Every sellable lot takes the new price.
+                          staff_id=None) -> dict:
+    """The owner enters a price. It joins the batch prices as a candidate.
 
-    All sellable lots, not just the dearest, because the shelf price is the
-    MAXIMUM across them: leaving an older lot at a higher figure would silently
-    overrule the number the owner just typed.
+    It does NOT overwrite them. An earlier version wrote the owner's number onto
+    every sellable lot, which destroyed each batch's own derived figure and, with
+    it, the answer to what that batch needed to sell for. It also inverted the
+    rule: the shelf price is the maximum of all candidates, so a batch bought
+    dearer than the owner last typed must still be able to set it.
 
-    The old price is not overwritten quietly — each change is appended to
-    `price_history` as a `shelf` point, keyed by the lot's IRC, through
-    `record_price`, which is SCD type-2 and closes the previous open row. That
-    is deliberately the same path every other price in this system takes; a
-    manual repricing that bypassed it would be the one price movement with no
-    history, which is precisely the one anybody would later want to explain.
+    The effective shelf price is therefore returned alongside the entered one —
+    they differ whenever a batch is dearer, and the caller should show both so
+    nobody wonders why the till charges more than they typed.
+
+    Every entry is appended to `price_history` as a `shelf` point through
+    `record_price`, the same SCD type-2 path every other price takes.
     """
     from decimal import InvalidOperation
+    from datetime import datetime, timezone
     from sqlalchemy import select
-    from shared.models.inventory import InventoryLot
+    from shared.models.inventory import DrugProduct, InventoryLot
     from services.core.drug_catalog.price_history import record_price
 
     try:
@@ -105,32 +126,30 @@ async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None 
     if price <= 0:
         raise ValueError("قیمت باید بزرگ‌تر از صفر باشد.")
 
+    product = (await db.execute(select(DrugProduct).where(
+        DrugProduct.id == drug_product_id))).scalar_one_or_none()
+    if product is None:
+        raise ValueError("فرآورده یافت نشد.")
     lots = (await db.execute(select(InventoryLot).where(
         InventoryLot.drug_product_id == drug_product_id))).scalars().all()
-    sellable = [l for l in lots if _sellable(l) > 0]
-    if not sellable:
-        raise ValueError("این فرآورده موجودی قابل فروش ندارد.")
 
-    previous = shelf_price_of(sellable)
-    ircs, recorded = set(), []
-    for lot in sellable:
-        lot.sell_price = price
-        if margin_pct is not None:
-            lot.margin_pct = Decimal(str(margin_pct))
-        elif lot.unit_cost and Decimal(str(lot.unit_cost)) > 0:
-            # Keep the margin honest against what THIS lot actually cost, so the
-            # figure stays auditable back to its own invoice.
-            cost = Decimal(str(lot.unit_cost))
-            lot.margin_pct = ((price - cost) / cost * Decimal("100")).quantize(Decimal("0.001"))
-        if lot.irc:
-            ircs.add(lot.irc)
-    for irc in sorted(ircs):
+    previous = shelf_price_of(lots, product.manual_shelf_price)
+    product.manual_shelf_price = price
+    product.manual_price_set_at = datetime.now(timezone.utc)
+    product.manual_price_set_by = staff_id
+    effective = shelf_price_of(lots, price)
+
+    recorded = []
+    for irc in sorted({l.irc for l in lots if l.irc}):
         recorded.append(await record_price(
-            db, irc, "shelf", price,
+            db, irc, "shelf", effective or price,
             source=f"owner:{staff_id}" if staff_id else "owner"))
     await db.commit()
-    return {"lots_updated": len(sellable),
-            "previous_shelf_price": int(previous) if previous is not None else None,
-            "new_shelf_price": int(price),
-            "history_points": [r for r in recorded if r in ("inserted", "changed")],
-            "reason": reason}
+    return {
+        "entered_price": int(price),
+        "effective_shelf_price": int(effective) if effective is not None else int(price),
+        "overridden_by_batch": bool(effective is not None and effective > price),
+        "previous_shelf_price": int(previous) if previous is not None else None,
+        "history_points": [r for r in recorded if r in ("inserted", "changed")],
+        "reason": reason,
+    }
