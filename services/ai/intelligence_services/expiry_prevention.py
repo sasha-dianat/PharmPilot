@@ -157,6 +157,76 @@ def _score_lot(row: dict) -> LotRisk:
     )
 
 
+def _score_lots(rows: list[dict]) -> list[LotRisk]:
+    """Score every lot, sharing each item's demand across its lots in FEFO order.
+
+    `_score_lot` charged **every** lot the full demand independently, so two
+    lots of 100 units selling 1/day and both expiring in 100 days each came back
+    `projected_waste=0, band=ok`. Only 100 units of demand exists; 100 units were
+    certain to be destroyed, and the engine reported none. The allocation now
+    happens in `services.core.inventory.expiry_risk`, which walks the lots in the
+    order the allocator will actually reach them and gives each one only what is
+    left after the ones in front.
+
+    `_score_lot` is kept for the single-lot case and for its recommendation
+    vocabulary, so the response contract is unchanged.
+    """
+    from collections import defaultdict
+
+    from services.core.inventory import clock as CLK
+    from services.core.inventory import expiry_risk as ER
+
+    by_ndc: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_ndc[str(r.get("ndc11"))].append(r)
+
+    today = CLK.pharmacy_today("UTC")
+    out: list[LotRisk] = []
+    for ndc, group in by_ndc.items():
+        basis = str(group[0].get("demand_basis") or "no_history")
+        rate = group[0].get("daily_dispense_rate")
+        allocated = {
+            r.lot_id: r for r in ER.assess_item(
+                [{"lot_id": g.get("lot_id"), "ndc11": ndc,
+                  "lot_number": g.get("lot_number"),
+                  "expiry_date": g.get("expiry_date"),
+                  "quantity_on_hand": g.get("quantity_on_hand"),
+                  "unit_cost": g.get("unit_cost")} for g in group],
+                avg_daily_demand=rate, basis=basis, as_of=today)
+        }
+        for g in group:
+            scored = _score_lot(g)
+            share = allocated.get(str(g.get("lot_id")))
+            if share is None:
+                out.append(scored)
+                continue
+            # Replace the independently-computed waste with this lot's actual
+            # share, and recompute everything derived from it.
+            if share.at_risk_units is None:
+                # No measured demand: say so rather than claiming total waste.
+                scored.projected_waste_qty = float(share.on_hand)
+                scored.waste_value = (None if share.unit_cost is None
+                                      else float(share.on_hand * share.unit_cost))
+                scored.risk_score = 0.0
+                scored.risk_band = "unknown"
+                scored.recommended_action = "measure_demand"
+                scored.rationale = share.explanation
+            else:
+                scored.projected_waste_qty = round(float(share.at_risk_units), 1)
+                scored.waste_value = (None if share.at_risk_value is None
+                                      else float(share.at_risk_value))
+                qty = float(share.on_hand) or 1.0
+                scored.risk_score = round(
+                    min(1.0, float(share.at_risk_units) / qty), 3)
+                scored.risk_band = (
+                    "critical" if scored.risk_score >= RISK_CRITICAL
+                    else "warning" if scored.risk_score >= RISK_WARNING
+                    else "ok")
+                scored.rationale = share.explanation
+            out.append(scored)
+    return out
+
+
 async def _enrich_returns_cloud(at_risk: list[LotRisk]) -> bool:
     """
     CLOUD: look up wholesaler return windows / branch transfer matches.
@@ -197,8 +267,8 @@ async def analyze(
             model_version="expiry_prevention_v1_local",
         )
 
-    # LOCAL scoring for every lot.
-    lots = [_score_lot(dict(r)) for _, r in df.iterrows()]
+    # LOCAL scoring, FEFO-allocated across each item's lots.
+    lots = _score_lots([dict(r) for _, r in df.iterrows()])
     # Only surface lots within the horizon OR already flagged.
     visible = [l for l in lots
                if l.days_to_expiry <= horizon_days or l.risk_band != "ok"]

@@ -27,6 +27,7 @@ from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import anomaly_bridge as AB
 from services.core.inventory import clock as CLK
 from services.core.inventory import cycle_count as CC
+from services.core.inventory import expiry_risk as ER
 from services.core.inventory import recommendations as RC
 from services.core.inventory import valuation as VAL
 from services.core.inventory import ledger as L
@@ -1230,3 +1231,75 @@ async def stock_valuation(
             "write-off of stock held through a price change is valued at "
             "today's price, not what was paid."),
     }
+
+
+# ── Expiry risk (engine E1, service ⑫) ────────────────────────────────────
+
+@router.get("/expiry-exposure")
+async def expiry_exposure(
+    return_window: int = Query(ER.DEFAULT_RETURN_WINDOW_DAYS, ge=0, le=365),
+    raise_advice: bool = Query(False, description="also file recommendations"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Which stock will still be here when it expires, and what can be done.
+
+    Distinct from `check_expired_on_hand`, which reports what has *already*
+    expired — a write-off discovered too late to do anything but destroy it.
+    This is the forward-looking half, and the only one with money still on the
+    table.
+
+    Lots with no measured demand are reported as unknown exposure and kept out
+    of the headline total. Counting them at zero would read as safe; counting
+    them in full would flood the list with dead stock nobody can act on.
+    """
+    tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
+
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT s.ndc11, s.avg_daily_demand,
+               COALESCE(s.demand_basis, 'no_history') AS demand_basis,
+               il.id AS lot_id, il.lot_number, il.expiry_date,
+               il.quantity_on_hand, il.unit_cost
+        FROM stock_levels s
+        JOIN inventory_lots il ON il.ndc11 = s.ndc11
+                              AND il.pharmacy_id = s.pharmacy_id
+        WHERE s.pharmacy_id = :pid AND il.is_deleted = false
+          AND COALESCE(il.quantity_on_hand, 0) > 0
+          AND COALESCE(il.is_quarantined, false) = false
+        ORDER BY s.ndc11, il.expiry_date, il.lot_number"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+
+    items: dict[str, dict] = {}
+    for r in rows:
+        item = items.setdefault(r["ndc11"], {
+            "ndc11": r["ndc11"], "avg_daily_demand": r["avg_daily_demand"],
+            "demand_basis": r["demand_basis"], "lots": []})
+        item["lots"].append(r)
+
+    exposure = ER.assess(list(items.values()), as_of=today,
+                         return_window=return_window)
+    out = exposure.as_dict()
+
+    if raise_advice:
+        # Only lots with something actionable become recommendations; the rest
+        # stay in the exposure report. A recommendation nobody can act on is
+        # noise that trains people to ignore the queue.
+        proposals = [
+            RC.Proposal(
+                kind="expiry_risk", subject=str(l.lot_id),
+                proposal={"action": l.action, "ndc11": l.ndc11,
+                          "lot_number": l.lot_number,
+                          "expiry": l.expiry.isoformat()},
+                explanation=l.explanation, produced_by="expiry_risk_v1",
+                features={"days_left": l.days_left,
+                          "at_risk_units": float(l.at_risk_units or 0),
+                          "at_risk_value": (None if l.at_risk_value is None
+                                            else float(l.at_risk_value)),
+                          "basis": l.basis},
+                confidence=0.9 if l.basis == "observed" else 0.4,
+                severity=l.severity)
+            for l in exposure.lots if ER.worth_raising(l)]
+        out["recommendations"] = await _record(
+            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+
+    return out

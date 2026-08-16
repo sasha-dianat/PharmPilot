@@ -126,41 +126,54 @@ async def claim_outcomes(db: AsyncSession, pharmacy_id: str, days: int = 365):
 
 # ─── Lot depletion (expiry waste prevention) ─────────────────────────────────
 
-async def lot_depletion(db: AsyncSession, pharmacy_id: str):
+async def lot_depletion(db: AsyncSession, pharmacy_id: str, *,
+                        as_of=None, tz: str = "UTC"):
     """
-    Every on-hand lot with quantity + expiry, plus the trailing 90-day dispense
-    rate for its NDC so the survival model can compare days-to-expiry vs
-    days-to-depletion.
+    Every on-hand lot with quantity + expiry, and the demand rate for its NDC,
+    so the survival model can compare days-to-expiry against days-to-depletion.
+
+    Three things here are deliberate, and each replaces something that was
+    quietly wrong:
+
+    **The rate comes from `stock_levels`, not from a second computation of its own.**
+    This used to derive its own trailing-90-day average from `prescriptions`,
+    which is a different definition of demand from the measured one in
+    `services.core.inventory.demand`. Two definitions disagree eventually, and
+    when they do nobody can say which screen is right.
+
+    **`demand_basis` travels with the rate.** It used to `COALESCE(rate, 0)`,
+    collapsing "we have never measured this" into "this sells nothing" — and
+    the scorer then read zero as *certain total waste*, which is a confident
+    claim about an item nobody has data for.
+
+    **The day boundary is the pharmacy's.** `CURRENT_DATE` is the database
+    session's timezone, which on this installation is 8.5 hours from the shop's.
     """
     sql = """
-        WITH dispense_rate AS (
-            SELECT ndc,
-                   SUM(COALESCE(quantity_dispensed, quantity_prescribed, 0))
-                     / 90.0 AS daily_rate
-            FROM   prescriptions
-            WHERE  pharmacy_id = :pid
-              AND  created_at >= now() - interval '90 days'
-            GROUP  BY ndc
-        )
         SELECT l.id              AS lot_id,
                l.ndc11,
                l.lot_number,
                l.expiry_date,
                COALESCE(l.quantity_on_hand, 0)  AS quantity_on_hand,
-               COALESCE(l.unit_cost, 0)         AS unit_cost,
-               COALESCE(dr.daily_rate, 0)       AS daily_dispense_rate,
-               (l.expiry_date - CURRENT_DATE)   AS days_to_expiry,
+               l.unit_cost,
+               s.avg_daily_demand               AS daily_dispense_rate,
+               COALESCE(s.demand_basis, 'no_history') AS demand_basis,
+               (l.expiry_date - CAST(:as_of AS date)) AS days_to_expiry,
                dp.generic_name,
                COALESCE(dp.is_controlled, false) AS is_controlled
         FROM   inventory_lots l
         LEFT JOIN drug_products dp ON dp.id = l.drug_product_id
-        LEFT JOIN dispense_rate dr ON dr.ndc = l.ndc11
+        LEFT JOIN stock_levels  s  ON s.ndc11 = l.ndc11
+                                  AND s.pharmacy_id = l.pharmacy_id
         WHERE  l.pharmacy_id = :pid
           AND  COALESCE(l.quantity_on_hand, 0) > 0
           AND  COALESCE(l.is_quarantined, false) = false
-        ORDER  BY l.expiry_date
+          AND  l.is_deleted = false
+        ORDER  BY l.expiry_date, l.lot_number
     """
-    return await _frame(db, sql, {"pid": pharmacy_id})
+    from services.core.inventory import clock as CLK
+    return await _frame(db, sql, {"pid": pharmacy_id,
+                                  "as_of": as_of or CLK.pharmacy_today(tz)})
 
 
 # ─── DUR override patterns (override intelligence) ───────────────────────────
