@@ -159,3 +159,36 @@ def test_the_quote_marks_where_its_price_came_from():
     src = inspect.getsource(pricing.quote)
     assert '"shelf"' in src and '"nfi_fallback"' in src
     assert "shelf_prices_for_ircs" in src
+
+
+# ── the mandate: the owner's price, not compared with anything ──────────────
+def test_a_mandate_ignores_the_batches_entirely():
+    """The escape hatch. A batch received with a mistyped cost lifts the maximum
+    and there is no way down while that figure is still the largest candidate —
+    the owner would be left editing the batch to fix today's price, which is
+    rewriting history."""
+    lots = [Lot(sell_price=3000), Lot(sell_price=9999)]     # 9,999 is the bad one
+    assert shelf_price_of(lots, manual_price=3100) == Decimal("9999")
+    assert shelf_price_of(lots, manual_price=3100, mandate=True) == Decimal("3100")
+
+
+def test_a_mandate_may_sit_below_the_dearest_batch():
+    """Selling under a batch's replacement cost is a real loss — and remains the
+    owner's to choose, which is the whole point of an override. The caller
+    surfaces it via `below_dearest_batch` rather than refusing."""
+    lots = [Lot(sell_price=9999)]
+    assert shelf_price_of(lots, manual_price=500, mandate=True) == Decimal("500")
+
+
+def test_a_mandate_with_no_price_falls_back_to_the_batches():
+    """The switch alone must not blank the shelf — a mandate needs a number."""
+    lots = [Lot(sell_price=3324)]
+    assert shelf_price_of(lots, manual_price=None, mandate=True) == Decimal("3324")
+    assert shelf_price_of(lots, manual_price=0, mandate=True) == Decimal("3324")
+
+
+def test_the_switch_is_a_switch_not_a_magic_value():
+    """`manual_price_is_mandate` exists so that "the owner overrode this" and
+    "the owner happened to type a big number" never look alike in the data."""
+    from shared.models.inventory import DrugProduct
+    assert "manual_price_is_mandate" in DrugProduct.__table__.columns

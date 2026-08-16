@@ -295,7 +295,7 @@ export const inventoryApi = {
   // explain to a patient who remembers paying less.
   getShelfPrice: (productId: string) =>
     apiClient.get(`/inventory/products/${productId}/price`),
-  setShelfPrice: (productId: string, body: { sell_price: number; margin_pct?: number; reason?: string }) =>
+  setShelfPrice: (productId: string, body: { sell_price: number; reason?: string; mandate?: boolean }) =>
     apiClient.post(`/inventory/products/${productId}/price`, body),
 }
 

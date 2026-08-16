@@ -1511,3 +1511,35 @@ trigger, edits a row, and asserts the break lands at that row's index.
 - Verification: `pytest tests/unit -p no:randomly` → **1,606 passed**, 1 failed
   (`test_integrations_sandbox`, pre-existing). `tsc --noEmit` clean. 0042
   applied to `pharmpilot_test` and `pharmpilot`; head 0042.
+
+### 2026-08-09 — Claude (Opus 5) — a mandated price, and the batch prices to pick from
+
+- Workstream: `drug-data-integrity` + CL-003 scope (handoff recorded above)
+- Branch/commit: `feat/inventory-integrity`
+- The maximum rule is the right DEFAULT but it needed an override, because the
+  rule can produce a wrong answer and then defend it. A batch received with a
+  mistyped cost, or a margin entered as 200 instead of 20, lifts the maximum —
+  and while that figure is the largest candidate there is no way down. The owner
+  would be reduced to editing the batch to correct the shelf, which is rewriting
+  history to change today's price.
+- Migration `0043` adds `manual_price_is_mandate`. When set, the owner's price
+  IS the shelf price and the batches are not consulted. Deliberately a switch,
+  not a magic value, so that "the owner overrode this" and "the owner happened
+  to type a large number" never look alike in the data. The batch figures stay
+  untouched and keep explaining what each lot needed to earn; they stop deciding.
+- The UI offers both: **«تعیین قیمت»** competes, **«تحمیل قیمت»** mandates. And
+  the batch prices are listed as clickable chips — the usual repair for a wrong
+  final price is "charge what the last batch charged", and picking beats
+  retyping a figure from memory. Clicking one MANDATES it, because choosing an
+  older, lower figure only sticks if the batches are not consulted.
+- Safety kept visible rather than enforced: a mandate below the dearest batch
+  means that batch sells under its replacement cost. `below_dearest_batch` and
+  `dearest_batch_price` come back on the response and the UI warns in Persian
+  with both numbers — but it does not refuse, because refusing would defeat the
+  override. A mandate with no price falls back to the batches; the switch alone
+  cannot blank the shelf.
+- Verified: batches 3,000 and a mistyped 9,999 — competing with 3,100 gives
+  9,999, mandating 3,100 gives 3,100.
+- Verification: `pytest tests/unit -p no:randomly` → **1,633 passed**, 1 failed
+  (`test_integrations_sandbox`, pre-existing). `tsc --noEmit` clean. 0043
+  applied to `pharmpilot_test` and `pharmpilot`; head 0043.

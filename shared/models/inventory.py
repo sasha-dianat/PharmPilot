@@ -50,6 +50,14 @@ class DrugProduct(AuditedBase):
     manual_price_set_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     manual_price_set_by: Mapped[UUID | None] = mapped_column(nullable=True)
+    # When true the manual price IS the shelf price and is not compared with the
+    # batches (migration 0043). The escape hatch for a final price that came out
+    # wrong — a mistyped cost or margin lifts the maximum, and without this the
+    # only way down would be to edit the batch, i.e. rewrite history to change
+    # today's price. A switch rather than a magic value, so "the owner overrode
+    # this" and "the owner typed a big number" never look alike in the data.
+    manual_price_is_mandate: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False)
 
     # Drug database metadata
     fdb_drug_id: Mapped[str | None] = mapped_column(String(50), nullable=True)

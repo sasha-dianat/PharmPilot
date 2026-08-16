@@ -49,7 +49,7 @@ def lot_sell_price(unit_cost, margin_pct) -> Decimal | None:
     return (cost * (Decimal("1") + pct / Decimal("100"))).quantize(Decimal("1"))
 
 
-def shelf_price_of(lots, manual_price=None) -> Decimal | None:
+def shelf_price_of(lots, manual_price=None, mandate: bool = False) -> Decimal | None:
     """The product's shelf price: the highest of EVERY candidate price.
 
     Two sources, and neither overrules the other:
@@ -63,9 +63,17 @@ def shelf_price_of(lots, manual_price=None) -> Decimal | None:
     lot sells below its own replacement cost. And a batch does not silence the
     owner either — whichever is higher is the price.
 
+    `mandate` breaks the tie by removing it: the owner's price IS the shelf
+    price and the batches are not consulted. That is the escape hatch for a
+    final price that came out wrong — a mistyped cost lifts the maximum, and
+    without an override the only way down would be to edit the batch, which is
+    rewriting history to change today's price.
+
     `lots` must be the lots of ONE product. Passing a mixed set would price a
     generic at an imported brand's price — see the module docstring.
     """
+    if mandate and manual_price is not None and Decimal(str(manual_price)) > 0:
+        return Decimal(str(manual_price))
     prices = [Decimal(str(l.sell_price)) for l in lots
               if getattr(l, "sell_price", None) is not None
               and _sellable(l) > 0]
@@ -93,11 +101,12 @@ async def shelf_price_for_product(db, drug_product_id) -> Decimal | None:
         InventoryLot.drug_product_id == drug_product_id))).scalars().all()
     product = (await db.execute(select(DrugProduct).where(
         DrugProduct.id == drug_product_id))).scalar_one_or_none()
-    return shelf_price_of(lots, getattr(product, "manual_shelf_price", None))
+    return shelf_price_of(lots, getattr(product, "manual_shelf_price", None),
+                          mandate=bool(getattr(product, "manual_price_is_mandate", False)))
 
 
 async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None = None,
-                          staff_id=None) -> dict:
+                          staff_id=None, mandate: bool = False) -> dict:
     """The owner enters a price. It joins the batch prices as a candidate.
 
     It does NOT overwrite them. An earlier version wrote the owner's number onto
@@ -133,11 +142,14 @@ async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None 
     lots = (await db.execute(select(InventoryLot).where(
         InventoryLot.drug_product_id == drug_product_id))).scalars().all()
 
-    previous = shelf_price_of(lots, product.manual_shelf_price)
+    previous = shelf_price_of(lots, product.manual_shelf_price,
+                              mandate=bool(product.manual_price_is_mandate))
     product.manual_shelf_price = price
     product.manual_price_set_at = datetime.now(timezone.utc)
     product.manual_price_set_by = staff_id
-    effective = shelf_price_of(lots, price)
+    product.manual_price_is_mandate = bool(mandate)
+    effective = shelf_price_of(lots, price, mandate=bool(mandate))
+    dearest_batch = shelf_price_of(lots)
 
     recorded = []
     for irc in sorted({l.irc for l in lots if l.irc}):
@@ -148,7 +160,15 @@ async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None 
     return {
         "entered_price": int(price),
         "effective_shelf_price": int(effective) if effective is not None else int(price),
-        "overridden_by_batch": bool(effective is not None and effective > price),
+        "mandate": bool(mandate),
+        # Only meaningful when competing. Under a mandate the batches did not
+        # take part, so nothing "overrode" anything.
+        "overridden_by_batch": bool(not mandate and effective is not None and effective > price),
+        # Under a mandate BELOW the dearest batch the pharmacy sells that batch
+        # under its replacement cost. The owner's call, but never a silent one.
+        "below_dearest_batch": bool(mandate and dearest_batch is not None
+                                    and price < dearest_batch),
+        "dearest_batch_price": int(dearest_batch) if dearest_batch is not None else None,
         "previous_shelf_price": int(previous) if previous is not None else None,
         "history_points": [r for r in recorded if r in ("inserted", "changed")],
         "reason": reason,

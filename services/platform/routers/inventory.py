@@ -346,8 +346,11 @@ logger = logging.getLogger(__name__)
 
 class ShelfPriceIn(BaseModel):
     sell_price: float
-    margin_pct: float | None = None
     reason: str | None = None
+    # False (default): the price competes with the batches and the highest wins.
+    # True: it IS the price and the batches are not consulted — the escape hatch
+    # for a final price that came out wrong.
+    mandate: bool = False
 
 
 @router.get("/products/{product_id}/price")
@@ -372,6 +375,22 @@ async def get_shelf_price(
         raise HTTPException(404, "فرآورده یافت نشد")
     current = await shelf_price_for_product(db, product_id)
 
+    # The batch prices, offered so the owner can PICK one instead of retyping a
+    # figure from memory — the common repair is "use what the previous batch
+    # sold for", and a list beats recalling it.
+    from services.core.inventory.shelf_price import _sellable
+    lots = (await db.execute(_select(InventoryLot).where(
+        InventoryLot.drug_product_id == product_id))).scalars().all()
+    batches = sorted(
+        ({"lot_number": l.lot_number,
+          "sell_price": int(l.sell_price),
+          "unit_cost": float(l.unit_cost) if l.unit_cost else None,
+          "margin_pct": float(l.margin_pct) if l.margin_pct else None,
+          "sellable": float(_sellable(l)),
+          "expiry": l.expiry_date}
+         for l in lots if l.sell_price),
+        key=lambda b: -b["sell_price"])
+
     ircs = [i for (i,) in (await db.execute(_select(InventoryLot.irc).where(
         InventoryLot.drug_product_id == product_id,
         InventoryLot.irc.isnot(None)).distinct())).all()]
@@ -385,6 +404,10 @@ async def get_shelf_price(
     return {"product_id": str(product_id),
             "name": product.brand_name or product.generic_name,
             "shelf_price": int(current) if current is not None else None,
+            "manual_price": (int(product.manual_shelf_price)
+                             if product.manual_shelf_price else None),
+            "mandate": bool(product.manual_price_is_mandate),
+            "batches": batches,
             "history": history}
 
 
@@ -406,6 +429,6 @@ async def set_price(
     try:
         return await set_shelf_price(db, product_id, body.sell_price,
                                      reason=body.reason, staff_id=staff.id,
-                                     margin_pct=body.margin_pct)
+                                     mandate=body.mandate)
     except ValueError as e:
         raise HTTPException(400, str(e))

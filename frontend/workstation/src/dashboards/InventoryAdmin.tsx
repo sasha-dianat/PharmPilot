@@ -523,6 +523,9 @@ function In({ label, v, on, type = 'text', w }: {
  * record of what it was before is the one number nobody can explain afterwards
  * — to a patient who remembers paying less, or to an auditor.
  */
+type Batch = { lot_number: string; sell_price: number; unit_cost: number | null
+               margin_pct: number | null; sellable: number; expiry: string }
+
 function ShelfPriceCard({ productId, onDone }:
     { productId: string; onDone: (m: { kind: 'ok' | 'err' | 'warn'; text: string }) => void }) {
   const { t } = useLang()
@@ -537,27 +540,33 @@ function ShelfPriceCard({ productId, onDone }:
   const price = data?.shelf_price as number | null | undefined
   const history = (data?.history ?? []) as { value: number; valid_from: string; valid_to: string | null }[]
 
-  const reprice = async () => {
-    const raw = window.prompt(t('New shelf price (Rial) — applies to every sellable lot',
-                                'قیمت جدید فروش (ریال) — روی همهٔ بچ‌های قابل فروش اعمال می‌شود'),
-                              price ? String(price) : '')
+  const reprice = async (mandate: boolean, preset?: number) => {
+    const raw = preset != null ? String(preset) : window.prompt(
+      mandate
+        ? t('Mandated price (Rial) — used as-is, batches ignored',
+            'قیمت تحمیلی (ریال) — همین عدد ملاک است و بچ‌ها نادیده گرفته می‌شوند')
+        : t('Your price (Rial) — the highest of this and the batches wins',
+            'قیمت شما (ریال) — بالاترین میان این و بچ‌ها ملاک است'),
+      price ? String(price) : '')
     if (raw === null) return
-    const value = Number(raw.replace(/[^\d.]/g, ''))
+    const value = Number(String(raw).replace(/[^\d.]/g, ''))
     if (!value || value <= 0) { onDone({ kind: 'err', text: t('Enter a price above zero.', 'قیمتی بزرگ‌تر از صفر وارد کنید.') }); return }
     const reason = window.prompt(t('Reason for the change?', 'دلیل تغییر؟')) || undefined
     setBusy(true)
     try {
-      const { data: res } = await inventoryApi.setShelfPrice(productId, { sell_price: value, reason })
-      // The entered price and the effective one differ whenever a batch is
-      // dearer — say so, or the owner wonders why the till charges more than
-      // the number they just typed.
-      onDone(res.overridden_by_batch
-        ? { kind: 'warn', text: t(
-            `Entered ${fa(res.entered_price)}, but a batch is priced higher — the shelf stays at ${fa(res.effective_shelf_price)}.`,
-            `${fa(res.entered_price)} ثبت شد، اما یک بچ گران‌تر است — قیمت فروش ${fa(res.effective_shelf_price)} می‌ماند.`) }
-        : { kind: 'ok', text: t(
-            `Shelf price ${fa(res.effective_shelf_price)} (was ${fa(res.previous_shelf_price ?? 0)}).`,
-            `قیمت فروش ${fa(res.effective_shelf_price)} (پیش‌تر ${fa(res.previous_shelf_price ?? 0)}).`) })
+      const { data: res } = await inventoryApi.setShelfPrice(productId, { sell_price: value, reason, mandate })
+      onDone(
+        res.below_dearest_batch
+          ? { kind: 'warn', text: t(
+              `Mandated ${fa(res.effective_shelf_price)} — BELOW the dearest batch at ${fa(res.dearest_batch_price)}. That batch now sells under its replacement cost.`,
+              `${fa(res.effective_shelf_price)} تحمیل شد — پایین‌تر از گران‌ترین بچ (${fa(res.dearest_batch_price)}). آن بچ زیر قیمت جایگزینی فروخته می‌شود.`) }
+        : res.overridden_by_batch
+          ? { kind: 'warn', text: t(
+              `Entered ${fa(res.entered_price)}, but a batch is higher — the shelf stays at ${fa(res.effective_shelf_price)}.`,
+              `${fa(res.entered_price)} ثبت شد، اما یک بچ گران‌تر است — قیمت فروش ${fa(res.effective_shelf_price)} می‌ماند.`) }
+          : { kind: 'ok', text: t(
+              `Shelf price ${fa(res.effective_shelf_price)}${res.mandate ? ' (mandated)' : ''} (was ${fa(res.previous_shelf_price ?? 0)}).`,
+              `قیمت فروش ${fa(res.effective_shelf_price)}${res.mandate ? ' (تحمیلی)' : ''} (پیش‌تر ${fa(res.previous_shelf_price ?? 0)}).`) })
       qc.invalidateQueries({ queryKey: ['shelf-price', productId] })
     } catch (e) { onDone({ kind: 'err', text: apiErrorText(e) }) }
     finally { setBusy(false) }
@@ -574,11 +583,46 @@ function ShelfPriceCard({ productId, onDone }:
           {t('highest of every batch and your own price — this product only',
              'بالاترین قیمت میان همهٔ بچ‌ها و قیمت دستی شما — فقط همین فرآورده')}
         </span>
-        <button onClick={reprice} disabled={busy}
-                className="ms-auto text-[11px] px-2 py-1 rounded bg-sky-600/80 hover:bg-sky-600 disabled:opacity-50">
-          {busy ? t('Saving…', 'در حال ثبت…') : t('Set price', 'تعیین قیمت')}
-        </button>
+        {data?.mandate && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600/30 text-amber-200">
+            {t('mandated — batches ignored', 'تحمیلی — بچ‌ها نادیده')}
+          </span>
+        )}
+        <div className="ms-auto flex items-center gap-1">
+          <button onClick={() => reprice(false)} disabled={busy}
+                  className="text-[11px] px-2 py-1 rounded bg-sky-600/80 hover:bg-sky-600 disabled:opacity-50">
+            {busy ? t('Saving…', 'در حال ثبت…') : t('Set price', 'تعیین قیمت')}
+          </button>
+          <button onClick={() => reprice(true)} disabled={busy}
+                  title={t('Use this figure as-is, ignoring the batch prices',
+                           'همین عدد ملاک باشد و قیمت بچ‌ها نادیده گرفته شود')}
+                  className="text-[11px] px-2 py-1 rounded bg-amber-600/80 hover:bg-amber-600 disabled:opacity-50">
+            {t('Mandate', 'تحمیل قیمت')}
+          </button>
+        </div>
       </div>
+
+      {/* Pick a previous batch price instead of retyping one from memory —
+          the usual repair for a wrong final price is "charge what the last
+          batch charged". Clicking mandates it, because choosing an older,
+          lower figure only sticks if the batches are not consulted. */}
+      {(data?.batches ?? []).length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <span className="text-[10px] text-slate-500 me-1">
+            {t('Batch prices — click to mandate:', 'قیمت بچ‌ها — برای تحمیل کلیک کنید:')}
+          </span>
+          {(data.batches as Batch[]).map((b, i) => (
+            <button key={i} disabled={busy} onClick={() => reprice(true, b.sell_price)}
+                    title={`${t('Lot', 'بچ')} ${b.lot_number}${b.unit_cost ? ` · ${t('cost', 'قیمت خرید')} ${fa(b.unit_cost)}` : ''}`}
+                    className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded
+                               border border-slate-600 hover:border-amber-500 hover:text-amber-200
+                               disabled:opacity-50">
+              {fa(b.sell_price)}
+              {b.sellable <= 0 && <span className="text-slate-600"> ({t('none left', 'ناموجود')})</span>}
+            </button>
+          ))}
+        </div>
+      )}
       {history.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
           <span className="text-slate-500">{t('Previously:', 'پیش از این:')}</span>
