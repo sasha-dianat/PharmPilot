@@ -450,23 +450,61 @@ function Badge({ tone, children }: { tone: 'rose' | 'amber' | 'sky' | 'slate'
   return <span className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${cls}`}>{children}</span>
 }
 
+/**
+ * Receive goods, and say which order they came against.
+ *
+ * The order picker is not decoration. `ordered_at` has always been recorded;
+ * `received_at` and `quantity_received` never were, so how long a supplier
+ * actually takes and how much of an order actually turns up have never once
+ * been measured. Both are computed from the link this field makes, and a
+ * delivery received without it is stock on the shelf with no supplier history
+ * behind it.
+ *
+ * Open orders for the NDC being received are offered first, so the ordinary
+ * case is one click rather than a lookup.
+ */
+type OpenLine = { line_id: string; ndc11: string; name: string
+                  quantity_ordered: number; quantity_received: number
+                  outstanding: number; status: string }
+type OpenOrder = { purchase_order_id: string; po_number: string
+                   wholesaler: string; status: string; ordered_at: string | null
+                   days_outstanding: number | null; lines: OpenLine[] }
+type Reconciled = { matched: boolean; explanation?: string; shape?: string
+                    order_status?: string; received_at?: string | null }
+
 function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: string }) => void }) {
   const { t, n: fa } = useLang()
   const [f, setF] = useState({ ndc11: '', lot_number: '', expiry_date: '',
                                quantity: '', unit_cost: '', storage_location: '' })
+  const [poId, setPoId] = useState('')
+  const [recon, setRecon] = useState<Reconciled | null>(null)
   const [busy, setBusy] = useState(false)
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF(v => ({ ...v, [k]: e.target.value }))
 
+  const ndc = f.ndc11.trim()
+  const { data: openData } = useQuery({
+    queryKey: ['open-orders', ndc],
+    queryFn: () => inventoryAdminApi.openOrders(ndc || undefined).then(r => r.data),
+  })
+  const orders: OpenOrder[] = openData?.orders ?? []
+  // An order offered for this NDC is only useful if it is still expecting it.
+  const forThisNdc = ndc ? orders.filter(o => o.lines.some(l => l.ndc11 === ndc)) : orders
+  const chosen = orders.find(o => o.purchase_order_id === poId)
+  const chosenLine = chosen?.lines.find(l => l.ndc11 === ndc)
+
   const submit = async () => {
     setBusy(true)
+    setRecon(null)
     try {
       const { data } = await inventoryAdminApi.receive({
-        ndc11: f.ndc11.trim(), lot_number: f.lot_number.trim(),
+        ndc11: ndc, lot_number: f.lot_number.trim(),
         expiry_date: f.expiry_date, quantity: Number(f.quantity),
         unit_cost: f.unit_cost ? Number(f.unit_cost) : undefined,
         storage_location: f.storage_location || undefined,
+        purchase_order_id: poId || undefined,
       })
+      setRecon(data.purchase_order ?? null)
       onDone({ kind: 'ok', text: t(
         `${fa(Number(f.quantity))} units recorded into lot ${f.lot_number} (lot on hand: ${fa(data.lot_on_hand)}).`,
         `${fa(Number(f.quantity))} واحد در بچ ${f.lot_number} ثبت شد (موجودی بچ: ${fa(data.lot_on_hand)}).`) })
@@ -488,12 +526,53 @@ function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: strin
         <In label={t('Quantity', 'تعداد')} v={f.quantity} on={set('quantity')} type="number" w="w-24" />
         <In label={t('Unit cost', 'قیمت واحد')} v={f.unit_cost} on={set('unit_cost')} type="number" w="w-28" />
         <In label={t('Location', 'محل')} v={f.storage_location} on={set('storage_location')} w="w-32" />
+        <label className="flex flex-col gap-1">
+          <span className="text-slate-500 text-[10px]">{t('Against order', 'در برابر سفارش')}</span>
+          <select value={poId} onChange={e => setPoId(e.target.value)}
+                  className="w-56 bg-slate-900 border border-slate-600 rounded px-2 py-1">
+            <option value="">{t('— no order —', '— بدون سفارش —')}</option>
+            {forThisNdc.map(o => (
+              <option key={o.purchase_order_id} value={o.purchase_order_id}>
+                {o.po_number} · {o.wholesaler}
+                {o.days_outstanding != null ? ` · ${fa(o.days_outstanding)}${t('d', ' روز')}` : ''}
+              </option>))}
+          </select>
+        </label>
         <button onClick={submit}
                 disabled={busy || !f.ndc11 || !f.lot_number || !f.expiry_date || !f.quantity}
                 className="self-end px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg disabled:opacity-40">
           {t('Record receipt', 'ثبت دریافت')}
         </button>
       </div>
+
+      {chosenLine && (
+        <p className="text-[11px] text-sky-300">
+          {t(`This order is still expecting ${fa(chosenLine.outstanding)} of ${chosenLine.name}`,
+             `این سفارش هنوز ${fa(chosenLine.outstanding)} از ${chosenLine.name} را طلب دارد`)}
+          {' · '}
+          {t(`${fa(chosenLine.quantity_received)} of ${fa(chosenLine.quantity_ordered)} received so far`,
+             `تا کنون ${fa(chosenLine.quantity_received)} از ${fa(chosenLine.quantity_ordered)} دریافت شده`)}
+        </p>)}
+
+      {!poId && ndc && forThisNdc.length > 0 && (
+        <p className="text-[11px] text-amber-300">
+          {t('Received without an order, this delivery counts towards no supplier’s record.',
+             'اگر بدون سفارش ثبت شود، این دریافت در کارنامهٔ هیچ تأمین‌کننده‌ای ثبت نمی‌شود.')}
+        </p>)}
+
+      {recon && (
+        <div className={`text-[11px] rounded border px-2 py-1.5 ${
+          !recon.matched ? 'border-amber-600/50 bg-amber-500/10 text-amber-200'
+          : recon.shape === 'short' ? 'border-rose-600/50 bg-rose-500/10 text-rose-200'
+          : recon.shape === 'over' ? 'border-amber-600/50 bg-amber-500/10 text-amber-200'
+          : 'border-emerald-600/50 bg-emerald-500/10 text-emerald-200'}`}>
+          <span>{recon.explanation}</span>
+          {recon.received_at && (
+            <span className="block text-slate-400 mt-1">
+              {t('Order complete — its lead time is now measured.',
+                 'سفارش تکمیل شد — زمان تحویل آن اکنون اندازه‌گیری شده است.')}
+            </span>)}
+        </div>)}
     </div>
   )
 }

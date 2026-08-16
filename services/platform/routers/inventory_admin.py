@@ -31,13 +31,15 @@ from services.core.inventory import approvals_sla as SLA
 from services.core.inventory import clock as CLK
 from services.core.inventory import ledger as L
 from services.core.inventory import receipt_anomaly as RA
+from services.core.inventory import receiving as RCV
 from services.core.inventory import reservation_service as RS
 from services.platform.auth import require_permission
 from services.platform.database import get_db
 from services.platform.routers.inventory_integrity import append_movement, iso_utc
 from shared.models.auth import Staff
 from shared.models.inventory import (
-    DrugProduct, InventoryApproval, InventoryLot, StockLevel,
+    DrugProduct, InventoryApproval, InventoryLot, PurchaseOrder,
+    PurchaseOrderLine, StockLevel,
 )
 
 router = APIRouter()
@@ -461,6 +463,130 @@ async def edit_stock_level(
 
 # ── Receiving: the only way stock enters ──────────────────────────────────
 
+async def _reconcile_purchase_order(
+    db: AsyncSession, *, pharmacy_id, po_id, ndc11: str, units: float,
+    now: datetime, actor_id,
+) -> dict:
+    """Close the loop from this delivery back to the order that asked for it.
+
+    `ordered_at` has always been stamped on submit; `received_at` and
+    `quantity_received` never were, so lead time and fill rate — the two facts
+    every supplier engine stands on — have never once been recorded. This is
+    where they start.
+
+    The order is scoped to the receiving pharmacy: reconciling a delivery
+    against someone else's order would corrupt their supplier history with
+    stock they never took in.
+    """
+    po = (await db.execute(select(PurchaseOrder).where(
+        PurchaseOrder.id == po_id,
+        PurchaseOrder.pharmacy_id == pharmacy_id))).scalar_one_or_none()
+    if po is None:
+        raise HTTPException(404,
+            f"purchase order {po_id} does not belong to this pharmacy — "
+            f"receive without a purchase order rather than against that one")
+
+    rows = (await db.execute(select(PurchaseOrderLine).where(
+        PurchaseOrderLine.order_id == po.id))).scalars().all()
+    by_id = {str(r.id): r for r in rows}
+    lines = [{"id": str(r.id), "ndc11": r.ndc11,
+              "quantity_ordered": r.quantity_ordered,
+              "quantity_received": r.quantity_received,
+              "status": r.status, "created_at": r.created_at} for r in rows]
+
+    target = RCV.match_line(lines, ndc11)
+    if target is None:
+        # Not a reason to refuse the goods — they are physically here. But it is
+        # not this supplier's fill rate either, and quietly attributing it would
+        # flatter whoever actually did deliver short.
+        return {"purchase_order_id": str(po.id), "matched": False,
+                "order_status": po.status,
+                "explanation": (
+                    f"no open line on this order is expecting {ndc11}; the "
+                    f"delivery is recorded, but it closes nothing and is not "
+                    f"counted towards the supplier's fill rate")}
+
+    match = RCV.apply_receipt(target, units)
+    row = by_id[match.line_id]
+    row.quantity_received = float(match.total_received)
+    row.status = match.status
+    row.updated_by = actor_id
+
+    # Re-derive the order from the refreshed lines rather than patching the
+    # status by hand — the same reason the stock aggregate is re-summed.
+    for line in lines:
+        if line["id"] == match.line_id:
+            line["quantity_received"] = match.total_received
+            line["status"] = match.status
+    po.status = RCV.order_status(lines)
+    stamped = RCV.completion(lines, now=now)
+    if stamped is not None and po.received_at is None:
+        po.received_at = stamped
+    po.updated_by = actor_id
+
+    out = {"purchase_order_id": str(po.id), "matched": True,
+           "order_status": po.status,
+           "received_at": iso_utc(po.received_at) if po.received_at else None}
+    out.update(match.as_dict())
+    return out
+
+
+@router.get("/admin/open-orders")
+async def open_orders(
+    ndc11: Optional[str] = Query(None, description="only orders still expecting this NDC"),
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Orders that have been placed and are still owed stock.
+
+    The receiving bench needs this to attribute a delivery to the order that
+    asked for it. Without the attribution nothing measures lead time or fill
+    rate, and every supplier looks equally good — which is the same as having no
+    supplier information at all.
+
+    Outstanding quantity is the ordered figure minus what has arrived, floored
+    at zero: an over-delivery on one line does not mean the supplier owes a
+    negative amount.
+    """
+    rows = (await db.execute(text("""
+        SELECT o.id, o.po_number, o.wholesaler, o.status, o.ordered_at,
+               o.expected_delivery,
+               l.id AS line_id, l.ndc11, l.quantity_ordered, l.quantity_received,
+               l.status AS line_status, d.generic_name, d.brand_name
+        FROM purchase_orders o
+        JOIN purchase_order_lines l ON l.order_id = o.id AND l.is_deleted = false
+        LEFT JOIN drug_products d ON d.ndc11 = l.ndc11
+        WHERE o.pharmacy_id = :pid AND o.is_deleted = false
+          AND o.status IN ('submitted', 'acknowledged', 'partial')
+          AND l.status NOT IN ('complete', 'cancelled')
+          AND (CAST(:ndc AS text) IS NULL OR l.ndc11 = CAST(:ndc AS text))
+        ORDER BY o.ordered_at NULLS LAST, l.created_at"""),
+        {"pid": staff.pharmacy_id, "ndc": ndc11})).mappings().all()
+
+    orders: dict[str, dict] = {}
+    for r in rows:
+        oid = str(r["id"])
+        o = orders.setdefault(oid, {
+            "purchase_order_id": oid, "po_number": r["po_number"],
+            "wholesaler": r["wholesaler"], "status": r["status"],
+            "ordered_at": iso_utc(r["ordered_at"]) if r["ordered_at"] else None,
+            "expected_delivery": r["expected_delivery"].isoformat()
+                                 if r["expected_delivery"] else None,
+            "days_outstanding": (
+                (datetime.now(timezone.utc) - r["ordered_at"]).days
+                if r["ordered_at"] else None),
+            "lines": []})
+        outstanding = max(0.0, float(r["quantity_ordered"] or 0)
+                          - float(r["quantity_received"] or 0))
+        o["lines"].append({
+            "line_id": str(r["line_id"]), "ndc11": r["ndc11"],
+            "name": r["generic_name"] or r["brand_name"] or r["ndc11"],
+            "quantity_ordered": float(r["quantity_ordered"] or 0),
+            "quantity_received": float(r["quantity_received"] or 0),
+            "outstanding": outstanding, "status": r["line_status"]})
+    return {"orders": list(orders.values()), "count": len(orders)}
+
+
 class ReceiveLot(BaseModel):
     ndc11: str
     lot_number: str = Field(..., min_length=1)
@@ -624,6 +750,12 @@ async def receive_stock(
     if body.irc and not stock.irc:
         stock.irc = body.irc
 
+    po_result = None
+    if body.purchase_order_id is not None:
+        po_result = await _reconcile_purchase_order(
+            db, pharmacy_id=staff.pharmacy_id, po_id=body.purchase_order_id,
+            ndc11=body.ndc11, units=units, now=now, actor_id=staff.id)
+
     movement = await append_movement(
         db, pharmacy_id=staff.pharmacy_id, ndc11=body.ndc11,
         irc=body.irc or lot.irc, lot_id=lot.id, plan=plan, actor_id=staff.id)
@@ -632,6 +764,7 @@ async def receive_stock(
             "quantity_received": units,
             "counted": recv["explanation"],
             "checks": verdict.as_dict(),
+            "purchase_order": po_result,
             "lot_on_hand": float(plan.quantity_after),
             "movement_id": str(movement.id), "event_hash": movement.event_hash}
 

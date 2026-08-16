@@ -1543,3 +1543,115 @@ trigger, edits a row, and asserts the break lands at that row's index.
 - Verification: `pytest tests/unit -p no:randomly` → **1,633 passed**, 1 failed
   (`test_integrations_sandbox`, pre-existing). `tsc --noEmit` clean. 0043
   applied to `pharmpilot_test` and `pharmpilot`; head 0043.
+
+### 2026-08-14 — Claude (Opus 5) — a simulator built to falsify the stock ledger
+
+- Workstream: `inventory-integrity`
+- Branch/commit: `feat/inventory-integrity` @ `a609f90`, `5fd0a9f`
+- Built `tests/simulation/`: a seeded synthetic pharmacy (`world.py`, six demand
+  archetypes), an **independent oracle** (`oracle.py`) written from the invariant
+  equations and importing **no** application inventory code — it replays the
+  event log from zero where the app updates incrementally, so an arithmetic
+  error in one cannot be reproduced by the other — a driver that applies every
+  event through the real routers, eleven invariants, and five escalating phases.
+  `scripts/inv_simulate.py` runs sweeps, concurrency and long horizons.
+- Defects it found and I fixed: the quantity ceiling wedging a SKU rather than
+  refusing the receipt; reserved stock removable from under a promise; an
+  unreachable bucket-release branch; `_abc_for` classifying the most valuable
+  item as C (it measured cumulative share *after* adding the item, not before).
+- Confirmed correct under attack, not merely asserted: 6 and 10 concurrent
+  sessions racing the same lots leave ledger totals exactly the stock that
+  existed; a mid-transaction `pg_terminate_backend` leaves no half-written lot,
+  movement or aggregate; separation of duties and the append-only triggers both
+  refuse what they should.
+- Three clocks disagreed about "today" (server zone, UTC, and a bare
+  `CURRENT_DATE`). `services/core/inventory/clock.py` gives one answer from the
+  pharmacy's own timezone, and **falls back to UTC rather than the server's
+  zone** — a fallback that silently follows the host makes expiry dates depend
+  on where the process happens to run.
+- Report: `docs/design/INVENTORY_SIMULATION_REPORT.md`. It does **not** claim
+  exhaustive correctness; residual risk and untested areas are listed there.
+
+### 2026-08-15 — Claude (Opus 5) — the engine roster, then E1 and E2
+
+- Workstream: `inventory-integrity`
+- Branch/commit: `feat/inventory-integrity` @ `151493e`, `9a34045`, `6140cdf`
+- Recovered the founding intelligence requirements and wrote
+  `docs/design/INVENTORY_INTELLIGENCE_ENGINES.md` — every AI/ML service the
+  inventory and ordering side was ever specified to have, tiered by **what data
+  it actually needs**, plus two new ones (⑳ distributor negotiation mentor,
+  ㉑ seasonal decomposition). Tier A is honest today; Tier B needs 8–12 weeks of
+  dispensing; Tier C needs supplier events.
+- **E1 expiry risk** (`expiry_risk.py`). The version that existed charged every
+  lot the item's full demand, so five lots of a slow mover each looked safe.
+  It now FEFO-allocates demand across lots (`consumed_by_earlier`), so a later
+  lot is judged on what is left after the earlier ones are consumed. Verdicts
+  carry an action — return / discount / transfer / watch / write off — and
+  `unknown` where there is no demand basis at all.
+- **E2 receipt anomaly** (`receipt_anomaly.py`). Catches the wrong number *at
+  the door* rather than in a report a fortnight later. Works today because
+  36,612 formulary rows carry an announced price. Uses **median + MAD**, never
+  mean + stdev: one poisoned 5,000 in the history inflates a standard deviation
+  enough that the next bad receipt looks ordinary — the detector training itself
+  to accept the thing it exists to catch.
+- A receipt is never *refused* on these findings. The goods physically arrived,
+  and books that describe a shelf which does not exist are worse than books with
+  a flag on them.
+
+### 2026-08-16 — Claude (Opus 5) — the delivery that never told the order it arrived
+
+- Workstream: `inventory-integrity`
+- Branch: `feat/inventory-integrity`
+- **The gap, stated precisely.** `purchase_orders.ordered_at` *is* written, on
+  submit (`inventory.py:335`) — my first framing of this was wrong and is
+  corrected here. What was never written is `purchase_orders.received_at` and
+  `purchase_order_lines.quantity_received`. Five places read those two columns
+  and no code path filled them, so the two facts every supplier engine stands on
+  — how long a supplier really takes, and how much of an order really turns up —
+  had never once been recorded. That is why `supply_warning` (⑰) has never
+  produced a real fill rate.
+- `services/core/inventory/receiving.py` closes the loop as pure rules:
+  - a receipt matches the **oldest open line** for that NDC; matching the newest
+    leaves the older one outstanding forever, which reads as a supplier failure
+    that never happened;
+  - every delivery is classified **short / exact / over**. Over-delivery is
+    named rather than absorbed — it is unbudgeted stock that may not sell before
+    it expires — and `fill_rate` **caps it at the ordered quantity**, so excess
+    on one line cannot offset a genuine shortfall on another and hide exactly
+    what the metric exists to find;
+  - a 2% band means a 1-unit difference on a 1,000-unit line is a rounding
+    artefact, not a supplier failure. Scoring it as one makes every reliable
+    supplier look unreliable;
+  - the order's status is **derived from its lines**, never set by hand;
+  - `received_at` is stamped **only when nothing is outstanding**. Stamping on
+    the first delivery makes a part-filled order look faster than it was, and
+    lead time is what safety stock is computed from;
+  - under 5 closed lines, `fill_rate` refuses to quote a number: a percentage
+    from three lines is an anecdote, and quoting one to a supplier is worse than
+    saying nothing.
+- Wired into `POST /inventory/admin/receive`. Added
+  `GET /inventory/admin/open-orders` and an order picker on the receiving form,
+  because a column nobody can fill from the bench stays empty. A delivery whose
+  NDC is on no open line is still **recorded** — the goods are physically here —
+  but is not attributed to any supplier's record, and the form says so.
+  Reconciling against another pharmacy's order is refused with 404.
+- **The payoff, measured rather than asserted.** E11 already consumed these
+  columns; only rows were missing. `scripts/verify_receiving.py` (30 checks,
+  all passing on `pharmpilot_test`) drives the endpoint and reads the rows back:
+  after one delivered order E11 reports `basis=sparse` ("too few to describe a
+  supplier; provisional"); after four it reports `basis=observed`, median 6.5
+  days, sd 1.8. Lead time now moves `declared_default → sparse → observed`
+  purely from goods coming through the door, and `refresh_demand` feeds it into
+  every reorder point.
+- Correction worth recording: I first asserted `observed` after a single
+  delivery. E11 said `sparse` and was right — the honest-degradation rule
+  working, and my assertion wrong.
+- **Not done, deliberately:** the *dispensing* half of the substrate (E6 demand,
+  E7 seasonality, E10 pick list). That needs prescriptions flowing through the
+  platform, not more code here.
+- No migration; both columns already existed and were simply never populated.
+- Verification: `pytest tests/unit -p no:randomly` → **1,654 passed, 1 failed**
+  (`test_integrations_sandbox`, pre-existing and previously logged), 1 xfailed.
+  `tsc --noEmit` clean. `scripts/verify_receiving.py` → 30/30. Head unchanged at
+  0043. UI checked only to the level of "builds, loads, no console errors" — I
+  do not type credentials into the login form, so nothing past it was exercised.

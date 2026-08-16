@@ -389,9 +389,16 @@ export const inventoryAdminApi = {
     apiClient.patch(`/inventory/admin/stock/${ndc11}`, body),
   bulkEdit: (body: { lot_ids: string[]; field: string; value: unknown; reason: string }) =>
     apiClient.post('/inventory/admin/lots/bulk', body),
+  // Orders already placed and still owed stock. The receive form offers these
+  // so a delivery can be attributed to the order that asked for it — without
+  // that link nothing measures lead time or fill rate, and every supplier looks
+  // equally good.
+  openOrders: (ndc11?: string) =>
+    apiClient.get('/inventory/admin/open-orders', { params: ndc11 ? { ndc11 } : {} }),
   receive: (body: { ndc11: string; lot_number: string; expiry_date: string
                     quantity: number; unit_cost?: number; irc?: string
-                    storage_location?: string; reason?: string }) =>
+                    storage_location?: string; reason?: string
+                    uom?: 'each' | 'pack'; purchase_order_id?: string }) =>
     apiClient.post('/inventory/admin/receive', body),
   writeOff: (body: { lot_id: string; movement_type: string; quantity: number
                      reason: string }) =>

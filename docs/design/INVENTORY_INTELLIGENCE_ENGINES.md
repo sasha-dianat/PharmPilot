@@ -85,8 +85,8 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 
 | Engine | Question | Blocked on |
 |---|---|---|
-| **E11 Lead-time distribution** (partially built) | How long each supplier really takes | PO `ordered_at`/`received_at`. Zero rows today; scaffolding is in `lead_time.py` |
-| **E12 Supplier reliability** | Who fills short, who fills late, who substitutes | receiving vs ordered, per supplier |
+| **E11 Lead-time distribution** (partially built) | How long each supplier really takes | ~~PO `received_at` is never written~~ — **unblocked 2026-08-16**; now stamped on completion by `receiving.py`. Waiting only on real orders |
+| **E12 Supplier reliability** | Who fills short, who fills late, who substitutes | ~~`quantity_received` is never written~~ — **unblocked 2026-08-16**; per-line receipts and short/exact/over shape now recorded |
 | **E13 Shortage early warning** (⑰, rebuild) | Which NDCs are about to become unobtainable | E11 + E12 + fill-rate CUSUM; cloud adds national feeds |
 | **E14 Negotiation mentor** *(new)* | What to ask this distributor for, and what to concede | E11 + E12 + price history + volume commitments |
 
@@ -168,6 +168,20 @@ Ordered by *value per unit of available data*, not by ambition.
    making sure that when purchase orders and dispenses start flowing, the columns
    that E6/E11/E12 need are populated and provenance-stamped. Skipping this is how
    a team arrives in three months with a working detector and no labels.
+
+   *Done for the supplier half, 2026-08-16.* `ordered_at` was already stamped on
+   submit; `received_at` and `quantity_received` were read in five places and
+   written in none, which is why service ⑰ has never produced a real fill rate.
+   `services/core/inventory/receiving.py` now closes the loop: a receipt against
+   a purchase order matches the oldest open line, records the delivery as
+   **short / exact / over**, re-derives the order's status from its lines, and
+   stamps `received_at` only when nothing is outstanding — a part-filled order
+   must not look faster than it was. `GET /inventory/admin/open-orders` and the
+   order picker on the receiving form make the attribution a click, because a
+   column nobody can fill from the bench stays empty.
+
+   Still uncaptured: the *dispensing* half (E6/E7/E10), which needs prescriptions
+   flowing through the platform rather than any further code here.
 4. **E11 lead time, E12 supplier reliability** — the moment POs exist.
 5. **E13 shortage warning, ⑳ negotiation mentor** — both sit on E11/E12.
 6. **E6 demand, E7 seasonality, E8 reorder point, E10 pick list** — as history
