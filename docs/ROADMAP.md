@@ -57,3 +57,32 @@ The engine is done; it needs the full dataset behind it.
 1. Ingest the harvested backlog + resume the crawl to completion (Phase 1).
 2. Obtain + load one insurer دارونامه; validate a real receipt end to end (Phase 1).
 3. Move the DB password out of committed config into env/secrets (Phase 4 quick win).
+
+## Pricing chain — state after 2026-08-09
+
+The chain the owner specified is now closed end to end:
+
+    distributor invoice → unit_cost + margin_pct → sell_price (per lot)
+                                                       ↓
+    insurer reference ──→ insurer share      shelf price = max(every batch,
+                                                  owner's manual price)
+                                                       ↓
+                                              patient remainder
+
+- ✅ Shelf price exists (`inventory_lots.sell_price`, migration 0040) and the
+  owner can set one by hand (`drug_products.manual_shelf_price`, 0042). The two
+  compete; neither overwrites the other.
+- ✅ The quote uses it. `shelf_prices_for_ircs` bridges catalog IRC → inventory,
+  and every quote line carries `price_source` — `shelf` or `nfi_fallback`.
+- ✅ AWP/WAC removed (0041). NFI's announced price is authoritative for neither
+  side of the calculation and is now only a labelled last resort.
+- ⬜ **Populate the margins.** Every existing lot has `margin_pct` NULL, so
+  `price_source` reads `nfi_fallback` for the whole catalog until stock is
+  priced. This is data entry, not code: receive a purchase with a cost and a
+  margin, or set a price in the InventoryAdmin drawer.
+- ⬜ Decide the default margin. Receiving currently records a cost and no
+  margin, so a lot arrives unpriced. A house default (per product, or global)
+  would let the shelf price exist from the moment stock lands.
+- ⬜ Verify against a real pharmacy receipt — still the open item from before,
+  and the one that proves the arithmetic rather than the wiring.
+- ⬜ Confirm the 30/70 franchise, حق فنی and VAT exemptions (`pricing_ir/config.py`).

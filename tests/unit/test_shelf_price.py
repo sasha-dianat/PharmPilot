@@ -139,3 +139,23 @@ def test_shelf_is_a_price_type_in_its_own_right():
     from services.core.drug_catalog.price_history import PRICE_TYPES
     assert "shelf" in PRICE_TYPES
     assert {"announced", "invoice", "insurer_reference"} <= set(PRICE_TYPES)
+
+
+# ── the bridge from a prescription line to the shelf ────────────────────────
+def test_an_irc_with_no_priced_stock_is_absent_not_zero():
+    """A quote line whose product has no priced sellable stock must not be
+    handed a zero. The caller falls back and SAYS it fell back; a silent zero
+    would dispense the item free."""
+    from services.core.inventory.shelf_price import shelf_price_of
+    assert shelf_price_of([Lot(sell_price=None, on_hand=100)], None) is None
+
+
+def test_the_quote_marks_where_its_price_came_from():
+    """`price_source` is the honest half of the fallback. NFI's announced price
+    is not authoritative for the patient's remainder — if it is being used, the
+    counter has to be able to see that and price the item properly."""
+    import inspect
+    from services.platform.routers import pricing
+    src = inspect.getsource(pricing.quote)
+    assert '"shelf"' in src and '"nfi_fallback"' in src
+    assert "shelf_prices_for_ircs" in src

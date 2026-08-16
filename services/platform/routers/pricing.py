@@ -134,6 +134,16 @@ async def quote(body: QuoteRequest,
         elig = await provider.inquire(national_id=body.national_id, insurer=body.insurer, ircs=ircs)
     elig_lines = {ln.irc: ln for ln in elig.lines} if elig else {}
 
+    # ── The shelf price: what this pharmacy actually sells the item for ───────
+    # The owner's ruling: the insurer's reference decides the insurer's share,
+    # and the patient's remainder is what is left of the SHELF price. NFI's
+    # announced price is authoritative for neither. So the consumer price comes
+    # from inventory — the highest of every batch registered through purchasing
+    # and whatever the owner entered by hand — and NFI is only a last resort,
+    # which the line says out loud rather than passing off as a real price.
+    from services.core.inventory.shelf_price import shelf_prices_for_ircs
+    shelf = await shelf_prices_for_ircs(db, [rec.irc for _, rec in resolved if rec])
+
     # ── Cheaper alternatives per line (same ingredient_key) ───────────────────
     keys = [rec.ingredient_key for _, rec in resolved if rec is not None]
     pool = await repo.fetch_by_ingredient_keys(db, keys)
@@ -153,15 +163,19 @@ async def quote(body: QuoteRequest,
             covered = el.covered
             if el.reference_price is not None:
                 ref = Decimal(str(el.reference_price))
+        unit_price, price_source = shelf.get(rec.irc), "shelf"
+        if unit_price is None:
+            unit_price, price_source = rec.effective_price, "nfi_fallback"
         engine_lines.append(LineInput(
             drug=DrugPrice(
-                irc=rec.irc, name=rec.name_fa, consumer_price=rec.effective_price,
+                irc=rec.irc, name=rec.name_fa, consumer_price=unit_price,
                 insurer_reference_price=ref, category=rec.category,
                 is_covered=covered, vat_rate=vat,
             ),
             quantity=Decimal(str(l.quantity)),
         ))
-        line_meta.append({"line": l, "rec": rec, "skip": False})
+        line_meta.append({"line": l, "rec": rec, "skip": False,
+                          "price_source": price_source})
 
     fee = Decimal(str(body.technical_fee)) if body.technical_fee is not None else DEFAULT_TECHNICAL_FEE_RIAL
     pricing = price_prescription(engine_lines, plan, technical_fee=fee, setting=body.setting)
@@ -185,7 +199,13 @@ async def quote(body: QuoteRequest,
             "irc": rec.irc, "name": rec.name_fa, "generic_name": rec.generic_name,
             "brand_name": rec.brand_name, "is_generic": rec.is_generic,
             "category": rec.category.value, "quantity": float(l.quantity),
-            "unit_price": float(rec.effective_price),
+            "unit_price": float(b.unit_price),
+            # "shelf" means the pharmacy's own price, from what it paid plus its
+            # margin or from the owner's own entry. "nfi_fallback" means there is
+            # no priced stock and this is the authority's announced figure, which
+            # the owner has ruled is not authoritative — it is shown so the
+            # counter knows to price the item properly before dispensing it.
+            "price_source": meta.get("price_source", "nfi_fallback"),
             "gross": float(b.gross), "covered": b.covered,
             "insurer_share": float(b.insurer_share), "patient_share": float(b.patient_share),
             "differential": float(b.differential), "vat": float(b.vat),

@@ -153,3 +153,50 @@ async def set_shelf_price(db, drug_product_id, new_price, *, reason: str | None 
         "history_points": [r for r in recorded if r in ("inserted", "changed")],
         "reason": reason,
     }
+
+
+async def shelf_prices_for_ircs(db, ircs) -> dict[str, Decimal]:
+    """{irc: shelf price} for the IRCs a quote actually needs.
+
+    The bridge between the two halves of the system: a prescription line is
+    resolved against `drug_catalog` by IRC, while the price lives in inventory
+    on the lots. `inventory_lots.irc` is the binding, and an IRC identifies ONE
+    registered product — one brand, one strength, one form — so grouping by it
+    cannot mix brands, which is the rule everything else here obeys too.
+
+    Batched deliberately: a quote of ten lines must not become ten round trips.
+    An IRC with no priced sellable stock is simply absent from the result. The
+    caller decides what to do about that; it must not be papered over with a
+    zero, and it must not silently become NFI's number without saying so.
+    """
+    from sqlalchemy import select
+    from shared.models.inventory import DrugProduct, InventoryLot
+
+    wanted = [i for i in {str(x) for x in (ircs or []) if x} if i]
+    if not wanted:
+        return {}
+    lots = (await db.execute(select(InventoryLot).where(
+        InventoryLot.irc.in_(wanted)))).scalars().all()
+    if not lots:
+        return {}
+    by_irc: dict[str, list] = {}
+    for lot in lots:
+        by_irc.setdefault(str(lot.irc), []).append(lot)
+
+    product_ids = {l.drug_product_id for l in lots if l.drug_product_id}
+    manual: dict = {}
+    if product_ids:
+        for p in (await db.execute(select(DrugProduct).where(
+                DrugProduct.id.in_(list(product_ids))))).scalars().all():
+            manual[p.id] = p.manual_shelf_price
+
+    out: dict[str, Decimal] = {}
+    for irc, group in by_irc.items():
+        # The owner's price is per product; take the highest among the products
+        # this IRC's lots belong to, then let it compete with the batches.
+        m = [manual.get(l.drug_product_id) for l in group]
+        m = [Decimal(str(v)) for v in m if v is not None]
+        price = shelf_price_of(group, max(m) if m else None)
+        if price is not None:
+            out[irc] = price
+    return out
