@@ -28,7 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import admin_rules as A
 from services.core.inventory import approvals_sla as SLA
+from services.core.inventory import clock as CLK
 from services.core.inventory import ledger as L
+from services.core.inventory import receipt_anomaly as RA
 from services.core.inventory import reservation_service as RS
 from services.platform.auth import require_permission
 from services.platform.database import get_db
@@ -517,6 +519,43 @@ async def receive_stock(
         raise HTTPException(422, str(exc))
     units = float(recv["units"])
 
+    # E2: sanity-check the delivery against the national formulary and this
+    # item's own history, at the door. The receipt is never refused on this —
+    # goods physically arrived, and refusing to record them makes the books
+    # describe a shelf that does not exist. It is recorded with the findings
+    # attached so the person at the bench sees them while the carton is still
+    # in front of them, rather than in a report a fortnight later.
+    irc = body.irc or (await db.execute(text(
+        "SELECT irc FROM stock_levels WHERE pharmacy_id = :pid AND ndc11 = :ndc"),
+        {"pid": staff.pharmacy_id, "ndc": body.ndc11})).scalar()
+    ref = (await db.execute(text(
+        "SELECT announced_price, package_count FROM drug_catalog WHERE irc = :irc"),
+        {"irc": irc})).mappings().first() if irc else None
+
+    hist = (await db.execute(text("""
+        SELECT unit_cost, quantity_received, lot_number, expiry_date
+        FROM inventory_lots
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc AND is_deleted = false"""),
+        {"pid": staff.pharmacy_id, "ndc": body.ndc11})).mappings().all()
+
+    today_r = CLK.pharmacy_today((await db.execute(text(
+        "SELECT timezone FROM pharmacies WHERE id = :p"),
+        {"p": staff.pharmacy_id})).scalar())
+    live_expiries = [h["expiry_date"] for h in hist if h["expiry_date"]]
+    verdict = RA.check_receipt(
+        ndc11=body.ndc11, lot_number=body.lot_number,
+        unit_cost=body.unit_cost, quantity=units,
+        expiry_date=body.expiry_date, as_of=today_r,
+        announced_price=(ref or {}).get("announced_price"),
+        package_count=(ref or {}).get("package_count"),
+        cost_history=[h["unit_cost"] for h in hist],
+        quantity_history=[h["quantity_received"] for h in hist],
+        prior_lot_numbers={h["lot_number"] for h in hist},
+        shortest_existing_expiry=min(live_expiries) if live_expiries else None)
+    if not verdict.clean:
+        log.info("receipt %s/%s flagged: %s", body.ndc11, body.lot_number,
+                 [f.check for f in verdict.findings])
+
     lot = (await db.execute(select(InventoryLot).where(
         InventoryLot.pharmacy_id == staff.pharmacy_id,
         InventoryLot.ndc11 == body.ndc11,
@@ -592,6 +631,7 @@ async def receive_stock(
     return {"lot_id": str(lot.id), "lot_created": created,
             "quantity_received": units,
             "counted": recv["explanation"],
+            "checks": verdict.as_dict(),
             "lot_on_hand": float(plan.quantity_after),
             "movement_id": str(movement.id), "event_hash": movement.event_hash}
 
