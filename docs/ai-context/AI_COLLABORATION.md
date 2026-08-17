@@ -1862,3 +1862,43 @@ trigger, edits a row, and asserts the break lands at that row's index.
 - Re-verified after 0045/0046 landed: `scripts/verify_shelf_pricing.py` → 20/20
   against schema 0046. `pytest tests/unit/test_shelf_price.py tests/unit/test_pricing_ir.py`
   → 38 passed. `tsc --noEmit` clean. One head, 0046, on both databases.
+
+### 2026-08-17 — Claude (Opus 5) — the E11/E12 suite result, and three sessions on one branch
+
+- Workstream: `inventory-integrity`
+- Branch/commit: `feat/inventory-integrity` @ `dcd0c0a`
+- Filling in the figure the entry above deferred. Full suite after E11/E12:
+  **1,706 passed, 3 failed, 1 xfailed, 3 errors** in 22:28.
+  - `test_integrations_sandbox` — pre-existing, logged repeatedly above.
+  - `test_occlusion.py` ×2 — the biometric/surveillance workstream, not mine.
+  - `test_exception_register_e2e.py` ×3 **errors** — `DeadlockDetectedError` on
+    `inventory_exceptions`. Not a defect: **two pytest runs were executing
+    concurrently against `pharmpilot_test`**, mine and the surveillance session's,
+    and both fixtures issue the same tenant-wide `UPDATE ... SET is_deleted` on
+    the same rows. They deadlocked each other. Nothing in inventory is implicated
+    — the inventory tests all pass, and `test_exception_register_e2e` passes on
+    its own.
+  - The 22-minute wall clock is the same two causes: contention plus the table
+    bloat the surveillance owner has separately recorded above.
+- **Coordination, for the record.** Three workstreams were committing to
+  `feat/inventory-integrity` at the same time this afternoon: inventory (mine),
+  pricing, and surveillance/biometric. That is contrary to the one-owner rule at
+  the top of this document and it had a visible consequence — commit `e0882c5`
+  (pricing) carries my `close_order_short` endpoint, `openOrders`/
+  `closeOrderShort` API clients and receiving-form changes, because
+  `inventory_admin.py`, `InventoryAdmin.tsx` and `lib/api.ts` were jointly
+  modified and neither of us could commit our own half cleanly. I deliberately
+  left those three files to the other session rather than absorb its in-flight
+  work into my commit; everything I owned outright is in `dcd0c0a`.
+  Verified at HEAD after both landed: `close_order_short`,
+  `_reconcile_purchase_order`, `open_orders`, the three API clients, the
+  receiving-form action and the Suppliers tab are all present and intact;
+  89 inventory unit tests pass, `verify_receiving.py` 30/30 and
+  `verify_supplier_scorecard.py` 27/27 both pass on the merged tree.
+- Migration chain, resolved: 0044 (pricing) → 0045 (mine) → 0046 (surveillance),
+  single head. For a while 0046 was committed while 0045 and 0044 were not, so a
+  fresh checkout of this branch could not have migrated at all. All three are now
+  committed. `pharmpilot` is at 0046; **`pharmpilot_test` is at 0045** and wants
+  an upgrade before the next schema-touching test run.
+- Next action for this workstream: roster step 5 — E13 shortage early warning and
+  ⑳ negotiation mentor, both of which sit on E11/E12 and are now unblocked.
