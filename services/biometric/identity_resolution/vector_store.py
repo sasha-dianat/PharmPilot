@@ -151,23 +151,32 @@ def decode_vector(raw: bytes | str, dim: int) -> np.ndarray:
 def to_readings(hits_by_modality: dict[str, list["Hit"]],
                 stats_by_modality: dict[str, object],
                 quality_by_modality: dict[str, float] | None = None,
-                gallery_size: int = 1) -> list:
+                gallery_size: int = 1,
+                gallery_size_by_modality: dict[str, int] | None = None) -> list:
     """Convert store hits into `fusion.ModalityReading`s.
 
     `stats_by_modality` holds the measured `ImpostorStats` per modality; a
     modality without one is passed through with `stats=None`, which the fusion
     engine excludes by design — an uncalibrated stream must not vote.
+
+    `gallery_size_by_modality` matters more than it looks: FPIR ~= N * FMR is a
+    PER-MODALITY relationship, and the face and gait galleries hold different
+    numbers of people. A single shared N computes at least one modality's
+    confidence against the wrong denominator, understating risk for the larger
+    gallery. The shared `gallery_size` remains the fallback.
     """
     from services.biometric.fusion import ModalityReading
 
     quality_by_modality = quality_by_modality or {}
+    sizes = gallery_size_by_modality or {}
     out = []
     for modality, hits in hits_by_modality.items():
+        n = int(sizes.get(modality, gallery_size))
         for h in hits:
             out.append(ModalityReading(
                 modality=modality, identity_id=h.identity_id,
                 similarity=h.similarity,
                 quality=float(quality_by_modality.get(modality, h.quality)),
                 stats=stats_by_modality.get(modality),
-                gallery_size=gallery_size))
+                gallery_size=n))
     return out

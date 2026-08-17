@@ -145,3 +145,36 @@ def test_an_uncalibrated_modality_is_passed_through_as_uncalibrated():
         {V.GAIT: [V.Hit(uuid.uuid4(), 0.9, uuid.uuid4(), V.GAIT, 0.8)]},
         stats_by_modality={})
     assert readings[0].stats is None
+
+
+def test_to_readings_uses_a_per_modality_gallery_size():
+    """FPIR ~= N * FMR is per-modality. The face gallery and the gait gallery
+    hold different numbers of people, so one shared N computes at least one
+    modality's confidence against the wrong denominator."""
+    from uuid import uuid4
+    from services.biometric.identity_resolution import vector_store as V
+
+    alice = uuid4()
+    hits = {
+        "face": [V.Hit(identity_id=alice, similarity=0.7, template_id=uuid4(),
+                       modality="face", quality=0.9)],
+        "gait": [V.Hit(identity_id=alice, similarity=0.6, template_id=uuid4(),
+                       modality="gait", quality=0.8)],
+    }
+    readings = V.to_readings(
+        hits, stats_by_modality={},
+        gallery_size_by_modality={"face": 4000, "gait": 120})
+
+    by_mod = {r.modality: r for r in readings}
+    assert by_mod["face"].gallery_size == 4000
+    assert by_mod["gait"].gallery_size == 120
+
+
+def test_to_readings_falls_back_to_the_shared_gallery_size():
+    from uuid import uuid4
+    from services.biometric.identity_resolution import vector_store as V
+
+    hits = {"face": [V.Hit(identity_id=uuid4(), similarity=0.7,
+                           template_id=uuid4(), modality="face", quality=0.9)]}
+    readings = V.to_readings(hits, stats_by_modality={}, gallery_size=77)
+    assert readings[0].gallery_size == 77
