@@ -19,7 +19,7 @@
 - No biometric similarity value, including 1.0, may promote an identity above IAL1. Fusion proposes; it never asserts.
 - An uncalibrated modality must not vote. `stats=None` means excluded, by design.
 - A stored coordinate MUST carry `rf_uncertainty_m` — enforced by CHECK constraint `ck_surv_obs_rf_uncertainty_required`.
-- Migration head is `0033`. Task 2 adds `0034`; any later migration chains from that.
+- Migration head is `0045` (twelve migrations landed after this plan was drafted). Task 2 adds `0046`; any later migration chains from that.
 - Persian/RTL for user-facing strings; internal identifiers stay English.
 
 ---
@@ -44,7 +44,7 @@
 |---|---|
 | `services/biometric/occlusion.py` (create) | Landmark-visibility → occlusion stratum, AND which modalities survive it. |
 | `services/core/surveillance/escalation.py` (create) | The ladder that ends in a human action instead of a dead end. |
-| `data/migrations/versions/0034_identify_manually.py` (create) | Extend `ck_surv_obs_fusion_decision` to admit the new outcome. |
+| `data/migrations/versions/0046_identify_manually.py` (create) | Extend `ck_surv_obs_fusion_decision` to admit the new outcome. |
 | `services/biometric/identity_resolution/vector_store.py` (modify) | `to_readings` must take per-modality gallery sizes, not one shared value. |
 | `services/core/surveillance/recorder.py` (create) | Persist a `FusedIdentity` + optional `PositionFix` as one observation row. |
 | `services/platform/routers/surveillance.py` (create) | Ingest endpoints for capture observations and RSSI batches; heatmap query. |
@@ -363,7 +363,7 @@ only. They may never open a chart, and the recorder must not store one as
 
 **Files:**
 - Create: `services/core/surveillance/escalation.py`
-- Create: `data/migrations/versions/0034_identify_manually.py`
+- Create: `data/migrations/versions/0046_identify_manually.py`
 - Test: `tests/unit/test_surveillance_escalation.py`
 
 **Interfaces:**
@@ -549,18 +549,18 @@ Expected: PASS — 7 passed
 
 `ck_surv_obs_fusion_decision` currently admits only `auto|review|no_match`, so
 the new outcome would be rejected by Postgres. Create
-`data/migrations/versions/0034_identify_manually.py`:
+`data/migrations/versions/0046_identify_manually.py`:
 
 ```python
 """admit identify_manually as a fusion decision
 
-Revision ID: 0034
-Revises: 0033
+Revision ID: 0046
+Revises: 0045
 """
 from alembic import op
 
-revision = "0034"
-down_revision = "0033"
+revision = "0046"
+down_revision = "0045"
 branch_labels = None
 depends_on = None
 
@@ -592,12 +592,12 @@ set -a; . ./.env; set +a
 /Users/sashad85/miniforge3/bin/python3 -m alembic upgrade head
 ```
 
-Expected: `Running upgrade 0033 -> 0034`
+Expected: `Running upgrade 0045 -> 0046`
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add services/core/surveillance/escalation.py data/migrations/versions/0034_identify_manually.py tests/unit/test_surveillance_escalation.py
+git add services/core/surveillance/escalation.py data/migrations/versions/0046_identify_manually.py tests/unit/test_surveillance_escalation.py
 git commit -m "feat(surveillance): escalate to a human instead of dead-ending
 
 fuse() ended a failed identification with NO_MATCH and no next step. A

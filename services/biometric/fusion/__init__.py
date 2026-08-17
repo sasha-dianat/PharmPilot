@@ -88,6 +88,10 @@ FUSION_FLOORS: dict[str, ModalityFloor] = {
                            note="most accurate; requires close cooperative capture"),
     "face":  ModalityFloor(min_quality=0.35, reliability=0.85,
                            note="primary; degrades under mask/veil occlusion"),
+    "periocular": ModalityFloor(min_quality=0.40, reliability=0.55,
+                                note="the eyes survive a surgical mask; weaker "
+                                     "than full face and damaged by eyeglasses "
+                                     "and heavy eye cosmetics, both common here"),
     "voice": ModalityFloor(min_quality=0.45, reliability=0.60,
                            note="close-talk only; far-field EER ~15% is below any floor"),
     "gait":  ModalityFloor(min_quality=0.75, reliability=0.25,
