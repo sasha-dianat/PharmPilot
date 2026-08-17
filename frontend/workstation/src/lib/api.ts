@@ -342,6 +342,10 @@ export const inventoryEnginesApi = {
   decideRecommendation: (id: string, body: { accept: boolean; note?: string }) =>
     apiClient.post(`/inventory/recommendations/${id}/decide`, body),
   scoreboard: () => apiClient.get('/inventory/recommendations/scoreboard'),
+  // E11 lead time + E12 supplier reliability, both computed from delivered
+  // purchase orders. `raise_advice` also files the ones needing a decision.
+  suppliers: (raise_advice = false) =>
+    apiClient.get('/inventory/suppliers', { params: { raise_advice } }),
 }
 
 // ── Recall cases: the pharmacy's response, not the notice ─────────────────
@@ -395,8 +399,18 @@ export const inventoryAdminApi = {
   // equally good.
   openOrders: (ndc11?: string) =>
     apiClient.get('/inventory/admin/open-orders', { params: ndc11 ? { ndc11 } : {} }),
+  // Accept that the rest of an order is not coming. Until someone can say it,
+  // a short-shipped order stays open for ever and its supplier never acquires
+  // a lead time at all.
+  closeOrderShort: (poId: string, reason: string) =>
+    apiClient.post(`/inventory/admin/orders/${poId}/close-short`, { reason }),
   receive: (body: { ndc11: string; lot_number: string; expiry_date: string
                     quantity: number; unit_cost?: number; irc?: string
+                    // From the invoice: the consumer price beside the purchase
+                    // price. `margin_pct` is the fallback for documents that
+                    // omit it — there is no house default, because the markup
+                    // depends on what the carton holds.
+                    sell_price?: number; margin_pct?: number
                     storage_location?: string; reason?: string
                     uom?: 'each' | 'pack'; purchase_order_id?: string }) =>
     apiClient.post('/inventory/admin/receive', body),

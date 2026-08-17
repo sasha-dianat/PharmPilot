@@ -33,6 +33,7 @@ from services.core.inventory import ledger as L
 from services.core.inventory import receipt_anomaly as RA
 from services.core.inventory import receiving as RCV
 from services.core.inventory import reservation_service as RS
+from services.core.inventory import shelf_price as SP
 from services.platform.auth import require_permission
 from services.platform.database import get_db
 from services.platform.routers.inventory_integrity import append_movement, iso_utc
@@ -587,6 +588,72 @@ async def open_orders(
     return {"orders": list(orders.values()), "count": len(orders)}
 
 
+class CloseOrder(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=240)
+
+
+@router.post("/admin/orders/{po_id}/close-short")
+async def close_order_short(
+    po_id: UUID,
+    body: CloseOrder,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept that the rest of this order is not coming.
+
+    Someone has to be able to say it. Until they can, a short-shipped order
+    stays open for ever — and the consequence is not untidy bookkeeping but a
+    blind spot: the order never completes, so `received_at` is never stamped, so
+    the supplier never acquires a lead time, and a supplier that *always*
+    short-ships becomes indistinguishable from one that has never delivered at
+    all. E12 goes blind to exactly the behaviour it exists to catch.
+
+    The outstanding units close as `backordered`, not `cancelled`. Closing the
+    order must not erase the failure that made closing it necessary.
+    """
+    po = (await db.execute(select(PurchaseOrder).where(
+        PurchaseOrder.id == po_id,
+        PurchaseOrder.pharmacy_id == staff.pharmacy_id))).scalar_one_or_none()
+    if po is None:
+        raise HTTPException(404, "purchase order not found at this pharmacy")
+
+    rows = (await db.execute(select(PurchaseOrderLine).where(
+        PurchaseOrderLine.order_id == po.id))).scalars().all()
+    lines = [{"id": str(r.id), "ndc11": r.ndc11,
+              "quantity_ordered": r.quantity_ordered,
+              "quantity_received": r.quantity_received,
+              "status": r.status, "created_at": r.created_at} for r in rows]
+
+    closed = RCV.close_short(lines)
+    if not closed:
+        raise HTTPException(422,
+            "nothing on this order is outstanding — there is nothing to close")
+
+    by_id = {str(r.id): r for r in rows}
+    for m in closed:
+        row = by_id[m.line_id]
+        row.status = m.status
+        row.updated_by = staff.id
+        for line in lines:
+            if line["id"] == m.line_id:
+                line["status"] = m.status
+
+    now = datetime.now(timezone.utc)
+    po.status = RCV.order_status(lines)
+    stamped = RCV.completion(lines, now=now)
+    if stamped is not None and po.received_at is None:
+        po.received_at = stamped
+    po.notes = ((po.notes or "") + f"\nclosed short: {body.reason}").strip()
+    po.updated_by = staff.id
+    await db.commit()
+
+    log.info("PO %s closed short by %s: %d line(s)", po.po_number,
+             str(staff.id)[:8], len(closed))
+    return {"purchase_order_id": str(po.id), "order_status": po.status,
+            "received_at": iso_utc(po.received_at) if po.received_at else None,
+            "closed": [m.as_dict() for m in closed]}
+
+
 class ReceiveLot(BaseModel):
     ndc11: str
     lot_number: str = Field(..., min_length=1)
@@ -598,6 +665,14 @@ class ReceiveLot(BaseModel):
     # shelf by a factor of the pack size.
     uom: Optional[str] = Field(default="each", pattern="^(each|pack)$")
     unit_cost: Optional[float] = None
+    # The other half of the invoice. Almost every فاکتور names the consumer price
+    # beside the purchase price, so it is transcribed rather than computed, and
+    # the margin is derived from the pair. `margin_pct` is the fallback for the
+    # documents that stay silent — supply one or the other, not a house default:
+    # the right markup depends on whether the carton holds a generic tablet or a
+    # cosmetic, and no single percentage is correct for both.
+    sell_price: Optional[float] = None
+    margin_pct: Optional[float] = None
     irc: Optional[str] = None
     storage_location: Optional[str] = None
     serial_number: Optional[str] = None
@@ -682,6 +757,20 @@ async def receive_stock(
         log.info("receipt %s/%s flagged: %s", body.ndc11, body.lot_number,
                  [f.check for f in verdict.findings])
 
+    # The second half of the invoice: what this lot is to be sold for. Captured
+    # here rather than derived later, because the delivery document is the only
+    # moment both figures are in front of the same person. Where it is silent a
+    # declared margin computes the price instead, and `basis` keeps the two
+    # apart — an observed price and a computed one must not be interchangeable
+    # once they are in the money path.
+    sell, margin, basis = SP.price_and_margin(
+        body.unit_cost, body.sell_price, body.margin_pct)
+    # Selling below what the lot cost is a real thing a pharmacy sometimes does
+    # and more often a mistyped figure or a pack/unit mix-up. Reported, never
+    # refused — on the same principle as E2, the goods arrived and the books
+    # must say so.
+    sells_at_a_loss = bool(margin is not None and margin < 0)
+
     lot = (await db.execute(select(InventoryLot).where(
         InventoryLot.pharmacy_id == staff.pharmacy_id,
         InventoryLot.ndc11 == body.ndc11,
@@ -696,7 +785,8 @@ async def receive_stock(
             pharmacy_id=staff.pharmacy_id, drug_product_id=drug.id, ndc11=body.ndc11,
             irc=body.irc, lot_number=body.lot_number, expiry_date=body.expiry_date,
             quantity_received=0, quantity_on_hand=0, quantity_reserved=0,
-            unit_cost=body.unit_cost, storage_location=body.storage_location,
+            unit_cost=body.unit_cost, sell_price=sell, margin_pct=margin,
+            sell_price_basis=basis, storage_location=body.storage_location,
             received_uom=recv["uom"], received_packs=recv["packs"],
             units_per_pack=recv["units_per_pack"],
             serial_number=body.serial_number, received_at=now,
@@ -725,6 +815,13 @@ async def receive_stock(
     lot.updated_by = staff.id
     if body.unit_cost is not None:
         lot.unit_cost = body.unit_cost
+    # A top-up under the same lot number: the newer document wins, because it is
+    # what the pharmacy has just agreed to pay and charge. Silence leaves the
+    # existing pair alone rather than blanking a price that is still good.
+    if sell is not None:
+        lot.sell_price = sell
+        lot.margin_pct = margin
+        lot.sell_price_basis = basis
 
     stock = (await db.execute(select(StockLevel).where(
         StockLevel.pharmacy_id == staff.pharmacy_id,
@@ -764,6 +861,17 @@ async def receive_stock(
             "quantity_received": units,
             "counted": recv["explanation"],
             "checks": verdict.as_dict(),
+            "pricing": {
+                "sell_price": float(sell) if sell is not None else None,
+                "margin_pct": float(margin) if margin is not None else None,
+                "basis": basis,
+                "sells_at_a_loss": sells_at_a_loss,
+                "explanation": (
+                    "قیمت مصرف‌کننده از فاکتور ثبت شد؛ درصد سود از همان دو عدد محاسبه شد."
+                    if basis == "invoice" else
+                    "فاکتور قیمت مصرف‌کننده نداشت؛ قیمت از درصد سود اعلام‌شده محاسبه شد."
+                    if basis == "margin" else
+                    "قیمت فروش ثبت نشد — این بچ قیمت قفسه تعیین نمی‌کند.")},
             "purchase_order": po_result,
             "lot_on_hand": float(plan.quantity_after),
             "movement_id": str(movement.id), "event_hash": movement.event_hash}

@@ -1,12 +1,28 @@
 """What the customer is charged, and why that number and not another.
 
-The price chain the owner specified:
+The price chain, in the direction it actually runs (owner, 2026-08-16):
 
-    buy price (distributor invoice)  →  + profit %  →  sell price = shelf price
+    the invoice states BOTH the buy price and the consumer price
+        →  sell price is transcribed, margin is what falls out of the two
+
+An earlier reading of this module had it the other way round — cost times a
+margin — with the margin as the input. That is the exception, not the rule:
+
+    "almost always the sell price is defined in each invoice ... that percentage
+     of margin is dependent on the drug, brand, dosage form, if the product is a
+     drug or of cosmetics. cosmetics usually possess a higher profit margin. so
+     it is a case by case matter"
+
+Which also settles what the default margin should be: there isn't one. A single
+pharmacy-wide percentage cannot be right for a cosmetic and a generic tablet at
+once, and applying one would put a fabricated markup into the money path wearing
+the same face as a figure read off a document. So `sell_price_basis` records
+which of the two produced the pair — `invoice` (observed) or `margin` (declared)
+— and where neither is available the lot simply does not price.
 
 `inventory_lots` records the buy price per invoice as `unit_cost`, and now the
-margin and the sell price it produces. This module answers the one question the
-pricing engine asks of inventory: **what does this product sell for today?**
+sell price beside it. This module answers the one question the pricing engine
+asks of inventory: **what does this product sell for today?**
 
 Two rules, both the owner's, and both load-bearing:
 
@@ -38,6 +54,11 @@ from decimal import Decimal
 def lot_sell_price(unit_cost, margin_pct) -> Decimal | None:
     """buy price + margin → the per-unit shelf price for one lot.
 
+    The FALLBACK direction, for the minority of deliveries whose document does
+    not state a consumer price. The margin here is always one a person declared;
+    nothing in this module supplies a default, because the right markup depends
+    on what the item is — a cosmetic and a generic tablet do not share one.
+
     Returns None when either input is missing: a margin with no cost, or a cost
     with no margin, is not a price and must not be guessed into one.
     """
@@ -47,6 +68,50 @@ def lot_sell_price(unit_cost, margin_pct) -> Decimal | None:
     if cost <= 0:
         return None
     return (cost * (Decimal("1") + pct / Decimal("100"))).quantize(Decimal("1"))
+
+
+def margin_from_prices(unit_cost, sell_price) -> Decimal | None:
+    """buy price + sell price → the margin that was actually achieved.
+
+    The ordinary direction. The invoice names both figures, so the markup is not
+    chosen — it is measured, and kept because it is worth reporting on: it is how
+    the pharmacy learns that its cosmetics carry 40% and its generics 12%, per
+    brand and per form, without anyone having to assert it up front.
+
+    A negative result is legitimate and is returned as such. Stock bought above
+    what it can be sold for is a real and important thing to be able to see; the
+    caller decides whether to warn about it.
+    """
+    if unit_cost is None or sell_price is None:
+        return None
+    cost, sell = Decimal(str(unit_cost)), Decimal(str(sell_price))
+    if cost <= 0:
+        return None
+    return ((sell - cost) / cost * Decimal("100")).quantize(Decimal("0.001"))
+
+
+def price_and_margin(unit_cost, sell_price=None, margin_pct=None):
+    """Resolve one lot's (sell price, margin, basis) from whatever was supplied.
+
+    The single place that decides which way the arithmetic ran, so that no caller
+    has to remember the precedence:
+
+      * a sell price was given  → that is the price, the margin is derived from
+        it, and the basis is `invoice`. The document outranks any margin typed
+        alongside it: the transcribed figure is evidence, the margin is opinion.
+      * only a margin was given → the price is computed and the basis is
+        `margin`, marking it as declared rather than observed.
+      * neither                 → (None, None, None). The lot does not price, and
+        the product falls through to whatever else can price it. Nothing is
+        invented to close the gap.
+    """
+    sell = Decimal(str(sell_price)) if sell_price is not None else None
+    if sell is not None and sell > 0:
+        return sell, margin_from_prices(unit_cost, sell), "invoice"
+    computed = lot_sell_price(unit_cost, margin_pct)
+    if computed is not None:
+        return computed, Decimal(str(margin_pct)), "margin"
+    return None, None, None
 
 
 def shelf_price_of(lots, manual_price=None, mandate: bool = False) -> Decimal | None:
@@ -208,15 +273,26 @@ async def shelf_prices_for_ircs(db, ircs) -> dict[str, Decimal]:
     if product_ids:
         for p in (await db.execute(select(DrugProduct).where(
                 DrugProduct.id.in_(list(product_ids))))).scalars().all():
-            manual[p.id] = p.manual_shelf_price
+            manual[p.id] = (p.manual_shelf_price,
+                            bool(p.manual_price_is_mandate))
 
     out: dict[str, Decimal] = {}
     for irc, group in by_irc.items():
-        # The owner's price is per product; take the highest among the products
-        # this IRC's lots belong to, then let it compete with the batches.
-        m = [manual.get(l.drug_product_id) for l in group]
-        m = [Decimal(str(v)) for v in m if v is not None]
-        price = shelf_price_of(group, max(m) if m else None)
-        if price is not None:
-            out[irc] = price
+        # Resolve PER PRODUCT and take the highest, rather than pooling the lots
+        # and the owner's prices together. The mandate is a property of one
+        # product — "do not compare this price with the batches" — and it can
+        # only be honoured against that product's own lots. Pooling first would
+        # let another product's batch re-enter a comparison the owner had
+        # switched off, which is the till charging the figure they overrode.
+        per_product: dict = {}
+        for lot in group:
+            per_product.setdefault(lot.drug_product_id, []).append(lot)
+        prices = []
+        for pid, lots_of in per_product.items():
+            m, mandated = manual.get(pid, (None, False))
+            p = shelf_price_of(lots_of, m, mandate=mandated)
+            if p is not None:
+                prices.append(p)
+        if prices:
+            out[irc] = max(prices)
     return out

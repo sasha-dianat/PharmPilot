@@ -15,7 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from services.core.inventory.shelf_price import (
-    lot_sell_price, shelf_price_of,
+    lot_sell_price, margin_from_prices, price_and_margin, shelf_price_of,
 )
 
 
@@ -192,3 +192,87 @@ def test_the_switch_is_a_switch_not_a_magic_value():
     "the owner happened to type a big number" never look alike in the data."""
     from shared.models.inventory import DrugProduct
     assert "manual_price_is_mandate" in DrugProduct.__table__.columns
+
+
+# ── the invoice names both prices; the margin is what falls out ─────────────
+def test_the_margin_is_measured_from_the_two_prices():
+    """Owner's correction (2026-08-16): "almost always the sell price is defined
+    in each invoice". So the markup is not chosen, it is observed."""
+    assert margin_from_prices(2770, 3324) == Decimal("20.000")
+    assert margin_from_prices(1000, 1000) == Decimal("0.000")
+
+
+def test_a_loss_is_reported_rather_than_clamped():
+    """Stock bought above what it sells for is a real and important thing to be
+    able to see. Flooring it at zero would hide exactly that."""
+    assert margin_from_prices(1000, 800) == Decimal("-20.000")
+
+
+def test_a_margin_needs_both_prices_and_a_real_cost():
+    assert margin_from_prices(None, 3324) is None
+    assert margin_from_prices(2770, None) is None
+    assert margin_from_prices(0, 3324) is None       # would divide by zero
+
+
+def test_the_invoice_price_outranks_a_margin_typed_beside_it():
+    """The transcribed figure is evidence; the margin is opinion. When both are
+    supplied the document wins and the margin is recomputed from it — otherwise
+    the stored pair would not reconcile with the stored price."""
+    sell, margin, basis = price_and_margin(2770, sell_price=3500, margin_pct=20)
+    assert (sell, basis) == (Decimal("3500"), "invoice")
+    assert margin == margin_from_prices(2770, 3500)  # not the 20 that was typed
+
+
+def test_a_silent_invoice_falls_back_to_a_declared_margin():
+    sell, margin, basis = price_and_margin(2770, sell_price=None, margin_pct=20)
+    assert (sell, margin, basis) == (Decimal("3324"), Decimal("20"), "margin")
+
+
+def test_neither_input_prices_nothing_and_says_so():
+    """The rule that keeps a fabricated markup out of the money path: no house
+    default, no constant, no guess. The lot simply does not price, and the
+    product falls through to whatever else can price it."""
+    assert price_and_margin(2770) == (None, None, None)
+    assert price_and_margin(None, None, None) == (None, None, None)
+    assert price_and_margin(2770, sell_price=0) == (None, None, None)
+
+
+def test_the_basis_distinguishes_observed_from_computed():
+    """Both paths produce a number in `sell_price`. Without the basis column an
+    invoice price and an arithmetic one are indistinguishable downstream — the
+    same provenance rule the planning inputs obey."""
+    from shared.models.inventory import InventoryLot
+    assert "sell_price_basis" in InventoryLot.__table__.columns
+    assert price_and_margin(2770, sell_price=3324)[2] == "invoice"
+    assert price_and_margin(2770, margin_pct=20)[2] == "margin"
+
+
+def test_the_quote_path_honours_a_mandate_too():
+    """The defect this guards: `shelf_price_for_product` (the admin drawer) read
+    the mandate flag and `shelf_prices_for_ircs` (the quote) did not. The owner
+    would override a bad price, see the corrected figure in the drawer, and the
+    till would still charge the batch price — the exact failure the mandate
+    exists to prevent, made invisible by the drawer agreeing with them.
+
+    Resolving per product is what makes it correct: the mandate says "do not
+    compare THIS product's price with the batches", so pooling one IRC's lots
+    across products first would let a foreign batch back into a comparison the
+    owner had switched off.
+    """
+    import inspect
+    from services.core.inventory import shelf_price
+    src = inspect.getsource(shelf_price.shelf_prices_for_ircs)
+    assert "manual_price_is_mandate" in src
+    assert "mandate=mandated" in src
+
+
+def test_receiving_captures_the_price_and_records_which_way_it_came():
+    """The capture has to happen at the door: the delivery document is the only
+    moment both figures are in front of the same person."""
+    import inspect
+    from services.platform.routers import inventory_admin
+    src = inspect.getsource(inventory_admin.receive_stock)
+    assert "price_and_margin" in src
+    assert "sell_price_basis" in src
+    fields = inventory_admin.ReceiveLot.model_fields
+    assert "sell_price" in fields and "margin_pct" in fields

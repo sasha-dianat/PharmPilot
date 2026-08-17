@@ -471,14 +471,19 @@ type OpenOrder = { purchase_order_id: string; po_number: string
                    days_outstanding: number | null; lines: OpenLine[] }
 type Reconciled = { matched: boolean; explanation?: string; shape?: string
                     order_status?: string; received_at?: string | null }
+type Priced = { sell_price: number | null; margin_pct: number | null
+                basis: string | null; sells_at_a_loss: boolean; explanation: string }
 
 function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: string }) => void }) {
   const { t, n: fa } = useLang()
   const [f, setF] = useState({ ndc11: '', lot_number: '', expiry_date: '',
-                               quantity: '', unit_cost: '', storage_location: '' })
+                               quantity: '', unit_cost: '', sell_price: '',
+                               margin_pct: '', storage_location: '' })
+  const [priced, setPriced] = useState<Priced | null>(null)
   const [poId, setPoId] = useState('')
   const [recon, setRecon] = useState<Reconciled | null>(null)
   const [busy, setBusy] = useState(false)
+  const qc = useQueryClient()
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF(v => ({ ...v, [k]: e.target.value }))
 
@@ -493,18 +498,45 @@ function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: strin
   const chosen = orders.find(o => o.purchase_order_id === poId)
   const chosenLine = chosen?.lines.find(l => l.ndc11 === ndc)
 
+  /** Accept that the balance of this order will never arrive.
+   *
+   * Until someone can say it, a short-shipped order stays open for ever — and
+   * the supplier never completes an order, so it never acquires a delivery
+   * time, so the chronic short-shipper ends up indistinguishable from one that
+   * has never delivered at all. */
+  const closeShort = async () => {
+    const reason = window.prompt(t(
+      'Why is the rest not coming? (recorded against the order)',
+      'چرا باقی نمی‌آید؟ (روی سفارش ثبت می‌شود)'))
+    if (!reason?.trim()) return
+    setBusy(true)
+    try {
+      const { data } = await inventoryAdminApi.closeOrderShort(poId, reason.trim())
+      qc.invalidateQueries({ queryKey: ['open-orders'] })
+      setPoId('')
+      onDone({ kind: 'ok', text: t(
+        `Order closed with ${data.closed.length} line(s) short. The shortfall now counts against the supplier.`,
+        `سفارش با ${fa(data.closed.length)} ردیف کسری بسته شد. کسری اکنون به حساب تأمین‌کننده ثبت است.`) })
+    } catch (e) { onDone({ kind: 'err', text: apiErrorText(e) }) }
+    finally { setBusy(false) }
+  }
+
   const submit = async () => {
     setBusy(true)
     setRecon(null)
+    setPriced(null)
     try {
       const { data } = await inventoryAdminApi.receive({
         ndc11: ndc, lot_number: f.lot_number.trim(),
         expiry_date: f.expiry_date, quantity: Number(f.quantity),
         unit_cost: f.unit_cost ? Number(f.unit_cost) : undefined,
+        sell_price: f.sell_price ? Number(f.sell_price) : undefined,
+        margin_pct: f.margin_pct ? Number(f.margin_pct) : undefined,
         storage_location: f.storage_location || undefined,
         purchase_order_id: poId || undefined,
       })
       setRecon(data.purchase_order ?? null)
+      setPriced(data.pricing ?? null)
       onDone({ kind: 'ok', text: t(
         `${fa(Number(f.quantity))} units recorded into lot ${f.lot_number} (lot on hand: ${fa(data.lot_on_hand)}).`,
         `${fa(Number(f.quantity))} واحد در بچ ${f.lot_number} ثبت شد (موجودی بچ: ${fa(data.lot_on_hand)}).`) })
@@ -524,7 +556,9 @@ function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: strin
         <In label={t('Lot number', 'شماره بچ')} v={f.lot_number} on={set('lot_number')} w="w-32" />
         <In label={t('Expiry date', 'تاریخ انقضا')} v={f.expiry_date} on={set('expiry_date')} type="date" w="w-40" />
         <In label={t('Quantity', 'تعداد')} v={f.quantity} on={set('quantity')} type="number" w="w-24" />
-        <In label={t('Unit cost', 'قیمت واحد')} v={f.unit_cost} on={set('unit_cost')} type="number" w="w-28" />
+        <In label={t('Unit cost', 'قیمت خرید')} v={f.unit_cost} on={set('unit_cost')} type="number" w="w-28" />
+        <In label={t('Sell price', 'قیمت مصرف‌کننده')} v={f.sell_price} on={set('sell_price')} type="number" w="w-32" />
+        <In label={t('Margin %', 'درصد سود')} v={f.margin_pct} on={set('margin_pct')} type="number" w="w-24" />
         <In label={t('Location', 'محل')} v={f.storage_location} on={set('storage_location')} w="w-32" />
         <label className="flex flex-col gap-1">
           <span className="text-slate-500 text-[10px]">{t('Against order', 'در برابر سفارش')}</span>
@@ -546,19 +580,53 @@ function ReceiveForm({ onDone }: { onDone: (m: { kind: 'ok' | 'err'; text: strin
       </div>
 
       {chosenLine && (
-        <p className="text-[11px] text-sky-300">
-          {t(`This order is still expecting ${fa(chosenLine.outstanding)} of ${chosenLine.name}`,
-             `این سفارش هنوز ${fa(chosenLine.outstanding)} از ${chosenLine.name} را طلب دارد`)}
-          {' · '}
-          {t(`${fa(chosenLine.quantity_received)} of ${fa(chosenLine.quantity_ordered)} received so far`,
-             `تا کنون ${fa(chosenLine.quantity_received)} از ${fa(chosenLine.quantity_ordered)} دریافت شده`)}
-        </p>)}
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-sky-300">
+          <span>
+            {t(`This order is still expecting ${fa(chosenLine.outstanding)} of ${chosenLine.name}`,
+               `این سفارش هنوز ${fa(chosenLine.outstanding)} از ${chosenLine.name} را طلب دارد`)}
+            {' · '}
+            {t(`${fa(chosenLine.quantity_received)} of ${fa(chosenLine.quantity_ordered)} received so far`,
+               `تا کنون ${fa(chosenLine.quantity_received)} از ${fa(chosenLine.quantity_ordered)} دریافت شده`)}
+          </span>
+          {chosenLine.quantity_received > 0 && (
+            <button onClick={closeShort} disabled={busy}
+              title={t('The order stops waiting and the shortfall is recorded against the supplier. Until someone says this, the order never closes and the supplier never gets a delivery time.',
+                       'سفارش از انتظار خارج می‌شود و کسری به نام تأمین‌کننده ثبت می‌گردد. تا کسی این را نگوید، سفارش هرگز بسته نمی‌شود و زمان تحویل تأمین‌کننده هرگز به دست نمی‌آید.')}
+              className="px-2 py-0.5 rounded border border-amber-600/50 text-amber-300
+                         hover:bg-amber-500/10 disabled:opacity-40">
+              {t('The rest is not coming', 'باقی نمی‌آید')}
+            </button>)}
+        </div>)}
 
       {!poId && ndc && forThisNdc.length > 0 && (
         <p className="text-[11px] text-amber-300">
           {t('Received without an order, this delivery counts towards no supplier’s record.',
              'اگر بدون سفارش ثبت شود، این دریافت در کارنامهٔ هیچ تأمین‌کننده‌ای ثبت نمی‌شود.')}
         </p>)}
+
+      {f.unit_cost && !f.sell_price && !f.margin_pct && (
+        <p className="text-[11px] text-slate-500">
+          {t('The invoice usually names the consumer price beside the purchase price — enter it, and the margin is derived. Enter a margin only where the document is silent. With neither, this batch sets no shelf price.',
+             'فاکتور معمولاً قیمت مصرف‌کننده را کنار قیمت خرید می‌آورد — آن را وارد کنید تا درصد سود محاسبه شود. درصد سود را فقط وقتی وارد کنید که فاکتور ساکت است. اگر هیچ‌کدام وارد نشود، این بچ قیمت قفسه تعیین نمی‌کند.')}
+        </p>)}
+
+      {priced && (
+        <div className={`text-[11px] rounded border px-2 py-1.5 ${
+          priced.sells_at_a_loss ? 'border-rose-600/50 bg-rose-500/10 text-rose-200'
+          : priced.basis ? 'border-emerald-600/50 bg-emerald-500/10 text-emerald-200'
+          : 'border-slate-600/50 bg-slate-500/10 text-slate-300'}`}>
+          <span>{priced.explanation}</span>
+          {priced.sell_price != null && (
+            <span className="block mt-1 font-mono tabular-nums">
+              {t('Sell', 'فروش')} {fa(priced.sell_price)}
+              {priced.margin_pct != null && <> · {t('margin', 'سود')} {fa(priced.margin_pct)}٪</>}
+            </span>)}
+          {priced.sells_at_a_loss && (
+            <span className="block mt-1">
+              {t('This batch would sell below what it cost. Check the figure — a pack price entered as a unit price looks exactly like this.',
+                 'این بچ زیر قیمت خرید فروخته می‌شود. عدد را بررسی کنید — قیمت بسته که به‌جای قیمت واحد وارد شده باشد دقیقاً همین شکل است.')}
+            </span>)}
+        </div>)}
 
       {recon && (
         <div className={`text-[11px] rounded border px-2 py-1.5 ${

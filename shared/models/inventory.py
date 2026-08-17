@@ -117,6 +117,15 @@ class InventoryLot(AuditedBase):
     margin_pct: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
     sell_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
 
+    # Which way round the pair was produced (migration 0044). Almost always the
+    # invoice states the consumer price beside the purchase price, so the price
+    # is transcribed (`invoice`) and the margin is derived from it. Where the
+    # document is silent someone declares a margin instead and the price is that
+    # arithmetic (`margin`). NULL means neither happened and the lot does not
+    # price — an observed price and a computed one must not be indistinguishable
+    # in the money path, and a missing one must not be filled with a constant.
+    sell_price_basis: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     # What the person at the bench actually counted (migration 0038). A receipt
     # used to record a bare number: "3" of a 30-count pack is 3 units or 90
     # depending on what they meant, and nothing recorded which.
