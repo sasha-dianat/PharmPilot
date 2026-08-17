@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 KINDS = ("reorder", "write_off", "cycle_count", "formulary_binding",
-         "anomaly", "expiry_risk", "demand_refresh")
+         "anomaly", "expiry_risk", "demand_refresh", "supplier_reliability")
 STATUSES = ("open", "accepted", "rejected", "superseded", "expired")
 TERMINAL = ("accepted", "rejected", "superseded", "expired")
 
@@ -44,6 +46,9 @@ TERMINAL = ("accepted", "rejected", "superseded", "expired")
 TTL_DAYS = {
     "reorder": 7, "expiry_risk": 30, "anomaly": 14, "cycle_count": 14,
     "formulary_binding": 90, "write_off": 30, "demand_refresh": 30,
+    # A supplier's record is the slowest-moving thing here: it is built from
+    # months of deliveries and does not change because a fortnight passed.
+    "supplier_reliability": 90,
 }
 DEFAULT_TTL_DAYS = 14
 
@@ -103,6 +108,32 @@ def fingerprint(p: Proposal) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+_NDC11 = re.compile(r"^\d{11}$")
+
+
+def subject_columns(subject: str | None) -> dict:
+    """Which indexed column, if any, a proposal's subject belongs in.
+
+    `subject` is whatever the advice is about, and that is not one kind of
+    thing: an NDC for a reorder, a lot for an expiry risk, a wholesaler's name
+    for a supplier's record. Writing all three into `ndc11` puts a 36-character
+    lot UUID into an 11-character column — an insert that fails outright — and
+    makes a supplier appear in the recommendations list as though it were a
+    drug.
+
+    Anything that is neither an NDC nor a lot maps to no column at all. It is
+    still in `proposal` and still in the fingerprint, so nothing is lost; it
+    simply has no dedicated column to be wrong in.
+    """
+    s = (subject or "").strip()
+    if _NDC11.match(s):
+        return {"ndc11": s}
+    try:
+        return {"inventory_lot_id": UUID(s)}
+    except (ValueError, AttributeError, TypeError):
+        return {}
+
+
 def ttl_days(kind: str) -> int:
     return TTL_DAYS.get(kind, DEFAULT_TTL_DAYS)
 
@@ -147,7 +178,11 @@ def decide(row: dict, *, status: str, note: str | None,
 # denominator the fingerprint exists to protect.
 COOLDOWN_DAYS = {"reorder": 3, "anomaly": 14, "cycle_count": 30,
                  "write_off": 14, "expiry_risk": 30, "formulary_binding": 180,
-                 "demand_refresh": 14}
+                 "demand_refresh": 14,
+                 # Deciding what to do about a supplier — switch, negotiate, or
+                 # accept it — takes longer to play out than the advice would
+                 # take to reappear on any shorter window.
+                 "supplier_reliability": 90}
 DEFAULT_COOLDOWN_DAYS = 14
 
 

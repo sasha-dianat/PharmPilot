@@ -85,8 +85,8 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 
 | Engine | Question | Blocked on |
 |---|---|---|
-| **E11 Lead-time distribution** (partially built) | How long each supplier really takes | ~~PO `received_at` is never written~~ — **unblocked 2026-08-16**; now stamped on completion by `receiving.py`. Waiting only on real orders |
-| **E12 Supplier reliability** | Who fills short, who fills late, who substitutes | ~~`quantity_received` is never written~~ — **unblocked 2026-08-16**; per-line receipts and short/exact/over shape now recorded |
+| **E11 Lead-time distribution** — **built 2026-08-17** | How long each supplier really takes, and how much that varies | Nothing. `lead_time.by_supplier` on delivered orders; surfaced at `GET /inventory/suppliers` |
+| **E12 Supplier reliability** — **built 2026-08-17** | Who fills short, who is unpredictable, who substitutes | Nothing for fill/consistency. Substitution stays `not_captured` — no receiving path records one |
 | **E13 Shortage early warning** (⑰, rebuild) | Which NDCs are about to become unobtainable | E11 + E12 + fill-rate CUSUM; cloud adds national feeds |
 | **E14 Negotiation mentor** *(new)* | What to ask this distributor for, and what to concede | E11 + E12 + price history + volume commitments |
 
@@ -183,6 +183,30 @@ Ordered by *value per unit of available data*, not by ambition.
    Still uncaptured: the *dispensing* half (E6/E7/E10), which needs prescriptions
    flowing through the platform rather than any further code here.
 4. **E11 lead time, E12 supplier reliability** — the moment POs exist.
+
+   *Done, 2026-08-17.* `supplier_reliability.py` scores each supplier on
+   **fill rate × consistency**, and deliberately **not** on speed: a supplier
+   that takes eleven days every time is already handled, because those eleven
+   days are in the reorder point, and scoring duration here would punish it
+   twice for something the planner has absorbed. What cannot be planned around
+   is variability, so that is what is scored.
+
+   Three refusals matter more than the score: an unmeasured supplier is not
+   ranked (a withheld score sorts last, never first); consistency requires an
+   *observed* lead time, because one delivery has a standard deviation of zero
+   and would hand a newcomer a perfect record; and two suppliers are not
+   compared unless their baskets overlap, or the comparison measures catalogues
+   rather than suppliers.
+
+   Running it against real rows found a blind spot the unit tests could not:
+   a supplier that *always* short-ships never completes an order, so
+   `received_at` is never stamped, so it acquires no lead time — and the worst
+   supplier on the roster became indistinguishable from one that had never
+   delivered. Fixed by `close_short`: someone can now record that the rest is
+   not coming, the outstanding units settle as `backordered` (the supplier's
+   failure) rather than `cancelled` (the pharmacy's withdrawal), and the
+   shortfall stays in the fill rate. Closing an order must not launder the
+   failure that made closing it necessary.
 5. **E13 shortage warning, ⑳ negotiation mentor** — both sit on E11/E12.
 6. **E6 demand, E7 seasonality, E8 reorder point, E10 pick list** — as history
    accumulates, in that order.

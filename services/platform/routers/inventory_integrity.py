@@ -34,6 +34,7 @@ from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
 from services.core.inventory import reservations as RSV
+from services.core.inventory import supplier_reliability as SUP
 from services.core.inventory import reconciliation as R
 from services.core.inventory import formulary_binding as FB
 from services.platform.auth import require_permission
@@ -351,9 +352,26 @@ async def refresh_demand(
         {"pid": staff.pharmacy_id})).mappings().all()]
     lead = LT.estimate(pos)
 
+    # E11 is a distribution *per supplier*, and a blended average across all of
+    # them is worth very little: an item bought from the eleven-day wholesaler
+    # gets covered for four days because someone else is quick. Each item is
+    # planned against whoever last supplied it — the relationship the next order
+    # will most likely go through — and falls back to the blend, then to the
+    # declared default, both of which say so in `lead_time_basis`.
+    supplier_of = {r["ndc11"]: r["wholesaler"] for r in (await db.execute(text("""
+        SELECT DISTINCT ON (l.ndc11) l.ndc11, o.wholesaler
+        FROM purchase_order_lines l
+        JOIN purchase_orders o ON o.id = l.order_id
+        WHERE o.pharmacy_id = :pid AND o.received_at IS NOT NULL
+          AND o.is_deleted = false AND l.is_deleted = false
+        ORDER BY l.ndc11, o.received_at DESC"""),
+        {"pid": staff.pharmacy_id})).mappings().all()}
+    by_supplier = LT.by_supplier(pos)
+
     signals = {r.ndc11: LT.reorder_signals(
         avg_daily_demand=r.new_adq, demand_basis=r.basis,
-        demand_stdev=r.stdev_daily, lead=lead) for r in plan}
+        demand_stdev=r.stdev_daily,
+        lead=by_supplier.get(supplier_of.get(r.ndc11, ""), lead)) for r in plan}
 
     written = 0
     if apply:
@@ -393,8 +411,13 @@ async def refresh_demand(
         "applied": apply,
         "window_days": window_days,
         "as_of": today.isoformat(),
+        # The blend, plus the per-supplier estimates each item was actually
+        # planned against. Reporting only the blend would hide that two items
+        # on this list were covered for very different lengths of time.
         "lead_time": lead.as_dict(),
-        "rows": [{**r.as_dict(), "signals": signals[r.ndc11].as_dict()}
+        "lead_time_by_supplier": {k: v.as_dict() for k, v in by_supplier.items()},
+        "rows": [{**r.as_dict(), "signals": signals[r.ndc11].as_dict(),
+                  "supplier": supplier_of.get(r.ndc11)}
                  for r in plan],
         "written": written,
         "summary": {
@@ -1061,7 +1084,8 @@ async def _record(db: AsyncSession, pharmacy_id, proposals: list, *, actor_id=No
             skipped += 1
             continue
         db.add(InventoryRecommendation(
-            pharmacy_id=pharmacy_id, kind=p.kind, ndc11=p.subject or None,
+            pharmacy_id=pharmacy_id, kind=p.kind,
+            **RC.subject_columns(p.subject),
             proposal=p.proposal, features=p.features or None,
             confidence=p.confidence, explanation=p.explanation,
             severity=p.severity, produced_by=p.produced_by,
@@ -1299,6 +1323,109 @@ async def expiry_exposure(
                 confidence=0.9 if l.basis == "observed" else 0.4,
                 severity=l.severity)
             for l in exposure.lots if ER.worth_raising(l)]
+        out["recommendations"] = await _record(
+            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+
+    return out
+
+
+# ── E11 / E12: how long each supplier takes, and how much of it turns up ──
+
+# A supplier's record should describe the current relationship. Deliveries from
+# three years ago are about a different account manager, a different contract,
+# and often a different company.
+SUPPLIER_WINDOW_DAYS = 365
+
+
+@router.get("/suppliers")
+async def supplier_scorecard(
+    raise_advice: bool = Query(False, description="also file recommendations"),
+    window_days: int = Query(SUPPLIER_WINDOW_DAYS, ge=30, le=1825,
+                             description="how far back a supplier's record counts"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Each supplier's measured record: lead time (E11) and reliability (E12).
+
+    Both are computed from `purchase_orders` and their lines, which only began
+    carrying `received_at` and `quantity_received` when receiving started
+    closing the loop. Before that this endpoint could only have reported the
+    declared default dressed up as a measurement, which is why it did not exist.
+
+    Duration is reported and deliberately not scored. A supplier that takes
+    eleven days every time is already handled — those eleven days are in the
+    reorder point. What is scored is how much of an order arrives, and how
+    predictably.
+    """
+    p = {"pid": staff.pharmacy_id, "win": window_days}
+    # Orders placed inside the window, plus any still open however old — an
+    # ancient order nobody ever closed is exactly the thing worth surfacing.
+    scope = ("(o.ordered_at IS NULL "
+             "OR o.ordered_at > NOW() - make_interval(days => :win) "
+             "OR o.received_at IS NULL)")
+
+    orders = [dict(r) for r in (await db.execute(text(f"""
+        SELECT o.id, o.wholesaler, o.ordered_at, o.received_at,
+               o.expected_delivery, o.status
+        FROM purchase_orders o
+        WHERE o.pharmacy_id = :pid AND o.is_deleted = false AND {scope}"""),
+        p)).mappings().all()]
+
+    lines = [dict(r) for r in (await db.execute(text(f"""
+        SELECT o.wholesaler, l.ndc11, l.quantity_ordered, l.quantity_received,
+               l.status
+        FROM purchase_order_lines l
+        JOIN purchase_orders o ON o.id = l.order_id
+        WHERE o.pharmacy_id = :pid AND o.is_deleted = false
+          AND l.is_deleted = false AND {scope}"""),
+        p)).mappings().all()]
+
+    delivered = [o for o in orders if o.get("received_at") is not None]
+    table = SUP.rank(delivered, lines)
+    lead = LT.by_supplier(delivered)
+
+    # A head-to-head only between the two best *measured* suppliers, and only
+    # where their baskets overlap. `comparable` refuses the rest.
+    measured = [s for s in table if s.score is not None]
+    head_to_head = (SUP.comparable(measured[0], measured[1]).as_dict()
+                    if len(measured) >= 2 else None)
+
+    out = {
+        "suppliers": [{**s.as_dict(),
+                       "lead_time": lead[s.supplier].as_dict()
+                                    if s.supplier in lead
+                                    else LT.declared_default(s.supplier).as_dict()}
+                      for s in table],
+        "measured": len(measured),
+        "orders_delivered": len(delivered),
+        "orders_outstanding": len(orders) - len(delivered),
+        "head_to_head": head_to_head,
+        "explanation": (
+            f"{len(measured)} of {len(table)} supplier(s) have enough delivered "
+            f"history to score." if table else
+            "No purchase orders yet. Every lead time in use is the declared "
+            "default, and it is labelled as such wherever it appears."),
+    }
+
+    if raise_advice:
+        proposals = [
+            RC.Proposal(
+                kind="supplier_reliability", subject=s.supplier,
+                # The grade is the identity of the advice; the score is not.
+                # A score that moves a hundredth on every delivery would make
+                # each night's run a new recommendation and turn the acceptance
+                # rate into a measure of how often the job ran.
+                proposal={"supplier": s.supplier, "grade": s.grade},
+                explanation=" ".join([s.explanation] + s.concerns),
+                produced_by="supplier_reliability_v1",
+                features={"fill_rate": float(s.fill_rate or 0),
+                          "short_line_rate": float(s.short_line_rate or 0),
+                          "lead_days": s.lead_days,
+                          "consistency": float(s.consistency or 0),
+                          "orders": s.orders, "basis": s.basis},
+                confidence=0.8 if s.basis == "observed" else 0.4,
+                severity="medium" if s.grade == "mixed" else "high")
+            for s in table if SUP.worth_raising(s)]
         out["recommendations"] = await _record(
             db, staff.pharmacy_id, proposals, actor_id=staff.id)
 

@@ -7,6 +7,7 @@ assertion here is about keeping the denominator honest.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -248,3 +249,32 @@ def test_a_superseded_recommendation_does_not_buy_quiet():
     """Nobody decided it, so nobody has dealt with it."""
     r = _decided("superseded")
     assert RC.suppressed([r], now=NOW) == set()
+
+
+# ── which column a subject belongs in ─────────────────────────────────────
+def test_an_ndc_subject_lands_in_the_ndc_column():
+    assert RC.subject_columns("00093721410") == {"ndc11": "00093721410"}
+
+
+def test_a_lot_subject_lands_in_the_lot_column_not_the_ndc_one():
+    """`ndc11` is varchar(11) and a lot id is a 36-character UUID. Writing every
+    subject into that column is an insert that fails outright the first time an
+    expiry-risk recommendation is actually filed."""
+    lot = "0f9c2a1e-4d3b-4c8a-9f21-6b7d8e5a1c04"
+    assert RC.subject_columns(lot) == {"inventory_lot_id": UUID(lot)}
+
+
+def test_a_subject_that_is_neither_gets_no_column():
+    """A wholesaler is not a drug. Put it in `ndc11` and it appears in the
+    recommendations list as though it were one."""
+    assert RC.subject_columns("Alborz Darou") == {}
+    assert RC.subject_columns("") == {}
+    assert RC.subject_columns(None) == {}
+
+
+def test_a_supplier_recommendation_is_a_known_kind():
+    p = RC.Proposal(kind="supplier_reliability", subject="Alborz Darou",
+                    proposal={"grade": "poor"}, explanation="fills short",
+                    produced_by="supplier_reliability_v1")
+    assert RC.fingerprint(p)
+    assert RC.cooldown_days("supplier_reliability") == 90

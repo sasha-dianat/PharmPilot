@@ -127,6 +127,58 @@ def test_received_at_is_stamped_only_when_the_order_is_fully_in():
     assert RCV.completion(full, now=NOW) == NOW
 
 
+# ── accepting that the rest is not coming ─────────────────────────────────
+def test_closing_short_settles_the_outstanding_lines():
+    ls = [line("DONE", status="complete"),
+          line("SHORT", "N2", ordered=100, received=60, status="partial")]
+    closed_ = RCV.close_short(ls)
+    assert [m.line_id for m in closed_] == ["SHORT"]
+    assert closed_[0].status == RCV.CLOSED_SHORT
+    assert "40.000 never arrived" in closed_[0].explanation
+
+
+def test_closing_short_lets_the_order_complete_and_stamp_its_lead_time():
+    """This is the whole point. Without it a chronically short-shipping supplier
+    never completes an order, never gets a `received_at`, never acquires a lead
+    time — and becomes indistinguishable from one that never delivered at all."""
+    ls = [line("SHORT", ordered=100, received=60, status="partial")]
+    assert RCV.completion(ls, now=NOW) is None
+
+    for m in RCV.close_short(ls):
+        ls[0]["status"] = m.status
+    assert RCV.order_status(ls) == "complete"
+    assert RCV.completion(ls, now=NOW) == NOW
+
+
+def test_closing_short_does_not_erase_the_shortfall():
+    """A closed order that scored as fully delivered would launder the failure
+    that made closing it necessary."""
+    ls = [line(f"L{i}", f"N{i}", ordered=100, received=40, status="partial")
+          for i in range(6)]
+    for m in RCV.close_short(ls):
+        next(l for l in ls if l["id"] == m.line_id)["status"] = m.status
+    fr = RCV.fill_rate(ls)
+    assert fr.rate == Decimal("0.400")
+
+
+def test_a_cancelled_line_is_the_pharmacy_withdrawing_and_is_not_counted():
+    """Distinct from `backordered`: one is the supplier failing to deliver, the
+    other is the pharmacy deciding it no longer wants the stock."""
+    ls = closed(5) + [line("WITHDRAWN", ordered=100, received=0,
+                           status="cancelled")]
+    fr = RCV.fill_rate(ls)
+    assert fr.lines == 5
+    assert fr.rate == Decimal("1.000")
+
+
+def test_closing_an_order_with_nothing_outstanding_changes_nothing():
+    assert RCV.close_short([line(status="complete")]) == []
+
+
+def test_a_closed_short_line_is_not_matched_by_a_later_delivery():
+    assert RCV.match_line([line(status=RCV.CLOSED_SHORT)], "N1") is None
+
+
 # ── fill rate, and refusing to quote one too early ────────────────────────
 def closed(n, ordered=100, received=100):
     return [line(f"L{i}", ordered=ordered, received=received, status="complete")
@@ -149,9 +201,20 @@ def test_a_perfect_supplier_scores_one():
 
 
 def test_short_deliveries_pull_the_rate_down():
-    rows = closed(5) + [line("SHORT", ordered=100, received=50, status="partial")]
+    rows = closed(5) + [line("SHORT", ordered=100, received=50,
+                             status=RCV.CLOSED_SHORT)]
     fr = RCV.fill_rate(rows)
     assert fr.rate is not None and fr.rate < Decimal("1")
+
+
+def test_a_line_still_awaiting_its_balance_is_not_yet_a_failure():
+    """The rest may arrive tomorrow. Scoring it as a shortfall today penalises a
+    supplier for an order placed yesterday — and `close_short` is what settles
+    it when the rest genuinely is not coming."""
+    fr = RCV.fill_rate(closed(6) + [line("INFLIGHT", ordered=100, received=50,
+                                         status="partial")])
+    assert fr.lines == 6
+    assert fr.rate == Decimal("1.000")
 
 
 def test_over_delivery_cannot_offset_a_shortfall_elsewhere():
@@ -160,7 +223,7 @@ def test_over_delivery_cannot_offset_a_shortfall_elsewhere():
     what the metric exists to find."""
     rows = closed(4) + [
         line("OVER", ordered=100, received=200, status="over"),
-        line("SHORT", ordered=100, received=0, status="partial")]
+        line("SHORT", ordered=100, received=0, status=RCV.CLOSED_SHORT)]
     fr = RCV.fill_rate(rows)
     assert fr.rate is not None
     # 5 lines at 100 + 1 at 0, out of 600 ordered — the over-delivery is capped.

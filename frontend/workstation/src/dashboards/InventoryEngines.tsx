@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryEnginesApi, apiErrorText } from '../lib/api'
 import { useLang } from '../lib/i18n'
 
-type Tab = 'advice' | 'count' | 'demand' | 'value'
+type Tab = 'advice' | 'count' | 'demand' | 'value' | 'suppliers'
 
 type Pair = readonly [string, string]
 
@@ -29,6 +29,7 @@ const TABS: { id: Tab; label: Pair; hint: Pair }[] = [
   { id: 'advice', label: ['Advice', 'توصیه‌ها'], hint: ['What the engines propose, and your decision', 'پیشنهادهای موتورها و تصمیم شما'] },
   { id: 'count', label: ['Cycle counting', 'شمارش دوره‌ای'], hint: ['Where the counting hours go', 'کجا وقت شمارش صرف شود'] },
   { id: 'demand', label: ['Demand signal', 'سیگنال تقاضا'], hint: ['The measured consumption rate', 'نرخ مصرف اندازه‌گیری‌شده'] },
+  { id: 'suppliers', label: ['Suppliers', 'تأمین‌کنندگان'], hint: ['How long each one takes, and how much of an order turns up', 'هر کدام چقدر طول می‌کشند و چه مقدار از سفارش می‌رسد'] },
   { id: 'value', label: ['Value and shrinkage', 'ارزش و ضایعات'], hint: ['Stock value and the cost of losses', 'ارزش موجودی و بهای زیان'] },
 ]
 
@@ -113,6 +114,7 @@ export default function InventoryEngines() {
       {tab === 'advice' && <AdviceTab onMsg={setMsg} />}
       {tab === 'count' && <CountTab />}
       {tab === 'demand' && <DemandTab onMsg={setMsg} />}
+      {tab === 'suppliers' && <SupplierTab />}
       {tab === 'value' && <ValueTab />}
     </div>
   )
@@ -649,6 +651,119 @@ function ValueTab() {
             <p className="text-[10px] text-slate-600 pt-2">{data.cost_basis_note}</p>
           </div>
         </>)}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   Suppliers — E11 lead time and E12 reliability
+
+   The column order carries the argument. **Delivered** comes first because it
+   is what a short delivery costs: a sale. **Predictable** comes second, and
+   **Typical days** last and deliberately unscored — a supplier that takes
+   eleven days every time is already handled, because those eleven days are in
+   the reorder point. Ranking by speed would push the pharmacy towards whoever
+   is quickest on a good week.
+
+   An unmeasured supplier shows a dash, never a score, and sorts to the bottom.
+   A blank cell at the top of a table gets read as a clean record.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface Supplier {
+  supplier: string; orders: number; lines: number
+  fill_rate: number | null; fill_basis: string
+  short_lines: number; short_line_rate: number | null; outstanding_lines: number
+  lead_days: number; lead_basis: string; lead_stdev: number | null
+  consistency: number | null
+  score: number | null; basis: string; grade: string | null
+  substitutions: number; substitution_basis: string
+  concerns: string[]; products: number; explanation: string
+  lead_time: { days: number; basis: string; samples: number
+               median_days: number | null; stdev_days: number | null
+               explanation: string }
+}
+interface Scorecard {
+  suppliers: Supplier[]; measured: number
+  orders_delivered: number; orders_outstanding: number
+  head_to_head: { a: string; b: string; shared_products: number
+                  verdict: string; explanation: string } | null
+  explanation: string
+}
+
+const GRADE: Record<string, { label: Pair; cls: string }> = {
+  dependable: { label: ['Dependable', 'قابل اتکا'], cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' },
+  workable: { label: ['Workable', 'قابل قبول'], cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40' },
+  mixed: { label: ['Mixed', 'مختلط'], cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+  poor: { label: ['Poor', 'ضعیف'], cls: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+}
+
+function SupplierTab() {
+  const { t, tp, n: fa } = useLang()
+  const { data, isLoading, error } = useQuery<Scorecard>({
+    queryKey: ['inv-suppliers'],
+    queryFn: () => inventoryEnginesApi.suppliers().then(r => r.data),
+  })
+  const pct = (v: number | null) => v === null ? '—' : `${fa(Math.round(v * 100))}٪`
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] text-slate-500">
+        {t('How long a supplier takes is reported but not scored — a predictable eleven days is already in the reorder point. What is scored is how much of an order arrives, and how predictably.',
+           'مدت زمان تحویل گزارش می‌شود اما امتیاز نمی‌گیرد — یازده روزِ قابل پیش‌بینی از پیش در نقطهٔ سفارش لحاظ شده است. آنچه امتیاز می‌گیرد این است که چه مقدار از سفارش می‌رسد و با چه میزان پیش‌بینی‌پذیری.')}
+      </p>
+
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
+      {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      {data && (<>
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
+                        flex flex-wrap items-center gap-x-8 gap-y-3">
+          <Metric label={t('Suppliers measured', 'تأمین‌کنندگان سنجیده‌شده')}
+                  value={`${fa(data.measured)} / ${fa(data.suppliers.length)}`} />
+          <Metric label={t('Orders delivered', 'سفارش‌های تحویل‌شده')} value={fa(data.orders_delivered)} />
+          <Metric label={t('Still open', 'هنوز باز')} value={fa(data.orders_outstanding)} />
+          <p className="text-[11px] text-slate-500 max-w-lg">{data.explanation}</p>
+        </div>
+
+        {data.head_to_head && (
+          <p className={`text-[12px] rounded border px-3 py-2 ${
+            data.head_to_head.verdict === 'not_comparable' || data.head_to_head.verdict === 'too_close'
+              ? 'border-slate-600 bg-slate-800/40 text-slate-300'
+              : 'border-emerald-600/40 bg-emerald-500/10 text-emerald-200'}`}>
+            {data.head_to_head.explanation}
+          </p>)}
+
+        {data.suppliers.length === 0 && (
+          <p className="text-sm text-slate-400">
+            {t('No purchase orders yet. Nothing here can be measured until deliveries are received against an order.',
+               'هنوز سفارش خریدی ثبت نشده است. تا زمانی که دریافت‌ها در برابر یک سفارش ثبت نشوند، چیزی اینجا سنجش‌پذیر نیست.')}
+          </p>)}
+
+        <div className="space-y-2">
+          {data.suppliers.map(s => (
+            <div key={s.supplier}
+                 className={`bg-slate-800/50 border rounded-lg p-3 space-y-2 ${
+                   s.score === null ? 'border-slate-700/60' : 'border-slate-700'}`}>
+              <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+                <span className="font-semibold">{s.supplier}</span>
+                {s.grade
+                  ? <span className={`text-[10px] px-1.5 py-0.5 rounded border ${GRADE[s.grade]?.cls ?? ''}`}>
+                      {GRADE[s.grade] ? tp(GRADE[s.grade].label) : s.grade}</span>
+                  : <span className="text-[10px] px-1.5 py-0.5 rounded border bg-slate-600/20 text-slate-400 border-slate-600">
+                      {t('Not yet gradable', 'هنوز قابل درجه‌بندی نیست')}</span>}
+                <Metric label={t('Delivered', 'تحویل‌شده')} value={pct(s.fill_rate)} />
+                <Metric label={t('Predictable', 'پیش‌بینی‌پذیر')} value={pct(s.consistency)} />
+                <Metric label={t('Typical days', 'روز معمول')}
+                        value={s.lead_time.basis === 'declared_default' ? '—' : fa(s.lead_days)} />
+                <Metric label={t('Orders', 'سفارش‌ها')} value={fa(s.orders)} />
+                <BasisChip basis={s.lead_time.basis} />
+              </div>
+              <p className="text-[11px] text-slate-400">{s.explanation}</p>
+              {s.concerns.map((c, i) => (
+                <p key={i} className="text-[11px] text-amber-300/90">• {c}</p>))}
+            </div>))}
+        </div>
+      </>)}
     </div>
   )
 }

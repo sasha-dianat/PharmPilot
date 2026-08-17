@@ -48,6 +48,16 @@ LINE_STATUSES = ("ordered", "partial", "complete", "over", "backordered",
 ORDER_STATUSES = ("draft", "submitted", "acknowledged", "partial", "complete",
                   "cancelled")
 
+# The status a short-shipped line takes when the pharmacy accepts that the rest
+# is not coming. Distinct from `cancelled`, which is the pharmacy withdrawing a
+# request: one is the supplier's failure and belongs in its fill rate, the other
+# is not and does not.
+CLOSED_SHORT = "backordered"
+
+# Lines that will not change again. Everything else is still in flight, and a
+# line still in flight has not failed to arrive.
+SETTLED = ("complete", "over", CLOSED_SHORT)
+
 
 class ReceivingError(ValueError):
     """A receipt that cannot be reconciled to its order as asked."""
@@ -87,7 +97,7 @@ def match_line(lines: list[dict], ndc11: str) -> dict | None:
     candidates = [
         l for l in lines
         if str(l.get("ndc11")) == str(ndc11)
-        and str(l.get("status")) not in ("complete", "cancelled")
+        and str(l.get("status")) not in ("complete", "cancelled", CLOSED_SHORT)
     ]
     if not candidates:
         return None
@@ -142,7 +152,7 @@ def order_status(lines: list[dict]) -> str:
     live = [l for l in lines if str(l.get("status")) != "cancelled"]
     if not live:
         return "cancelled"
-    if all(str(l.get("status")) in ("complete", "over") for l in live):
+    if all(str(l.get("status")) in SETTLED for l in live):
         return "complete"
     if any(q(l.get("quantity_received") or 0) > 0 for l in live):
         return "partial"
@@ -157,6 +167,44 @@ def completion(lines: list[dict], *, now: datetime) -> datetime | None:
     time is what safety stock is computed from.
     """
     return now if order_status(lines) == "complete" else None
+
+
+def close_short(lines: list[dict]) -> list[LineMatch]:
+    """Accept that the rest of this order is not coming.
+
+    Without this an order that was short-shipped stays open for ever, and the
+    consequence is worse than untidy bookkeeping: the order never completes, so
+    `received_at` is never stamped, so the supplier never acquires a lead time —
+    and a supplier that *always* short-ships ends up indistinguishable from one
+    that has never delivered at all. The engine goes blind to precisely the
+    behaviour it exists to catch.
+
+    Outstanding lines close as `backordered`, deliberately not `cancelled`.
+    A cancelled line is the pharmacy withdrawing a request and is excluded from
+    the fill rate; a backordered line is the supplier failing to deliver and is
+    counted at what actually arrived. Closing an order must not erase the
+    failure that made closing it necessary.
+
+    The *order* then reads `complete`, which is the only settled value the
+    column allows and does not mean it went well. What went wrong is on the
+    lines, and it is what the fill rate is computed from.
+    """
+    out = []
+    for line in lines:
+        status = str(line.get("status"))
+        if status in SETTLED or status == "cancelled":
+            continue
+        ordered = q(line.get("quantity_ordered") or 0)
+        got = q(line.get("quantity_received") or 0)
+        out.append(LineMatch(
+            line_id=str(line.get("id")), ndc11=str(line.get("ndc11")),
+            ordered=ordered, already_received=got, now_receiving=q(0),
+            total_received=got, status=CLOSED_SHORT, shape="short",
+            explanation=(
+                f"Closed with {got} of {ordered} delivered — {q(ordered - got)} "
+                f"never arrived. Counted against the supplier rather than "
+                f"written off the order.")))
+    return out
 
 
 @dataclass(frozen=True)
@@ -183,15 +231,21 @@ MIN_LINES_FOR_RATE = 5
 
 
 def fill_rate(rows: list[dict], *, supplier: str = "unknown") -> FillRate:
-    """Fill rate from delivered order lines, or an honest refusal.
+    """Fill rate from settled order lines, or an honest refusal.
+
+    Only settled lines count. A part-filled line is still in flight and the
+    balance may arrive tomorrow; scoring it as a shortfall today penalises a
+    supplier for an order placed yesterday. A line the pharmacy has accepted
+    will never be completed is settled — as `backordered`, at whatever actually
+    arrived — which is how a chronic short-shipper reaches this calculation at
+    all. See `close_short`.
 
     Over-delivery is capped at the ordered quantity. A supplier who sends 200
     against an order of 100 has not achieved a 200% fill rate, and letting the
     excess offset a genuine shortfall elsewhere would hide the failure the
     metric exists to find.
     """
-    closed = [r for r in rows if str(r.get("status")) in ("complete", "partial",
-                                                          "over")]
+    closed = [r for r in rows if str(r.get("status")) in SETTLED]
     ordered = q(sum((q(r.get("quantity_ordered") or 0) for r in closed),
                     Decimal("0")))
     received = q(sum((min(q(r.get("quantity_received") or 0),

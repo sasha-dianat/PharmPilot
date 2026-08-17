@@ -81,15 +81,16 @@ async def product(db, ndc: str) -> uuid.UUID:
 
 
 async def order(db, *, pid, lines: list[tuple[str, uuid.UUID, float]],
-                ordered_days_ago: int) -> uuid.UUID:
+                ordered_days_ago: int, wholesaler: str = "verify-supplier") -> uuid.UUID:
     oid = uuid.uuid4()
     ordered_at = datetime.now(timezone.utc) - timedelta(days=ordered_days_ago)
     await db.execute(text("""
         INSERT INTO purchase_orders
           (id, pharmacy_id, wholesaler, po_number, status, ordered_at,
            created_at, updated_at, is_deleted, ai_generated)
-        VALUES (:i,:p,'verify-supplier',:n,'submitted',:o,now(),now(),false,false)"""),
-        {"i": oid, "p": pid, "n": f"VER-{uuid.uuid4().hex[:10]}", "o": ordered_at})
+        VALUES (:i,:p,:w,:n,'submitted',:o,now(),now(),false,false)"""),
+        {"i": oid, "p": pid, "w": wholesaler,
+         "n": f"VER-{uuid.uuid4().hex[:10]}", "o": ordered_at})
     for i, (ndc, did, qty) in enumerate(lines):
         await db.execute(text("""
             INSERT INTO purchase_order_lines

@@ -1655,3 +1655,130 @@ trigger, edits a row, and asserts the break lands at that row's index.
   `tsc --noEmit` clean. `scripts/verify_receiving.py` → 30/30. Head unchanged at
   0043. UI checked only to the level of "builds, loads, no console errors" — I
   do not type credentials into the login form, so nothing past it was exercised.
+
+### 2026-08-16 — Claude (Opus 5) — the invoice names both prices; the margin is what falls out
+
+- Workstream: `inventory-integrity` (pricing chain); coordinated with the
+  concurrent receiving work committed as `2c46f53` on the same branch.
+- Branch/commit: `feat/inventory-integrity`, migration head **0044**
+- Migration 0040 modelled the chain as `unit_cost + margin_pct → sell_price`,
+  with the margin as the INPUT. The owner corrected the direction: "almost
+  always the sell price is defined in each invoice … that percentage of margin is
+  dependent on the drug, brand, dosage form, if the product is a drug or of
+  cosmetics. cosmetics usually possess a higher profit margin. so it is a case by
+  case matter." So the consumer price is transcribed from the فاکتور beside the
+  purchase price, and the margin is DERIVED — measured, not chosen.
+- That also disposes of the default-margin question I was about to ask for a
+  number on. There is no single percentage that is right for a cosmetic and a
+  generic tablet at once, so none is supplied. A lot with neither figure does not
+  price, and the product falls through — no house constant, per the provenance
+  rule the planning inputs already obey.
+- Migration `0044` adds `inventory_lots.sell_price_basis`: `invoice` (observed) |
+  `margin` (declared) | NULL. Both paths write a number into `sell_price`; without
+  the column an invoice price and an arithmetic are indistinguishable once they
+  are in the money path. Existing priced lots are backfilled to `margin`, since
+  cost×margin was the only path that existed — labelling them `invoice` would
+  claim a document nobody read. (Zero rows affected in practice: 17 lots, none
+  priced.)
+- `shelf_price.py` gains `margin_from_prices()` and `price_and_margin()`, the one
+  place that decides precedence: a transcribed price outranks a margin typed
+  beside it, because the document is evidence and the margin is opinion.
+  `lot_sell_price()` is demoted in the docstring to the fallback it now is.
+- The receive endpoint captures both, on create and on top-up, and returns a
+  `pricing` block with the basis and a Persian explanation. A sell price under
+  cost is **reported, never refused** — same principle as E2: the goods arrived,
+  and books describing a shelf that does not exist are worse than flagged books.
+  A pack price entered as a unit price looks exactly like this, and the warning
+  says so.
+- **Defect found and fixed in my own 0043 work**: `shelf_price_for_product` (the
+  admin drawer) read `manual_price_is_mandate`; `shelf_prices_for_ircs` — the
+  path a QUOTE takes — did not. An owner would override a mistyped batch price,
+  the drawer would show the corrected figure and agree with them, and the till
+  would still charge the batch. Exactly the failure the mandate exists to
+  prevent, hidden by the drawer's agreement. `shelf_prices_for_ircs` now resolves
+  **per product** and passes the flag, rather than pooling one IRC's lots and
+  manual prices together — pooling would let another product's batch re-enter a
+  comparison the owner had switched off.
+- **Standing gap, unchanged and now measured**: 17 lots, 17 with a cost, 0 with a
+  sell price, 0 products with a manual price. The chain is correct and inert
+  until deliveries are received through the new fields; every quote still reads
+  `nfi_fallback` today. Nothing was backfilled to hide that.
+- Verification: `scripts/verify_shelf_pricing.py` drives the endpoint against
+  `pharmpilot_test` — **16/16 checks passed** (invoice basis, declared basis, the
+  unpriced gap, the shelf maximum across all three, the below-cost flag, and a
+  top-up re-pricing). `pytest tests/unit/test_shelf_price.py` → 27 passed.
+  `tsc --noEmit` clean. 0044 applied to `pharmpilot_mig` (disposable) with
+  downgrade→re-upgrade evidence, then `pharmpilot_test` and `pharmpilot`; one
+  head.
+
+### 2026-08-17 — Claude (Opus 5) — E11 and E12: slow is not the same as unreliable
+
+- Workstream: `inventory-integrity`
+- Branch: `feat/inventory-integrity`
+- Roster step 4. `receiving.py` (2026-08-16) made the substrate real; this is the
+  pair of engines that consume it. `GET /inventory/suppliers` reports E11
+  (lead-time distribution, per supplier) and E12 (`supplier_reliability.py`).
+- **The modelling decision that shapes everything else.** Duration is reported
+  and deliberately **not scored**. A supplier that takes eleven days every time
+  is not a problem — those eleven days are already in the reorder point via
+  `lead_time.reorder_signals`, and scoring them again would punish it twice for
+  something the planner has absorbed. What cannot be planned around is
+  variability. So:
+
+      score = 0.6 × fill rate + 0.4 × consistency        (consistency = 1 − CV)
+
+  Verified on real rows: an 11-day metronome outranks a supplier averaging
+  3 days that sometimes takes 16.
+- **Three refusals, each guarding a specific way this goes wrong:**
+  - a composite is only as measured as its weakest input, so an unscored
+    supplier sorts **last**, never first. The failure mode is a newcomer with
+    two perfect orders topping the table and the pharmacy moving its business.
+  - consistency requires an *observed* lead time (≥3 deliveries). One delivery
+    has a standard deviation of zero, which reads as perfect predictability.
+  - `comparable()` refuses a head-to-head below 3 shared products — otherwise
+    the difference measures catalogues, not suppliers.
+  - and a fill-rate ceiling on the grade: filling 40% of every order with
+    perfect regularity blends to 0.64 ("mixed"), which is far too kind. Being
+    reliably absent is not a virtue.
+- **A blind spot found by running it, not by testing it.** A supplier that
+  *always* short-ships never completes an order → `received_at` is never
+  stamped → it acquires no lead time → the worst supplier on the roster became
+  indistinguishable from one that had never delivered at all. `close_short` +
+  `POST /inventory/admin/orders/{id}/close-short` let someone record that the
+  rest is not coming. Outstanding units settle as **`backordered`** (the
+  supplier failed) rather than **`cancelled`** (the pharmacy withdrew): the
+  first counts in the fill rate, the second does not. Closing an order must not
+  launder the failure that made closing it necessary. Measured end to end —
+  before: unscorable, lead time `declared_default`; after: score 0.73, grade
+  **poor**, lead time `observed` at 5 days, fill rate held at 0.55.
+- Consequential change to `fill_rate`: it now counts only **settled** lines
+  (complete / over / backordered). A part-filled line is still in flight and the
+  balance may arrive tomorrow; scoring it as a shortfall penalises a supplier
+  for an order placed yesterday. E12 reports `outstanding_lines` and raises the
+  pile-up as a concern instead.
+- **A latent bug fixed in passing.** `_record` wrote every proposal's `subject`
+  into `ndc11 varchar(11)`. `expiry_risk` passes a lot UUID (36 chars), so the
+  first expiry recommendation ever filed would have failed the insert;
+  a supplier name would have appeared in the recommendations list as a drug.
+  `RC.subject_columns()` now routes by shape — NDC, lot, or no column at all.
+- Migration **0045** widens `ck_recommendation_kind_known` for
+  `supplier_reliability` (TTL 90d, cooldown 90d — the longest in the table; a
+  supplier's record does not change because a fortnight passed). Upgrade →
+  downgrade → upgrade verified on a disposable database cloned from
+  `pharmpilot_test`; single head 0045. The downgrade **deletes** rows of the new
+  kind — a CHECK ignores `is_deleted`, so they cannot be retired — which
+  destroys real human decisions and is documented in the migration rather than
+  discovered from a row count.
+- UI: a **Suppliers** tab on the engines panel, column order carrying the
+  argument (delivered → predictable → typical days, unscored and last), and a
+  "the rest is not coming" action on the receiving form's order picker.
+- **Not captured, stated rather than defaulted:** substitutions. No receiving
+  path records one, so E12 reports `substitution_basis: not_captured` and says
+  a zero there means unmeasured, not never. `expected_delivery` is likewise
+  never written, so "late" can only mean "slower than this supplier's own
+  habit", not "later than promised".
+- Verification: `pytest tests/unit -p no:randomly` → see the run recorded with
+  this commit. `tsc --noEmit` clean. `scripts/verify_supplier_scorecard.py`
+  drives 25 orders through the real receiving endpoint across four suppliers →
+  24/24. `scripts/verify_receiving.py` → 30/30. UI checked only to
+  "typechecks and renders"; I do not type credentials into the login form.
