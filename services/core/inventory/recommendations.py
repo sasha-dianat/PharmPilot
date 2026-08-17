@@ -37,7 +37,8 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 KINDS = ("reorder", "write_off", "cycle_count", "formulary_binding",
-         "anomaly", "expiry_risk", "demand_refresh", "supplier_reliability")
+         "anomaly", "expiry_risk", "demand_refresh", "supplier_reliability",
+         "shortage_warning")
 STATUSES = ("open", "accepted", "rejected", "superseded", "expired")
 TERMINAL = ("accepted", "rejected", "superseded", "expired")
 
@@ -49,6 +50,10 @@ TTL_DAYS = {
     # A supplier's record is the slowest-moving thing here: it is built from
     # months of deliveries and does not change because a fortnight passed.
     "supplier_reliability": 90,
+    # A shortage picture goes stale faster than that and slower than a reorder:
+    # three weeks is roughly how long a supply disruption takes to resolve or to
+    # become common knowledge.
+    "shortage_warning": 21,
 }
 DEFAULT_TTL_DAYS = 14
 
@@ -182,7 +187,8 @@ COOLDOWN_DAYS = {"reorder": 3, "anomaly": 14, "cycle_count": 30,
                  # Deciding what to do about a supplier — switch, negotiate, or
                  # accept it — takes longer to play out than the advice would
                  # take to reappear on any shorter window.
-                 "supplier_reliability": 90}
+                 "supplier_reliability": 90,
+                 "shortage_warning": 30}
 DEFAULT_COOLDOWN_DAYS = 14
 
 

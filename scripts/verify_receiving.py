@@ -81,7 +81,8 @@ async def product(db, ndc: str) -> uuid.UUID:
 
 
 async def order(db, *, pid, lines: list[tuple[str, uuid.UUID, float]],
-                ordered_days_ago: int, wholesaler: str = "verify-supplier") -> uuid.UUID:
+                ordered_days_ago: int, wholesaler: str = "verify-supplier",
+                unit_cost: float | None = None) -> uuid.UUID:
     oid = uuid.uuid4()
     ordered_at = datetime.now(timezone.utc) - timedelta(days=ordered_days_ago)
     await db.execute(text("""
@@ -95,10 +96,11 @@ async def order(db, *, pid, lines: list[tuple[str, uuid.UUID, float]],
         await db.execute(text("""
             INSERT INTO purchase_order_lines
               (id, order_id, drug_product_id, ndc11, quantity_ordered,
-               quantity_received, status, created_at, updated_at, is_deleted)
-            VALUES (:i,:o,:d,:n,:q,0,'ordered',:c,now(),false)"""),
+               quantity_received, unit_cost, status, created_at, updated_at,
+               is_deleted)
+            VALUES (:i,:o,:d,:n,:q,0,:uc,'ordered',:c,now(),false)"""),
             {"i": uuid.uuid4(), "o": oid, "d": did, "n": ndc, "q": qty,
-             "c": ordered_at + timedelta(seconds=i)})
+             "uc": unit_cost, "c": ordered_at + timedelta(seconds=i)})
     await db.commit()
     return oid
 

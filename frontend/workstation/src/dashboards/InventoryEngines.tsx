@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryEnginesApi, apiErrorText } from '../lib/api'
 import { useLang } from '../lib/i18n'
 
-type Tab = 'advice' | 'count' | 'demand' | 'value' | 'suppliers'
+type Tab = 'advice' | 'count' | 'demand' | 'value' | 'suppliers' | 'shortages'
 
 type Pair = readonly [string, string]
 
@@ -29,6 +29,7 @@ const TABS: { id: Tab; label: Pair; hint: Pair }[] = [
   { id: 'advice', label: ['Advice', 'توصیه‌ها'], hint: ['What the engines propose, and your decision', 'پیشنهادهای موتورها و تصمیم شما'] },
   { id: 'count', label: ['Cycle counting', 'شمارش دوره‌ای'], hint: ['Where the counting hours go', 'کجا وقت شمارش صرف شود'] },
   { id: 'demand', label: ['Demand signal', 'سیگنال تقاضا'], hint: ['The measured consumption rate', 'نرخ مصرف اندازه‌گیری‌شده'] },
+  { id: 'shortages', label: ['Shortages', 'کمبودها'], hint: ['What is running out, and whether the market or one supplier is the cause', 'چه چیزی دارد تمام می‌شود و علت بازار است یا یک تأمین‌کننده'] },
   { id: 'suppliers', label: ['Suppliers', 'تأمین‌کنندگان'], hint: ['How long each one takes, and how much of an order turns up', 'هر کدام چقدر طول می‌کشند و چه مقدار از سفارش می‌رسد'] },
   { id: 'value', label: ['Value and shrinkage', 'ارزش و ضایعات'], hint: ['Stock value and the cost of losses', 'ارزش موجودی و بهای زیان'] },
 ]
@@ -114,6 +115,7 @@ export default function InventoryEngines() {
       {tab === 'advice' && <AdviceTab onMsg={setMsg} />}
       {tab === 'count' && <CountTab />}
       {tab === 'demand' && <DemandTab onMsg={setMsg} />}
+      {tab === 'shortages' && <ShortageTab />}
       {tab === 'suppliers' && <SupplierTab />}
       {tab === 'value' && <ValueTab />}
     </div>
@@ -699,6 +701,7 @@ const GRADE: Record<string, { label: Pair; cls: string }> = {
 
 function SupplierTab() {
   const { t, tp, n: fa } = useLang()
+  const [briefFor, setBriefFor] = useState<string | null>(null)
   const { data, isLoading, error } = useQuery<Scorecard>({
     queryKey: ['inv-suppliers'],
     queryFn: () => inventoryEnginesApi.suppliers().then(r => r.data),
@@ -761,8 +764,230 @@ function SupplierTab() {
               <p className="text-[11px] text-slate-400">{s.explanation}</p>
               {s.concerns.map((c, i) => (
                 <p key={i} className="text-[11px] text-amber-300/90">• {c}</p>))}
+              <button onClick={() => setBriefFor(briefFor === s.supplier ? null : s.supplier)}
+                className="text-[11px] px-2 py-0.5 rounded border border-sky-600/50
+                           text-sky-300 hover:bg-sky-500/10">
+                {briefFor === s.supplier
+                  ? t('Hide brief', 'بستن خلاصه')
+                  : t('Prepare for a conversation', 'آماده‌سازی برای گفت‌وگو')}
+              </button>
+              {briefFor === s.supplier && <NegotiationBrief supplier={s.supplier} />}
             </div>))}
         </div>
+      </>)}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   ⑳ — the brief, and what it refuses to say
+
+   Pulled, never pushed: the owner opens it before a conversation. The
+   `cannot_say` list is rendered as prominently as the asks, on purpose. The
+   failure this engine is arranged around is not a wrong figure on a screen — it
+   is the owner repeating a fabricated market rate to a distributor who knows the
+   real one, and losing the conversation in the first minute. What the brief does
+   not know has to be as visible as what it does.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface BriefData {
+  supplier: string
+  leverage: { spend: number; share: number | null; lines: number
+              molecules: number; standing: string; explanation: string }
+  gaps: { ndc11: string; our_cost: number; best_cost: number
+          best_supplier: string; gap_per_unit: number; gap_pct: number
+          annual_units: number; annual_value: number }[]
+  negotiable_annual: number
+  reliability: { undelivered_units: number; forgone_margin: number | null
+                 basis: string; explanation: string }
+  asks: { ask: string; worth: number | null; basis: string; explanation: string }[]
+  concessions: { ask: string; worth: number | null; basis: string
+                 explanation: string }[]
+  cannot_say: string[]
+  basis: string
+  explanation: string
+  cloud: { available: boolean; reason?: string }
+}
+
+function NegotiationBrief({ supplier }: { supplier: string }) {
+  const { t, n: fa, money } = useLang()
+  const { data, isLoading, error } = useQuery<BriefData>({
+    queryKey: ['negotiation-brief', supplier],
+    queryFn: () => inventoryEnginesApi.negotiationBrief(supplier).then(r => r.data),
+  })
+  if (isLoading) return <p className="text-[11px] text-slate-400">{t('Preparing…', 'در حال آماده‌سازی…')}</p>
+  if (error) return <p className="text-[11px] text-red-400">{apiErrorText(error)}</p>
+  if (!data) return null
+
+  return (
+    <div className="mt-2 border-t border-slate-700 pt-2 space-y-3 text-[11px]">
+      <p className="text-slate-400">{data.leverage.explanation}</p>
+
+      {data.asks.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-slate-300 font-semibold">{t('Ask for', 'درخواست کنید')}</p>
+          {data.asks.map((a, i) => (
+            <div key={i} className="pl-2 border-s-2 border-emerald-600/40 ps-2">
+              <p className="text-emerald-200">
+                {fa(i + 1)}. {a.ask}
+                {a.worth !== null
+                  ? <span className="text-slate-400"> — {money(a.worth)}</span>
+                  : <span className="text-amber-300"> — {t('cannot be priced', 'قابل قیمت‌گذاری نیست')}</span>}
+              </p>
+              <p className="text-slate-500">{a.explanation}</p>
+            </div>))}
+        </div>)}
+
+      {data.gaps.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="text-slate-500 text-[10px]">
+              <tr className="border-b border-slate-700">
+                <th className="text-start font-normal py-1">{t('Item', 'قلم')}</th>
+                <th className="text-start font-normal">{t('They charge', 'قیمت ایشان')}</th>
+                <th className="text-start font-normal">{t('Already paying', 'قیمت فعلی دیگری')}</th>
+                <th className="text-start font-normal">{t('Cheaper from', 'ارزان‌تر از')}</th>
+                <th className="text-start font-normal">{t('A year', 'سالانه')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.gaps.map(g => (
+                <tr key={g.ndc11} className="border-b border-slate-800/60">
+                  <td className="py-1 font-mono text-slate-300">{g.ndc11}</td>
+                  <td className="tabular-nums">{money(g.our_cost)}</td>
+                  <td className="tabular-nums text-emerald-300">{money(g.best_cost)}</td>
+                  <td className="text-slate-400">{g.best_supplier}</td>
+                  <td className="tabular-nums font-semibold">{money(g.annual_value)}</td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>)}
+
+      <div className="space-y-1">
+        <p className="text-slate-300 font-semibold">{t('Cheap to concede', 'امتیازهای کم‌هزینه')}</p>
+        {data.concessions.map((c, i) => (
+          <p key={i} className="text-slate-400 ps-2">
+            • {c.ask}
+            {c.worth === null && <span className="text-amber-300"> ({t('unpriced', 'بی‌قیمت')})</span>}
+            <span className="text-slate-500"> — {c.explanation}</span>
+          </p>))}
+      </div>
+
+      <div className="space-y-1 rounded border border-amber-600/40 bg-amber-500/5 px-2 py-1.5">
+        <p className="text-amber-300 font-semibold">
+          {t('What this brief does NOT know', 'آنچه این خلاصه نمی‌داند')}
+        </p>
+        {data.cannot_say.map((c, i) => (
+          <p key={i} className="text-amber-200/80">• {c}</p>))}
+      </div>
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   E13 — what is running out, grouped by whose problem it is
+
+   The grouping is the whole point, and it is why this is not one sorted list.
+   "Every supplier is out of it" and "this one supplier is rationing something
+   another has in stock" need opposite responses — buy cover, or move the order —
+   and the version this replaces recommended buying cover for both. Cover bought
+   against a problem a phone call solves is inventory that expires on the shelf.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface Signal {
+  ndc11: string; drug_name: string | null; verdict: string; action: string
+  severity: string; fill_rate: number | null; basis: string
+  settled_lines: number; short_suppliers: string[]; filling_suppliers: string[]
+  creep: number | null; on_hand: number; days_of_cover: number | null
+  demand_basis: string; lead_days: number; lead_basis: string
+  horizon_days: number; suggested_buffer: number | null
+  explanation: string; concerns: string[]
+}
+interface ShortageReport {
+  signals: Signal[]; market_shortages: number; supplier_shortages: number
+  unknown: number; explanation: string; as_of: string
+}
+
+const VERDICT_GROUPS: { verdict: string; title: Pair; note: Pair; cls: string }[] = [
+  { verdict: 'market_shortage', title: ['The market is out', 'بازار موجود ندارد'],
+    note: ['No supplier is filling these. Cover, substitute, or warn the prescribers.',
+           'هیچ تأمین‌کننده‌ای این‌ها را کامل نمی‌فرستد. ذخیره کنید، جانشین بگذارید، یا پزشکان را مطلع کنید.'],
+    cls: 'border-rose-600/50' },
+  { verdict: 'supplier_shortage', title: ['One supplier is rationing', 'یک تأمین‌کننده جیره‌بندی می‌کند'],
+    note: ['Available from someone the pharmacy already buys from — move the order rather than buy cover.',
+           'از تأمین‌کننده‌ای که هم‌اکنون خرید می‌کنید موجود است — سفارش را جابه‌جا کنید، ذخیره نخرید.'],
+    cls: 'border-amber-600/50' },
+  { verdict: 'thin_cover', title: ['Arriving fine, not enough on the shelf', 'به‌درستی می‌رسد، اما موجودی کم است'],
+    note: ['An ordinary reorder, not a shortage.', 'یک سفارش عادی است، نه کمبود.'],
+    cls: 'border-sky-600/50' },
+  { verdict: 'watch', title: ['Orders being quietly trimmed', 'سفارش‌ها بی‌صدا کم می‌شوند'],
+    note: ['Filled on average, but each order a little short. A trailing average hides this.',
+           'به‌طور میانگین تأمین می‌شود، اما هر سفارش کمی کمتر. میانگین متحرک این را پنهان می‌کند.'],
+    cls: 'border-slate-600' },
+]
+
+function ShortageTab() {
+  const { t, tp, n: fa } = useLang()
+  const { data, isLoading, error } = useQuery<ShortageReport>({
+    queryKey: ['inv-shortages'],
+    queryFn: () => inventoryEnginesApi.shortages().then(r => r.data),
+  })
+  const pct = (v: number | null) => v === null ? '—' : `${fa(Math.round(v * 100))}٪`
+
+  return (
+    <div className="space-y-4">
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
+      {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      {data && (<>
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
+                        flex flex-wrap items-center gap-x-8 gap-y-3">
+          <Metric label={t('The market is out', 'بازار موجود ندارد')} value={fa(data.market_shortages)} />
+          <Metric label={t('One supplier only', 'فقط یک تأمین‌کننده')} value={fa(data.supplier_shortages)} />
+          <Metric label={t('Not yet judgeable', 'هنوز قابل داوری نیست')} value={fa(data.unknown)} />
+          <p className="text-[11px] text-slate-500 max-w-lg">{data.explanation}</p>
+        </div>
+
+        {VERDICT_GROUPS.map(g => {
+          const rows = data.signals.filter(s => s.verdict === g.verdict)
+          if (!rows.length) return null
+          return (
+            <div key={g.verdict} className={`bg-slate-800/50 border rounded-lg p-4 space-y-2 ${g.cls}`}>
+              <p className="text-sm font-semibold">{tp(g.title)}
+                <span className="text-slate-500 font-normal"> · {fa(rows.length)}</span></p>
+              <p className="text-[11px] text-slate-500">{tp(g.note)}</p>
+              {rows.map(s => (
+                <div key={s.ndc11} className="border-t border-slate-700/60 pt-2 space-y-1">
+                  <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+                    <span className="font-mono text-[12px] text-slate-300">{s.ndc11}</span>
+                    {s.drug_name && <span className="text-[12px]">{s.drug_name}</span>}
+                    <Metric label={t('Filled', 'تأمین‌شده')} value={pct(s.fill_rate)} />
+                    <Metric label={t('Days of cover', 'روز پوشش')}
+                            value={s.days_of_cover === null ? '—' : fa(s.days_of_cover)} />
+                    <Metric label={t('Horizon', 'افق')} value={fa(s.horizon_days)} />
+                    {s.suggested_buffer !== null && (
+                      <Metric label={t('Buy', 'خرید')} value={fa(s.suggested_buffer)} />)}
+                    <BasisChip basis={s.lead_basis} />
+                  </div>
+                  {s.short_suppliers.length > 0 && (
+                    <p className="text-[11px]">
+                      <span className="text-rose-300">{t('Short from', 'کسری از')}: {s.short_suppliers.join(', ')}</span>
+                      {s.filling_suppliers.length > 0 && (
+                        <span className="text-emerald-300">
+                          {' · '}{t('filled by', 'تأمین‌شده توسط')}: {s.filling_suppliers.join(', ')}</span>)}
+                    </p>)}
+                  <p className="text-[11px] text-slate-400">{s.explanation}</p>
+                  {s.concerns.map((c, i) => (
+                    <p key={i} className="text-[11px] text-amber-300/90">• {c}</p>))}
+                </div>))}
+            </div>)
+        })}
+
+        {data.unknown > 0 && (
+          <p className="text-[11px] text-slate-500">
+            {t(`${fa(data.unknown)} item(s) have too few settled order lines to judge. They are counted, not scored — a risk number from two deliveries would be a guess with a decimal point on it.`,
+               `${fa(data.unknown)} قلم ردیف سفارش تسویه‌شدهٔ کافی برای داوری ندارند. شمرده می‌شوند اما امتیاز نمی‌گیرند — عددِ ریسک از دو تحویل، یک حدس با ممیز است.`)}
+          </p>)}
       </>)}
     </div>
   )

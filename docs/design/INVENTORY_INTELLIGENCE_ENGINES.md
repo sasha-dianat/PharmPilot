@@ -87,8 +87,8 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 |---|---|---|
 | **E11 Lead-time distribution** — **built 2026-08-17** | How long each supplier really takes, and how much that varies | Nothing. `lead_time.by_supplier` on delivered orders; surfaced at `GET /inventory/suppliers` |
 | **E12 Supplier reliability** — **built 2026-08-17** | Who fills short, who is unpredictable, who substitutes | Nothing for fill/consistency. Substitution stays `not_captured` — no receiving path records one |
-| **E13 Shortage early warning** (⑰, rebuild) | Which NDCs are about to become unobtainable | E11 + E12 + fill-rate CUSUM; cloud adds national feeds |
-| **E14 Negotiation mentor** *(new)* | What to ask this distributor for, and what to concede | E11 + E12 + price history + volume commitments |
+| **E13 Shortage early warning** (⑰, rebuild) — **built 2026-08-17** | Which NDCs are about to become unobtainable, **and whether the market or one supplier is the cause** | Nothing. `shortage.py`, at `GET /inventory/shortage-warning`; ⑰ now delegates to it. Cloud (national feeds) still inert |
+| **E14 / ⑳ Negotiation mentor** *(new)* — **built 2026-08-17** | What to ask this distributor for, and what to concede | Nothing for the local tier. `negotiation.py`, at `GET /inventory/negotiation-brief`. Cross-pharmacy benchmark needs a second pharmacy and declares itself inert |
 
 ---
 
@@ -208,6 +208,56 @@ Ordered by *value per unit of available data*, not by ambition.
    shortfall stays in the fill rate. Closing an order must not launder the
    failure that made closing it necessary.
 5. **E13 shortage warning, ⑳ negotiation mentor** — both sit on E11/E12.
+
+   *Done, 2026-08-17.*
+
+   **E13** (`shortage.py`) exists for one distinction the version it replaces
+   could not make: a short fill is not a shortage. Short from *every* supplier
+   that carries it means the market is out, and the remedies are cover,
+   substitution and warning prescribers. Short from one while another delivers
+   in full means the molecule is available and the remedy is a phone call.
+   Service ⑰ scored both identically and recommended buffer stock for both —
+   which is paying to hold inventory that expires on the shelf against a problem
+   that costs nothing to fix. The verdicts are therefore about *cause*, and the
+   actions differ.
+
+   Rebuilding it also removed four defects that were harmless only while
+   `quantity_received` was never written and the output was visibly garbage.
+   Once the column carries real numbers the same code produces *plausible* wrong
+   answers, which is worse: a fill rate of 1.0 for anything never ordered;
+   `COALESCE(avg_daily_demand, 0)` turning unmeasured demand into infinite cover;
+   a third unlabelled lead-time constant (5 days, against `lead_time`'s 7); and
+   in-flight lines counted as total short-fills. ⑰ is now the envelope and cloud
+   tier around E13 and computes nothing itself; `disruption_risk` survives for
+   the payload contract but is documented as a severity band, not the
+   three-decimal pseudo-probability it used to present.
+
+   The CUSUM was recalibrated from 0.5 to 0.2 during the build. At 0.5 the creep
+   detector needed fifteen consecutive short deliveries, by which time the
+   aggregate rate had long since fallen through the short-fill threshold and the
+   item was flagged on that instead — so the verdict it feeds was unreachable.
+   Where it earns its place is a molecule with a long clean history and a recent
+   decline: twenty good deliveries then four at 85% leaves the average at 97.5%
+   precisely *because* the past was good.
+
+   **⑳** (`negotiation.py`) computes leverage, the negotiable gap, and what
+   unreliability costs — the last of which is E12's fill rate turned into money
+   and is the strongest card in the conversation. Its governing rule is a refusal:
+   **it never invents a benchmark.** Every comparison is between two prices this
+   pharmacy has actually paid, because the failure mode is not a wrong figure on
+   a screen but the owner repeating a fabricated market rate to a distributor who
+   knows the real one. Where a molecule has one supplier there is no gap and the
+   brief says so. Where no sale price is recorded, the undelivered *units* are
+   reported and the money is **not** — a guessed margin quoted to someone who
+   sells these for a living is the same mistake as a guessed benchmark. Payment
+   terms and cost of capital are recorded nowhere, so a longer payment window
+   stays explicitly unpriced. The `cannot_say` list is rendered as prominently as
+   the asks.
+
+   ⑳ deliberately does **not** file into the recommendation ledger. That
+   machinery measures unsolicited advice; a brief the owner asked for has already
+   been accepted by being requested, and filing it would inflate the denominator
+   the fingerprint exists to protect.
 6. **E6 demand, E7 seasonality, E8 reorder point, E10 pick list** — as history
    accumulates, in that order.
 

@@ -1902,3 +1902,100 @@ trigger, edits a row, and asserts the break lands at that row's index.
   an upgrade before the next schema-touching test run.
 - Next action for this workstream: roster step 5 — E13 shortage early warning and
   ⑳ negotiation mentor, both of which sit on E11/E12 and are now unblocked.
+
+### 2026-08-17 — Claude (Opus 5) — E13: a short fill is not a shortage; ⑳: never invent a benchmark
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- Roster step 5, the last of Tier C. Two engines, one migration, and service ⑰
+  retired to an envelope around the new one.
+
+**E13 — `services/core/inventory/shortage.py`, `GET /inventory/shortage-warning`.**
+
+- It exists for one distinction ⑰ could not make. Short from *every* supplier
+  that carries a molecule means the market is out: cover it, substitute, or warn
+  the prescribers. Short from one while another delivers in full means the
+  molecule is available and the fix is a phone call. ⑰ scored both identically
+  and recommended buffer stock for both — paying to hold inventory that expires
+  on the shelf against a problem that costs nothing to solve. The verdicts are
+  about **cause**: `market_shortage`, `supplier_shortage`, `thin_cover`, `watch`,
+  `no_signal`, `unknown`.
+- Four defects removed with it, all of which were *harmless only while
+  `quantity_received` was never written*. Once receiving fills that column the
+  same code produces plausible wrong answers, which is worse than obviously
+  broken: `fill_rate = 1.0` for anything never ordered; `COALESCE(avg_daily_demand,
+  0)` turning unmeasured demand into infinite cover and dropping the item off the
+  report; a **third** hard-coded lead time (5 days, against `lead_time`'s
+  declared 7), unlabelled; and in-flight lines counted as total short-fills.
+- **Recalibration found by running it.** `CUSUM_ALARM` was 0.5, which needs
+  fifteen consecutive short deliveries — by which point the aggregate rate has
+  fallen through the short-fill threshold and the item is flagged on that
+  instead, so the `watch` verdict was unreachable dead code. Set to 0.2. Where it
+  earns its place: twenty clean deliveries then four at 85% leaves the average at
+  97.5% *because* the past was good, and only the CUSUM sees it.
+- ⑰ (`services/ai/intelligence_services/supply_warning.py`) now computes nothing.
+  It is the §1.2 envelope and the (still inert) cloud tier over E13.
+  `disruption_risk` survives for the payload contract but is documented as a
+  severity band; the figure it replaced was a 0.45/0.35/0.20 weighting shown to
+  three decimals as though calibrated against outcomes. `model_version` →
+  `supply_warning_v2`.
+
+**⑳ — `services/core/inventory/negotiation.py`, `GET /inventory/negotiation-brief`.**
+
+- Leverage (spend, share, standing), the negotiable gap, and what unreliability
+  costs — E12's fill rate turned into money, which is the strongest card and had
+  never been computed.
+- Its governing rule is a refusal: **it never invents a benchmark.** Every
+  comparison is between two prices this pharmacy has actually paid, because the
+  failure is not a wrong figure on a screen — it is the owner repeating a
+  fabricated market rate to a distributor who knows the real one. One supplier
+  for a molecule → no gap, stated. No recorded sale price → the undelivered
+  **units** are reported and the money is not; a guessed margin quoted to someone
+  who sells these for a living is the same mistake as a guessed benchmark.
+  Payment terms and cost of capital exist nowhere in this system, so a longer
+  payment window is explicitly `unpriced`. The `cannot_say` list is rendered as
+  prominently as the asks.
+- Deliberately **not** in the recommendation ledger. That machinery measures
+  unsolicited advice; a brief the owner asked for is already accepted by being
+  requested, and filing it would inflate the denominator the fingerprint protects.
+  Recorded in migration 0047's docstring so the omission reads as a decision.
+
+**Schema.** Migration **0047** widens `ck_recommendation_kind_known` for
+`shortage_warning` (TTL 21d, cooldown 30d). Upgrade → downgrade → re-upgrade
+verified on a disposable database cloned from `pharmpilot_test`; single head 0047;
+applied to `pharmpilot_test` and, after a pre-dump of
+`inventory_recommendations`, to `pharmpilot`. The downgrade deletes rows of the
+new kind — a CHECK ignores `is_deleted` — which destroys real pharmacist
+decisions and is documented in the migration.
+
+**UI.** A **Shortages** tab grouped by verdict rather than one sorted list,
+because the grouping *is* the finding; and a "prepare for a conversation" brief
+inside the Suppliers tab, pulled rather than pushed.
+
+**Verification.** `scripts/verify_shortage_and_negotiation.py` — 49 orders across
+two suppliers and five molecules shaped to land on one verdict each, every
+delivery through the real receiving endpoint and every short order closed through
+the real close-short endpoint → **28/28**, with all five verdicts and five
+distinct actions observed on rows the platform wrote. 44 new unit tests.
+`pytest tests/unit -p no:randomly` → **1,799 passed, 1 failed**
+(`test_integrations_sandbox`, pre-existing and logged repeatedly above),
+1 xfailed, in 4:46. `tsc --noEmit` clean. UI checked only to "typechecks and
+renders" — I do not type credentials into the login form.
+
+Two corroborations from that run, both about the *previous* entry rather than
+this work: the `test_occlusion` failures are gone (the biometric owner fixed
+them) and the `test_exception_register_e2e` deadlocks did not recur. The suite
+also took 4:46 against 22:28. All three confirm the earlier diagnosis — those
+were two pytest runs racing the same test database, not defects.
+
+**Flagged, not fixed (outside this scope).**
+`frontend/workstation/src/components/IntelligenceInventoryPanels.tsx` still carries
+a hardcoded `DEMO_SUPPLY` fixture with invented NDCs, a 0.62 fill rate and
+`avg_daily_demand: 14` — the same fabricated-placeholder pattern removed from
+`InventoryIntelligence.tsx` earlier. Raised as a separate task rather than
+absorbed here.
+
+**Tier C is complete.** What remains is Tier B (E6 demand, E7/㉑ seasonality,
+E8 reorder point, E10 pick list), and none of it is blocked on code: it needs
+prescriptions flowing through the platform. ㉑ in particular wants two full
+years before it may make an annual claim.

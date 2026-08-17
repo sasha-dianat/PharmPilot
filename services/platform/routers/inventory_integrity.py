@@ -34,6 +34,8 @@ from services.core.inventory import ledger as L
 from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
 from services.core.inventory import reservations as RSV
+from services.core.inventory import negotiation as NEG
+from services.core.inventory import shortage as SHORT
 from services.core.inventory import supplier_reliability as SUP
 from services.core.inventory import reconciliation as R
 from services.core.inventory import formulary_binding as FB
@@ -1430,3 +1432,154 @@ async def supplier_scorecard(
             db, staff.pharmacy_id, proposals, actor_id=staff.id)
 
     return out
+
+
+# ── E13: which drugs are about to become unobtainable, and whose fault ────
+
+@router.get("/shortage-warning")
+async def shortage_warning(
+    window_days: int = Query(SUPPLIER_WINDOW_DAYS, ge=30, le=1825),
+    raise_advice: bool = Query(False, description="also file recommendations"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Molecules running short, separated by cause.
+
+    Replaces service ⑰, which could not tell "every supplier is out of it" from
+    "this one supplier is rationing it" and recommended buffer stock for both.
+    Those need opposite actions: the first is stock and substitution and warning
+    prescribers, the second is a phone call. Buying cover against a problem a
+    phone call solves means paying to hold inventory that expires on the shelf.
+    """
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
+    p = {"pid": staff.pharmacy_id, "win": window_days}
+
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT l.ndc11, o.wholesaler, o.ordered_at, l.quantity_ordered,
+               l.quantity_received, l.status, l.unit_cost
+        FROM purchase_order_lines l
+        JOIN purchase_orders o ON o.id = l.order_id
+        WHERE o.pharmacy_id = :pid AND o.is_deleted = false
+          AND l.is_deleted = false
+          AND (o.ordered_at IS NULL
+               OR o.ordered_at > NOW() - make_interval(days => :win))"""),
+        p)).mappings().all()]
+
+    # Demand and on-hand come from the aggregate, with the basis carried. NULL
+    # stays NULL: an item with no measured demand has unknown cover, and the
+    # COALESCE(..., 0) this replaces made it look like it would last for ever.
+    stock = {r["ndc11"]: dict(r) for r in (await db.execute(text("""
+        SELECT ndc11, quantity_on_hand, avg_daily_demand,
+               COALESCE(demand_basis, 'no_history') AS demand_basis
+        FROM stock_levels WHERE pharmacy_id = :pid"""),
+        {"pid": staff.pharmacy_id})).mappings().all()}
+
+    names = {r["ndc11"]: r["generic_name"] for r in (await db.execute(text(
+        "SELECT ndc11, generic_name FROM drug_products WHERE ndc11 = ANY(:n)"),
+        {"n": list({r["ndc11"] for r in rows})})).mappings().all()} if rows else {}
+
+    pos = [dict(r) for r in (await db.execute(text("""
+        SELECT wholesaler, ordered_at, received_at FROM purchase_orders
+        WHERE pharmacy_id = :pid AND received_at IS NOT NULL"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+    leads = LT.by_supplier(pos)
+
+    by_ndc: dict[str, list[dict]] = {}
+    for r in rows:
+        by_ndc.setdefault(r["ndc11"], []).append(r)
+
+    items = [{"ndc11": ndc, "drug_name": names.get(ndc), "lines": lines,
+              "on_hand": (stock.get(ndc) or {}).get("quantity_on_hand") or 0,
+              "avg_daily_demand": (stock.get(ndc) or {}).get("avg_daily_demand"),
+              "demand_basis": (stock.get(ndc) or {}).get("demand_basis")
+                              or "no_history"}
+             for ndc, lines in by_ndc.items()]
+
+    report = SHORT.assess(items, leads=leads, as_of=today)
+    out = report.as_dict()
+    out["as_of"] = today.isoformat()
+    out["window_days"] = window_days
+
+    if raise_advice:
+        proposals = [
+            RC.Proposal(
+                kind="shortage_warning", subject=s.ndc11,
+                # The verdict and action are the identity: a molecule moving from
+                # "one supplier is rationing it" to "the market is out" is new
+                # advice and should reopen. The quantities are not.
+                proposal={"verdict": s.verdict, "action": s.action,
+                          "ndc11": s.ndc11},
+                explanation=" ".join([s.explanation] + s.concerns),
+                produced_by="shortage_warning_v2",
+                features={"fill_rate": float(s.fill_rate or 0),
+                          "days_of_cover": (None if s.days_of_cover is None
+                                            else float(s.days_of_cover)),
+                          "creep": float(s.creep or 0),
+                          "settled_lines": s.settled_lines,
+                          "short_suppliers": s.short_suppliers,
+                          "filling_suppliers": s.filling_suppliers,
+                          "lead_basis": s.lead_basis,
+                          "demand_basis": s.demand_basis},
+                confidence=0.85 if s.demand_basis == "observed" else 0.5,
+                severity=s.severity)
+            for s in report.signals if SHORT.worth_raising(s)]
+        out["recommendations"] = await _record(
+            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+
+    return out
+
+
+# ── ⑳: what to ask this distributor for, and what to concede ─────────────
+
+@router.get("/negotiation-brief")
+async def negotiation_brief(
+    supplier: str = Query(..., min_length=1, max_length=50),
+    window_days: int = Query(SUPPLIER_WINDOW_DAYS, ge=30, le=1825),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Prepare a person for a conversation with a distributor.
+
+    It does not negotiate, send, or commit to anything, and it never invents a
+    benchmark. Every comparison is between two prices this pharmacy has actually
+    paid — because the failure here is not a wrong figure on a screen, it is the
+    owner repeating a fabricated market rate to someone who knows the real one.
+    """
+    p = {"pid": staff.pharmacy_id, "win": window_days}
+    lines = [dict(r) for r in (await db.execute(text("""
+        SELECT o.wholesaler, l.ndc11, l.quantity_ordered, l.quantity_received,
+               l.status, l.unit_cost
+        FROM purchase_order_lines l
+        JOIN purchase_orders o ON o.id = l.order_id
+        WHERE o.pharmacy_id = :pid AND o.is_deleted = false
+          AND l.is_deleted = false
+          AND (o.ordered_at IS NULL
+               OR o.ordered_at > NOW() - make_interval(days => :win))"""),
+        p)).mappings().all()]
+
+    # Margin per molecule from the lots actually on the shelf. Where a lot has no
+    # sale price it contributes nothing, and `reliability_cost` reports the units
+    # without the money rather than applying a guessed margin.
+    margins = {r["ndc11"]: r["margin"] for r in (await db.execute(text("""
+        SELECT ndc11, AVG(sell_price - unit_cost) AS margin
+        FROM inventory_lots
+        WHERE pharmacy_id = :pid AND is_deleted = false
+          AND sell_price IS NOT NULL AND unit_cost IS NOT NULL
+        GROUP BY ndc11"""), {"pid": staff.pharmacy_id})).mappings().all()
+        if r["margin"] is not None and r["margin"] > 0}
+
+    safety = {r["ndc11"]: r["safety_stock"] for r in (await db.execute(text(
+        "SELECT ndc11, safety_stock FROM stock_levels "
+        "WHERE pharmacy_id = :pid AND safety_stock IS NOT NULL"),
+        {"pid": staff.pharmacy_id})).mappings().all()}
+
+    months = (await db.execute(text("""
+        SELECT CEIL(EXTRACT(EPOCH FROM (NOW() - MIN(ordered_at))) / 2592000.0)
+        FROM purchase_orders
+        WHERE pharmacy_id = :pid AND ordered_at IS NOT NULL"""),
+        {"pid": staff.pharmacy_id})).scalar()
+
+    out = NEG.brief(lines, supplier=supplier, margins=margins,
+                    safety_stock=safety,
+                    months_of_history=int(months) if months is not None else None)
+    return out.as_dict()

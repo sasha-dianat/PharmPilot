@@ -346,6 +346,14 @@ export const inventoryEnginesApi = {
   // purchase orders. `raise_advice` also files the ones needing a decision.
   suppliers: (raise_advice = false) =>
     apiClient.get('/inventory/suppliers', { params: { raise_advice } }),
+  // E13. Separates "the market is out of this" from "this one supplier is
+  // rationing something another has in stock" — opposite actions.
+  shortages: (raise_advice = false) =>
+    apiClient.get('/inventory/shortage-warning', { params: { raise_advice } }),
+  // ⑳. Pulled before a conversation, never pushed, and it never invents a
+  // benchmark: every comparison is a price this pharmacy has already paid.
+  negotiationBrief: (supplier: string) =>
+    apiClient.get('/inventory/negotiation-brief', { params: { supplier } }),
 }
 
 // ── Recall cases: the pharmacy's response, not the notice ─────────────────
