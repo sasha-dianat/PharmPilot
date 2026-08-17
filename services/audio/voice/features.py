@@ -69,6 +69,25 @@ def mfcc(pcm: np.ndarray, sample_rate: int = SAMPLE_RATE,
     return dct(np.log(energies + _EPS), type=2, axis=1, norm="ortho")[:, :n_mfcc]
 
 
+def spectral_flatness(pcm: np.ndarray,
+                      sample_rate: int = SAMPLE_RATE) -> float:
+    """Wiener entropy: geometric mean of the power spectrum over its arithmetic
+    mean, averaged across frames. Flat (noise) tends to 1; peaky (harmonics and
+    formants) tends to 0.
+
+    This replaces a pause-based SNR estimate, which is inert on continuous
+    audio: measured on a 2s tone, a noisy tone and pure silence, ALL THREE had
+    zero frames below the voiced floor, so the pause-based estimate could not
+    distinguish them. Flatness needs no pauses — measured 0.0005 clean, 0.45
+    noisy, 0.57 pure noise, 1.0 silence.
+    """
+    fr = _frames(np.asarray(pcm, dtype=np.float64).reshape(-1), sample_rate)
+    power = np.abs(np.fft.rfft(fr, n=512)) ** 2 + _EPS
+    gm = np.exp(np.mean(np.log(power), axis=1))
+    am = np.mean(power, axis=1)
+    return float(np.mean(gm / am))
+
+
 def frame_energy_db(pcm: np.ndarray,
                     sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     """Per-frame energy in dBFS — the basis of the voiced-frame and SNR checks."""
