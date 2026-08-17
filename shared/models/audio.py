@@ -53,7 +53,9 @@ class AudioTranscript(AuditedBase):
     noise_cancellation_applied: Mapped[bool] = mapped_column(default=True)
     noise_reduction_db: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     audio_quality_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
-    whisper_model_used: Mapped[str] = mapped_column(String(50), default="medium.en")
+    # large-v3, not medium.en: `.en` models are English-only and on Persian
+    # they hallucinate plausible English rather than failing.
+    whisper_model_used: Mapped[str] = mapped_column(String(50), default="large-v3")
     transcription_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
 
     # Transcript content

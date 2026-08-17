@@ -80,7 +80,9 @@ async def transcribe_recording(
     diarizer = PharmacySpeakerDiarizer()
     diarized = diarizer.diarize(cleaned_audio, sample_rate, zone)
 
-    transcriber = PharmacyTranscriptionEngine(model_size="medium.en")
+    # Default (large-v3, Persian). A hard-coded `.en` model here would emit
+    # invented English for Persian speech rather than a worse transcript.
+    transcriber = PharmacyTranscriptionEngine()
     transcription = transcriber.transcribe_batch(cleaned_audio, sample_rate)
 
     # Align transcription with diarization
@@ -122,7 +124,7 @@ async def transcribe_recording(
         recording_started_at=datetime.now(timezone.utc),
         duration_seconds=len(audio_data) / sample_rate,
         noise_cancellation_applied=True,
-        whisper_model_used="medium.en",
+        whisper_model_used=transcriber.model_size,
         transcription_confidence=transcription.transcription_confidence,
         full_transcript=transcription.full_text,
         diarized_segments=diarized_segments,

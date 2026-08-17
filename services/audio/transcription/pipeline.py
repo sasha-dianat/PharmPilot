@@ -34,7 +34,7 @@ ZONE_CONFIGS = {
         zone_id="counter",
         zone_name="Dispensing Counter",
         mic_channels=2,
-        whisper_model="medium.en",
+        whisper_model="large-v3",
         continuous_recording=True,
         vad_sensitivity=2,
     ),
@@ -50,7 +50,10 @@ ZONE_CONFIGS = {
         zone_id="waiting_area",
         zone_name="Waiting Area",
         mic_channels=1,
-        whisper_model="base.en",     # Lower accuracy acceptable — ambient only
+        # `base`, not `base.en`: a smaller model for ambient audio is a fair
+        # cost tradeoff, but the `.en` variant is English-ONLY and would emit
+        # invented English for Persian speech rather than a worse transcript.
+        whisper_model="base",        # Lower accuracy acceptable — ambient only
         continuous_recording=False,
         vad_sensitivity=3,           # High VAD — only capture clear speech
     ),
@@ -58,7 +61,7 @@ ZONE_CONFIGS = {
         zone_id="drive_through",
         zone_name="Drive-Through",
         mic_channels=2,
-        whisper_model="medium.en",
+        whisper_model="large-v3",
         continuous_recording=True,
         vad_sensitivity=2,
     ),
