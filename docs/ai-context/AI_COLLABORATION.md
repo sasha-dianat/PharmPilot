@@ -431,6 +431,56 @@ incorrect one rather than silently rewriting history.
 - Next action/owner: rule on the backfill and on `00009001903`; then GTIN
   scan-to-field at receiving (R22) is the remaining P2 item.
 
+### 2026-08-16 — Claude Code — surveillance observation pipeline (plan phase 1/7)
+
+- Workstream: `CL-003` (surveillance & CV), new
+- Branch/commit: `feat/inventory-integrity`, six commits `3e32f7e`..`(this)`
+- Plan: `docs/superpowers/plans/2026-08-16-surveillance-observation-pipeline.md`
+  (6 tasks, executed inline via superpowers:executing-plans)
+- Changed:
+  - `services/biometric/occlusion.py` (new) — occlusion stratum from the five
+    landmark confidences the aligner already produces, plus SURVIVING_MODALITIES
+    naming which modalities to lean on per stratum. `periocular` registered in
+    FUSION_FLOORS; it had existed only in design prose.
+  - `services/core/surveillance/escalation.py` (new) — replaces fuse()'s
+    NO_MATCH dead end. Mints a provisional identity and prompts the counter for
+    name + national code. The prompt never names a weak candidate (a leading
+    question corrupts the verification); hints stay below IAL1.
+  - `services/core/surveillance/recorder.py` (new) — first writer to
+    `surveillance_observations`, which had existed since 0032 unused.
+  - `services/platform/routers/surveillance.py` (new) — POST /observations,
+    POST /rf/batch, GET /heatmap. Events only: no field admits a frame, crop,
+    audio buffer or embedding.
+  - `services/biometric/identity_resolution/vector_store.py` — to_readings now
+    takes a per-modality gallery size; FPIR ~= N*FMR is per-modality and one
+    shared N used the wrong denominator for at least one modality.
+- Interfaces/schema: migration `0046` (plan said 0034; twelve migrations landed
+  in between, renumbered to chain from 0045). It widens
+  ck_surv_obs_fusion_decision AND the fusion_decision column from VARCHAR(12) to
+  VARCHAR(24) — 'identify_manually' is 17 chars, so widening the constraint
+  alone produced a column admitting a value it could not store. Caught by
+  inserting against the live database rather than reading the DDL.
+- Verification: full unit suite 1734 passed / 1 failed in 3m27s. The failure is
+  test_integrations_sandbox's known order-dependent case, green in isolation
+  (5 passed). Route-auth suite green. App builds, 359 routes.
+
+- TEST DATABASE MAINTENANCE, please note: the suite was timing out past 10
+  minutes. Cause was not code — `pharmpilot_test` had accumulated
+  inventory_exceptions 694k rows / inventory_exception_rows 1.35M /
+  inventory_exception_events 694k, 6.1 GB total. Fixtures soft-delete with
+  `UPDATE inventory_exceptions SET is_deleted = true WHERE pharmacy_id = $1`
+  once per test, rewriting hundreds of thousands of rows across 8 indexes each
+  time. Truncated the three tables (6.1 GB -> 136 kB) with the owner's explicit
+  approval; suite returned to 3m27s. The underlying fixture design belongs to
+  the inventory workstream: soft-delete teardown without truncation means this
+  will recur.
+
+- Risks/blockers: none for this phase. Phases 2-7 of the surveillance section
+  each need their own plan (voice modality, calibration/release gate, RF survey
+  capture, zone rules & reconciliation, review UI, hardening).
+- Next action/owner: inventory workstream to decide on truncate-based teardown
+  for the exception fixtures; surveillance owner to schedule phase 2.
+
 ## Entry template
 
 ```markdown
