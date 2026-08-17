@@ -1782,3 +1782,33 @@ trigger, edits a row, and asserts the break lands at that row's index.
   drives 25 orders through the real receiving endpoint across four suppliers →
   24/24. `scripts/verify_receiving.py` → 30/30. UI checked only to
   "typechecks and renders"; I do not type credentials into the login form.
+
+### 2026-08-17 — Claude (Opus 5) — pricing-chain commit, and a hole in the migration chain
+
+- Workstream: `inventory-integrity` (pricing chain)
+- Branch/commit: `feat/inventory-integrity` @ **`e0882c5`**. This is the commit
+  for the entry above dated 2026-08-16 ("the invoice names both prices"), whose
+  work was still uncommitted when that entry was written; the ledger text itself
+  was swept into `dcd0c0a` by the concurrent supplier-reliability work.
+- **Migration chain was broken on the committed branch.** `0045` declares
+  `down_revision = "0044"`, but `0044_sell_price_basis.py` was still untracked —
+  so a fresh clone had 0043 → (missing) → 0045 and could not upgrade. Committing
+  0044 in `e0882c5` closes it. Two sessions committing to one branch is how this
+  happened: the later work built on a file the earlier session had not yet
+  committed. Worth remembering as a failure mode of the shared-tree arrangement,
+  not just an oversight.
+- **`pharmpilot_test` was left at 0045 while head was 0046.** A schema one
+  migration behind the code is enough to produce setup errors in the E2E modules
+  that build against a real database — which is the likeliest explanation for the
+  6 errors + 2 failures in an earlier full run whose per-test names I lost to a
+  truncated log. `test_exception_register_e2e` passes 7/7 in isolation and
+  contains no pricing code, so it was never a regression from this work. The test
+  database is now at head and the suite is being re-run for a clean record.
+- Standing hazard for whoever reads this next: `pharmpilot_test` is long-lived
+  shared scratch (149 pharmacies, ~39k lots, ~144k movements accumulated), and
+  both `verify_receiving.py` and `verify_shelf_pricing.py` write into it. Two
+  suites run concurrently against it will disagree with each other. A per-run
+  teardown, or a database per session, would make these gates trustworthy.
+- Re-verified after 0045/0046 landed: `scripts/verify_shelf_pricing.py` → 20/20
+  against schema 0046. `pytest tests/unit/test_shelf_price.py tests/unit/test_pricing_ir.py`
+  → 38 passed. `tsc --noEmit` clean. One head, 0046, on both databases.
