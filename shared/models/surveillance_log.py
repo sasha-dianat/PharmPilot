@@ -58,8 +58,10 @@ class SurveillanceObservation(TimestampedBase):
     # ── biometric side (may be absent) ──────────────────────────────────
     biometric_identity_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("biometric_identities.id"), nullable=True, index=True)
-    fusion_decision: Mapped[str | None] = mapped_column(String(12), nullable=True)
-    # auto | review | no_match
+    # 24, not 12: "identify_manually" is 17 characters. The escalation ladder
+    # ends here, and a narrower column silently rejects its own outcome.
+    fusion_decision: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    # auto | review | no_match | identify_manually
     fusion_confidence: Mapped[float | None] = mapped_column(
         Numeric(6, 5), nullable=True)
     fusion_margin: Mapped[float | None] = mapped_column(Numeric(6, 5), nullable=True)
