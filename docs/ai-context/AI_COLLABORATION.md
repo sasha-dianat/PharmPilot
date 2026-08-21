@@ -2054,3 +2054,61 @@ years before it may make an annual claim.
   real pharmacy charges is untested, and every one is VERIFY-tagged in the
   config. Special populations (کمیته امداد/روستایی 15%, special-disease 0%) are
   not modelled at all — such a patient is over-charged today.
+
+### 2026-08-22 — Claude (Opus 5) — the tariffs, researched against regulator and court
+
+- Workstream: `inventory-integrity` (pricing chain)
+- Branch: `feat/inventory-integrity`
+- Owner asked for deep research on every VERIFY-tagged tariff, then explicitly
+  for the regulatory and legal sources rather than news reporting, and for a
+  check-in before applying. Owner decisions recorded: **private-sector band**,
+  **tariffs only** (no new engine behaviour).
+- **Largest correction — حق فنی is paid by the patient; no basic insurer pays a
+  Rial of it.** The pharmacy formula is `پرداختی بیمار = سهم بیمار + اقلام آزاد +
+  حق فنی`, and the pharmacists' association is still campaigning to have basic
+  insurance cover it "like a physician's visit fee" — itself the proof it does
+  not. `covers_technical_fee` was `True` with a 30% patient share, so on the 1405
+  fee the engine charged the patient 218,100 and billed an insurer **508,900 per
+  prescription** that would be rejected at reconciliation. ~20.4m ﷼/day at 40
+  prescriptions.
+- 1405 tariff, cabinet resolution via انجمن داروسازان ایران, effective ۱ فروردین:
+  کد ۹۰۵۰۱۰ نسخه‌پیچی **727,000 ﷼/نسخه**، کد ۹۰۵۰۱۵ OTC 81,000 ﷼، کد ۹۰۵۰۳۰
+  مشاوره 1,620,000 ﷼. Banded by sector — 1404 code 905010 was 336,000 خصوصی /
+  308,700 خیریه / 227,500 عمومی غیردولتی — so the number is only right for a
+  private pharmacy, and the config says so.
+- **Legal status recorded in the config, not just the number.** هیئت عمومی دیوان
+  عدالت اداری has annulled this charge SIX times (۳/۲/۸۸، ۱۹/۷/۸۹، ۱۷/۴/۹۳،
+  ۲۸/۱/۹۷، ۲۰/۶/۹۷، ۸/۱۱/۹۸؛ also آرای ۱۹۹ و ۶۸۳): a technical manager's duties
+  are not diagnostic/treatment services, ماده ۸ قانون بیمه همگانی ۱۳۷۳ confers no
+  power to price them, so the tariff is outside the cabinet's competence. It was
+  re-established under a new name — «حق فنی» → «تعرفه خدمات دارویی», a کتاب ارزش
+  نسبی code. Collected in practice; set the constant to 0 to stop.
+- **A trap the legal search caught.** The 1405 resolution (هیئت وزیران,
+  ۲۵ اسفند ۱۴۰۴) bands the outpatient franchise by income decile — 25/30/40% for
+  deciles 1-3/4-6/7-10 — which reads exactly like the refinement a pricing engine
+  should adopt. It carves drugs out: «به استثنای داروها». Applying it to pharmacy
+  lines would have been wrong on every row while looking more sophisticated than
+  the correct answer. Documented in `config.py` so the next reader does not adopt
+  it either.
+- Confirmed unchanged: **30% outpatient / 10% inpatient** drug franchise for
+  tamin and salamat (statutory; corroborated by peer-reviewed literature).
+  **VAT** — drugs exempt (ماده ۹ بند الف جزء ۱۵، قانون ۱۴۰۰), supplements exempt
+  since بخشنامه ۲۰۰/۴/۱۴۰۳ **but only مکمل دارویی with an IRC licence** (a food
+  supplement remains taxable, so a mis-categorised row is under-taxed),
+  cosmetics 10% (9% + 1% عوارض).
+- Corrected: **armed forces 0.15 outpatient / 0.00 inpatient** (ساخد cut the drug
+  franchise 30%→15%; inpatient free at government/military centres, though
+  10-35% at private contracted ones — one figure cannot express that).
+- **Corrects an error in this ledger's own earlier note**: روستایی/عشایر are 30%
+  for drugs inside the referral path and **100% outside it**, not 15%. کمیته
+  امداد/بهزیستی is the 15% case. Special-disease patients are free. Still not
+  modelled — all are over-charged today — because a per-category franchise with
+  no provenance for how the category was established is worse than none.
+- Three fee rules documented but deliberately NOT enforced (owner scoped to
+  tariffs): the three-item-per-prescription cap — so a four-item Rx is
+  over-charged today — the +40% night/holiday uplift, and the تی‌تک requirement.
+- Verification: `pytest tests/unit/test_pricing_ir.py` → **24 passed**, including
+  six new tariff pins so a silent revert cannot happen.
+  `scripts/verify_pricing_conservation.py` → 4,608 real formulary lines at four
+  rounding units, all identities holding with the new fee in place. Full suite:
+  **1 failed, 1,813 passed** (`test_integrations_sandbox`, pre-existing ordering).

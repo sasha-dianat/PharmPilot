@@ -314,3 +314,70 @@ def test_the_quote_line_exposes_the_base_the_insurer_recognised():
     from services.platform.routers import pricing
     src = inspect.getsource(pricing.quote)
     assert '"covered_base"' in src
+
+
+# ── the tariffs themselves, researched 2026-08-22 ───────────────────────────
+def test_no_basic_insurer_pays_any_of_the_dispensing_fee():
+    """The correction with the largest money impact. حق فنی is added to the
+    PATIENT's side — پرداختی بیمار = سهم بیمار + اقلام آزاد + حق فنی — and no basic
+    insurer contributes; the pharmacists' association is still campaigning to
+    have them cover it, which is itself the proof that they do not.
+
+    This file previously said covers_technical_fee=True with a 30% patient
+    share, so on a 727,000 fee the engine charged the patient 218,100 and billed
+    an insurer 508,900 it would never collect.
+    """
+    from services.core.pricing_ir.config import PLANS
+    for code in ("tamin", "salamat", "armed_forces", "cash"):
+        assert PLANS[code].covers_technical_fee is False, code
+        assert PLANS[code].technical_fee_patient_share == Decimal("1.00"), code
+
+
+def test_the_whole_fee_reaches_the_patient():
+    from services.core.pricing_ir.config import PLANS, DEFAULT_TECHNICAL_FEE_RIAL
+    p = price_prescription([LineInput(drug=_drug(100000), quantity=Decimal("1"))],
+                           PLANS["tamin"], technical_fee=DEFAULT_TECHNICAL_FEE_RIAL,
+                           setting="outpatient")
+    assert p.technical_fee.total == Decimal("727000")
+    assert p.technical_fee.patient == Decimal("727000")
+    assert p.technical_fee.insurer == Decimal("0")
+
+
+def test_the_drug_franchise_survived_the_1405_decile_banding():
+    """The 1405 cabinet resolution (۲۵ اسفند ۱۴۰۴) banded the outpatient franchise
+    by income decile — 25/30/40% — but «به استثنای داروها». Drugs are carved out
+    and keep 30%. Applying the decile table to a pharmacy line would look like a
+    refinement and be wrong on every row."""
+    from services.core.pricing_ir.config import PLANS
+    for code in ("tamin", "salamat"):
+        assert PLANS[code].outpatient_patient_share == Decimal("0.30"), code
+        assert PLANS[code].inpatient_patient_share == Decimal("0.10"), code
+
+
+def test_the_armed_forces_shares_were_corrected():
+    """ساخد cut the outpatient drug franchise to 15%, and inpatient at
+    government/military contracted centres is free. The file previously carried
+    0.20/0.05, which was neither."""
+    from services.core.pricing_ir.config import PLANS
+    assert PLANS["armed_forces"].outpatient_patient_share == Decimal("0.15")
+    assert PLANS["armed_forces"].inpatient_patient_share == Decimal("0.00")
+
+
+def test_vat_stands_as_researched():
+    from services.core.pricing_ir import config as c
+    assert c.VAT_RATE_DRUG == Decimal("0")          # exempt, ماده ۹(الف)(۱۵) VAT law 1400
+    assert c.VAT_RATE_SUPPLEMENT == Decimal("0")    # exempt since بخشنامه ۲۰۰/۴/۱۴۰۳
+    assert c.VAT_RATE_COSMETIC == Decimal("0.10")   # 9% + 1% عوارض
+
+
+def test_a_cash_patient_pays_the_lot():
+    """Self-pay is the sanity check on the whole chain: no insurer share, no
+    differential, and the fee on top."""
+    from services.core.pricing_ir.config import PLANS
+    p = price_prescription([LineInput(drug=_drug(500000, ref=300000),
+                                      quantity=Decimal("2"))],
+                           PLANS["cash"], technical_fee=Decimal("727000"),
+                           setting="outpatient")
+    assert p.totals.insurer == Decimal("0")
+    assert p.totals.patient == Decimal("1727000")   # 1,000,000 + 727,000
+    assert p.totals.grand_total == p.totals.gross + p.totals.vat + Decimal("727000")

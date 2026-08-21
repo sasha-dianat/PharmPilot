@@ -109,13 +109,26 @@ The chain the owner specified is now closed end to end:
 - ✅ Pinned by `tests/unit/test_pricing_ir.py` (a 5,376-combination sweep) and
   `scripts/verify_pricing_conservation.py` (4,608 lines on real formulary rows
   through the real endpoint, four rounding units).
-- ⬜ Verify against a real pharmacy receipt — still the open item, and now the
-  ONLY thing between here and a trustworthy quote. The arithmetic is proven
-  self-consistent; what is unproven is whether the tariffs match what a real
-  pharmacy charges.
-- ⬜ Confirm the 30/70 franchise, حق فنی and VAT exemptions (`pricing_ir/config.py`).
-  Every one of these is still VERIFY-tagged in the config, and a self-consistent
-  engine fed a wrong franchise is confidently wrong.
-- ⬜ Special populations are not modelled: کمیته امداد / روستایی at 15%, and
-  special-disease patients (هموفیلی، تالاسمی، دیالیز) at 0% for formulary drugs.
-  A patient in one of those groups is currently over-charged by the engine.
+- ✅ **The tariffs are researched and sourced** (2026-08-22). Every `VERIFY` tag in
+  `pricing_ir/config.py` is gone, replaced by the statute, circular or resolution
+  it rests on. Confirmed unchanged: 30%/10% drug franchise, and all three VAT
+  rates. Corrected: **no basic insurer pays any part of حق فنی** — it was billing
+  508,900 ﷼ per prescription to an insurer that never pays it and under-charging
+  the patient by the same — the 1405 fee (کد ۹۰۵۰۱۰) is 727,000 ﷼ private band,
+  and armed forces is 0.15/0.00 rather than 0.20/0.05.
+- ⚠️ **حق فنی is contested law.** دیوان عدالت اداری has annulled it six times
+  (۳/۲/۸۸ … ۸/۱۱/۹۸) as outside the cabinet's competence; it was re-established
+  as a کتاب ارزش نسبی service code under a new name. Collected in practice. Set
+  `DEFAULT_TECHNICAL_FEE_RIAL = 0` to stop charging it.
+- ⬜ **Three fee rules not enforced**, all of which bound what may lawfully be
+  charged: the three-item-per-prescription cap (the engine over-charges a
+  four-item Rx today), the +40% night/holiday uplift, and the تی‌تک/TTAC
+  connection requirement.
+- ⬜ Special populations still not modelled, and the earlier note here was wrong:
+  روستایی/عشایر inside the referral path pay **30%** for drugs and **100%**
+  outside it; **کمیته امداد/بهزیستی** is the 15% case; special-disease patients
+  are free. All are over-charged today. Needs a recorded patient category first —
+  a per-category franchise with no provenance for the category is worse than none.
+- ⬜ Verify against a real pharmacy receipt — now the last open item. The
+  arithmetic is proven self-consistent and the tariffs are sourced; what remains
+  unproven is the two together against a real فاکتور.
