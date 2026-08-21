@@ -78,8 +78,13 @@ CUSUM_TARGET = Decimal("0.95")
 CUSUM_SLACK = Decimal("0.05")
 CUSUM_ALARM = Decimal("0.20")
 
-ACTIONS = ("buffer_stock", "switch_supplier", "seek_alternative",
-           "alert_prescribers", "reorder", "watch", "none")
+# `seek_alternative` was here and no code path could produce it. Proposing a
+# therapeutic substitute needs an equivalence source this platform does not
+# have, and a declared action the engine can never reach is the same kind of
+# promise as a fabricated number — so it is gone rather than aspirational.
+# `alert_prescribers` is what a market shortage with no cover actually gets.
+ACTIONS = ("buffer_stock", "switch_supplier", "alert_prescribers", "reorder",
+           "watch", "none")
 VERDICTS = ("market_shortage", "supplier_shortage", "thin_cover", "watch",
             "no_signal", "unknown")
 
@@ -241,7 +246,7 @@ def assess_item(item: dict, *, leads: dict[str, LT.LeadTime] | None = None,
              if r is not None]
     creep = downward_creep(rates)
 
-    concerns: list[str] = []
+    concerns: list[str] = list(item.get("extra_concerns") or [])
     if demand_basis not in ("observed", "sparse"):
         concerns.append(
             "no measured demand for this item, so days of cover cannot be "

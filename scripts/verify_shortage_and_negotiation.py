@@ -30,7 +30,7 @@ from services.platform.routers import inventory_admin as AD       # noqa: E402
 from services.platform.routers import inventory_integrity as IG   # noqa: E402
 from tests.simulation.driver import Staff                          # noqa: E402
 
-from verify_receiving import order, product, tenant, url           # noqa: E402
+from verify_receiving import call, order, product, tenant, url           # noqa: E402
 
 FAR = date.today() + timedelta(days=500)
 W = IG.SUPPLIER_WINDOW_DAYS
@@ -132,7 +132,7 @@ async def main() -> int:
         await set_demand(db, pid, ndcs["thin"], adq=20, on_hand=100)
 
         # ── E13 ──────────────────────────────────────────────────────────
-        rep = await IG.shortage_warning(W, False, staff, db)
+        rep = await call(IG.shortage_warning, window_days=W, raise_advice=False, staff=staff, db=db)
         by = {s["ndc11"]: s for s in rep["signals"]}
         print("  E13:")
         for s in rep["signals"]:
@@ -190,7 +190,7 @@ async def main() -> int:
         check("worst first", rep["signals"][0]["severity"] == "critical",
               rep["signals"][0]["severity"])
 
-        filed = await IG.shortage_warning(W, True, staff, db)
+        filed = await call(IG.shortage_warning, window_days=W, raise_advice=True, staff=staff, db=db)
         recs = filed.get("recommendations") or {}
         subjects = {r["ndc11"] for r in (await db.execute(text(
             "SELECT ndc11 FROM inventory_recommendations "
@@ -200,13 +200,13 @@ async def main() -> int:
         check("both shortages are filed for a decision",
               {ndcs["market"], ndcs["onesup"]} <= subjects, str(subjects))
         check("the healthy molecule is not", ndcs["fine"] not in subjects)
-        again = await IG.shortage_warning(W, True, staff, db)
+        again = await call(IG.shortage_warning, window_days=W, raise_advice=True, staff=staff, db=db)
         check("running it twice does not re-raise the same advice",
               (again.get("recommendations") or {}).get("written") == 0,
               str(again.get("recommendations")))
 
         # ── ⑳ ───────────────────────────────────────────────────────────
-        brief = await IG.negotiation_brief(DEAR, W, staff, db)
+        brief = await call(IG.negotiation_brief, supplier=DEAR, window_days=W, staff=staff, db=db)
         print(f"\n  ⑳ brief for '{DEAR}':")
         print(f"    standing={brief['leverage']['standing']} "
               f"spend={brief['leverage']['spend']} "
@@ -248,7 +248,7 @@ async def main() -> int:
         # The molecule only `cheap` supplies must not appear as a gap for
         # `cheap` — there is nothing to compare it against, and inventing a
         # market rate is the one thing this engine must never do.
-        cheap_brief = await IG.negotiation_brief(CHEAP, W, staff, db)
+        cheap_brief = await call(IG.negotiation_brief, supplier=CHEAP, window_days=W, staff=staff, db=db)
         check("the cheaper supplier is offered no fabricated gap",
               cheap_brief["gaps"] == [], str(cheap_brief["gaps"]))
         check("and its brief still states what cannot be known",

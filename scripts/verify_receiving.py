@@ -46,6 +46,29 @@ def url() -> str:
     raise SystemExit("no test database configured")
 
 
+async def call(handler, **kwargs):
+    """Invoke a FastAPI handler directly, filling in its unset query defaults.
+
+    These scripts drive the handlers rather than the HTTP stack, so FastAPI's
+    dependency resolution never runs and any parameter not passed arrives as the
+    `Query(...)` object itself. That surfaced as a `TypeError` deep inside a
+    handler the moment a new query parameter was added — the scripts silently
+    depended on the full positional signature. This resolves the defaults the
+    way the framework would, so adding a parameter cannot break a caller that
+    does not care about it.
+    """
+    import inspect
+    from fastapi import params
+    sig = inspect.signature(handler)
+    for name, param in sig.parameters.items():
+        if name in kwargs:
+            continue
+        default = param.default
+        if isinstance(default, params.Query):
+            kwargs[name] = default.default
+    return await handler(**kwargs)
+
+
 async def tenant(db) -> uuid.UUID:
     pid = uuid.uuid4()
     src = (await db.execute(text("SELECT * FROM pharmacies LIMIT 1"))).mappings().first()
@@ -140,13 +163,13 @@ async def main() -> int:
 
         # ── what the receiving bench is offered ──────────────────────────
         print("the open-order picker")
-        listed = await AD.open_orders(None, staff, db)
+        listed = await AD.open_orders(ndc11=None, staff=staff, db=db)
         mine = [o for o in listed["orders"] if o["purchase_order_id"] == str(oid)]
         check("the placed order is offered", len(mine) == 1, str(listed["count"]))
         check("both lines outstanding",
               sorted(l["outstanding"] for l in mine[0]["lines"]) == [60.0, 100.0],
               str(mine[0]["lines"]))
-        narrowed = await AD.open_orders(n2, staff, db)
+        narrowed = await AD.open_orders(ndc11=n2, staff=staff, db=db)
         check("filtering by NDC returns only that line",
               all(l["ndc11"] == n2 for o in narrowed["orders"] for l in o["lines"]))
 
@@ -196,7 +219,7 @@ async def main() -> int:
               st["order"]["status"])
         check("received_at stamped on completion",
               st["order"]["received_at"] is not None)
-        after = await AD.open_orders(None, staff, db)
+        after = await AD.open_orders(ndc11=None, staff=staff, db=db)
         check("a completed order leaves the picker",
               not [o for o in after["orders"] if o["purchase_order_id"] == str(oid)])
 

@@ -643,6 +643,81 @@ const BUCKET: Record<string, Pair> = {
   damaged: ['Damaged', 'آسیب‌دیده'], returned: ['Returned', 'مرجوعی'], in_transit: ['In transit', 'در راه'],
 }
 
+/**
+ * E9 — the money on lots that will probably not sell.
+ *
+ * It lives in the money tab rather than getting one of its own, because that is
+ * what it is: an expected loss. The `unknown` rows are shown with their reason,
+ * not hidden — a lot whose odds cannot be computed is not a lot that is safe,
+ * and a list of only the quantified ones would read as the whole exposure.
+ */
+interface OddsRow {
+  lot_id: string; ndc11: string; drug_name: string | null
+  lot_number: string; expiry_date: string | null
+  units: number; days_left: number; probability: number | null
+  band: string; expected_loss: number | null; basis: string
+  explanation: string
+}
+interface OddsData {
+  lots: OddsRow[]; lots_total: number; shown: number; truncated: boolean
+  quantified: number; expected_loss: number; explanation: string
+}
+
+const ODDS_BAND: Record<string, { label: Pair; cls: string }> = {
+  likely: { label: ['Likely to expire', 'احتمالاً منقضی می‌شود'], cls: 'text-rose-300' },
+  possible: { label: ['Possible', 'ممکن است'], cls: 'text-amber-300' },
+  unlikely: { label: ['Unlikely', 'بعید است'], cls: 'text-slate-400' },
+  unknown: { label: ['Cannot be quantified', 'قابل کمّی‌سازی نیست'], cls: 'text-slate-500' },
+}
+
+function ExpiryOddsCard() {
+  const { t, tp, n: fa, money } = useLang()
+  const { data } = useQuery<OddsData>({
+    queryKey: ['inv-expiry-odds'],
+    queryFn: () => inventoryEnginesApi.expiryOdds().then(r => r.data),
+  })
+  if (!data) return null
+  const atRisk = data.lots.filter(l => l.band === 'likely' || l.band === 'possible')
+  const unknown = data.lots.filter(l => l.probability === null)
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
+      <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+        <span className="font-semibold text-sm">
+          {t('Expected loss to expiry', 'زیان مورد انتظار از انقضا')}</span>
+        <Metric label={t('Expected loss', 'زیان مورد انتظار')} value={money(data.expected_loss)} />
+        <Metric label={t('At risk', 'در معرض خطر')} value={fa(atRisk.length)} />
+        <Metric label={t('Cannot be quantified', 'قابل کمّی‌سازی نیست')} value={fa(unknown.length)} />
+      </div>
+      <p className="text-[11px] text-slate-500">{data.explanation}</p>
+      {data.truncated && (
+        <p className="text-[11px] text-amber-300/90">
+          {t(`Showing ${fa(data.shown)} of ${fa(data.lots_total)} lots — the totals above are over all of them.`,
+             `${fa(data.shown)} از ${fa(data.lots_total)} بچ نمایش داده می‌شود — مجموع‌های بالا روی همهٔ آن‌هاست.`)}
+        </p>)}
+      {atRisk.slice(0, 12).map(l => {
+        const b = ODDS_BAND[l.band] ?? ODDS_BAND.unknown
+        return (
+          <p key={l.lot_id} className="text-[11px] text-slate-400">
+            <span className="font-mono text-slate-300">{l.ndc11}</span>
+            <span className="ms-2">{l.drug_name ?? ''}</span>
+            <span className="text-slate-500 ms-2 font-mono">{l.lot_number}</span>
+            <span className={`ms-2 ${b.cls}`}>{tp(b.label)}
+              {l.probability !== null && ` ${fa(Math.round(l.probability * 100))}٪`}</span>
+            {l.expected_loss !== null && (
+              <span className="ms-2 tabular-nums font-semibold text-slate-300">
+                {money(l.expected_loss)}</span>)}
+          </p>)
+      })}
+      {unknown.length > 0 && (
+        <p className="text-[11px] text-slate-500">
+          {t(`${fa(unknown.length)} lot(s) have no probability — not because they are safe, but because the demand behind them cannot support one. Each row says which reason.`,
+             `${fa(unknown.length)} بچ احتمالی ندارند — نه به این دلیل که ایمن‌اند، بلکه چون تقاضای پشت آن‌ها از عهدهٔ محاسبه برنمی‌آید. هر ردیف دلیلش را می‌گوید.`)}
+        </p>)}
+    </div>
+  )
+}
+
 function ValueTab() {
   const { t, tp, n, money: faMoney } = useLang()
   const fa = n
@@ -675,6 +750,8 @@ function ValueTab() {
 
       {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
       {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      <ExpiryOddsCard />
 
       {data && (
         <>

@@ -195,3 +195,16 @@ def test_a_longer_gap_between_rounds_needs_more_cover():
     one = go([item()], cover_days=1).lines[0]
     three = go([item()], cover_days=3).lines[0]
     assert three.target > one.target
+
+
+def test_the_declared_skip_reasons_are_the_ones_the_code_emits():
+    """This listed three values no path produced and omitted the four it did.
+    A vocabulary the code cannot produce is a promise the UI may render a case
+    for and the engine can never reach."""
+    emitted = set()
+    for it in [item(fills=[]),                                    # no demand
+               item(requires_refrigeration=True),                 # mismatch
+               item(fills=BURSTY, shelf=shelf(cap=100, cur=100)),  # full
+               item(depot_lots=[])]:                              # empty depot
+        emitted |= {s["reason"] for s in go([it]).skipped}
+    assert emitted == set(PL.SKIP_REASONS)

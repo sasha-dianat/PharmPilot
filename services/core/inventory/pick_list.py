@@ -55,7 +55,11 @@ EVENT_SHAPED = ("intermittent", "lumpy")
 # more than the units.
 MIN_WORTH_PULLING = Decimal("1")
 
-REASONS = ("below_target", "empty_shelf", "expiring_first")
+# Why an item is NOT on the round. Kept in step with what `build` actually
+# emits: a vocabulary the code cannot produce is a promise the UI may render a
+# case for and the engine can never reach.
+SKIP_REASONS = ("no_measured_demand", "storage_mismatch", "shelf_full",
+                "depot_empty")
 
 
 @dataclass(frozen=True)

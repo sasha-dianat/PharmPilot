@@ -29,7 +29,7 @@ from services.platform.routers import inventory_admin as AD       # noqa: E402
 from services.platform.routers import inventory_integrity as IG   # noqa: E402
 from tests.simulation.driver import Staff                          # noqa: E402
 
-from verify_receiving import order, product, tenant, url           # noqa: E402
+from verify_receiving import call, order, product, tenant, url           # noqa: E402
 
 FAR = date.today() + timedelta(days=500)
 
@@ -84,7 +84,7 @@ async def main() -> int:
         print(f"placed and received {sum(len(h['lead']) for h in HABITS.values())} "
               f"orders across {len(HABITS)} suppliers\n")
 
-        out = await IG.supplier_scorecard(False, IG.SUPPLIER_WINDOW_DAYS, staff, db)
+        out = await call(IG.supplier_scorecard, raise_advice=False, window_days=IG.SUPPLIER_WINDOW_DAYS, staff=staff, db=db)
         table = {s["supplier"]: s for s in out["suppliers"]}
         for s in out["suppliers"]:
             print(f"  {s['supplier']:<9} score={str(s['score']):<6} "
@@ -139,7 +139,7 @@ async def main() -> int:
                 row["id"], AD.CloseOrder(reason="supplier confirmed no balance"),
                 staff, db)
 
-        after = await IG.supplier_scorecard(False, IG.SUPPLIER_WINDOW_DAYS, staff, db)
+        after = await call(IG.supplier_scorecard, raise_advice=False, window_days=IG.SUPPLIER_WINDOW_DAYS, staff=staff, db=db)
         t2 = {s["supplier"]: s for s in after["suppliers"]}
         check("once closed, the short filler becomes measurable",
               t2["shorter"]["score"] is not None, str(t2["shorter"]["score"]))
@@ -182,7 +182,7 @@ async def main() -> int:
         # item bought from the eleven-day supplier gets covered for four days
         # because someone else is quick. The reorder point is planned against
         # whoever last supplied that item.
-        refresh = await IG.refresh_demand(False, 28, staff, db)
+        refresh = await call(IG.refresh_demand, apply=False, window_days=28, staff=staff, db=db)
         per_sup = refresh["lead_time_by_supplier"]
         print(f"\n  lead time per supplier: "
               f"{ {k: v['days'] for k, v in per_sup.items()} }")
@@ -196,7 +196,7 @@ async def main() -> int:
               str({r["supplier"] for r in refresh["rows"]}))
 
         # ── what reaches a person ────────────────────────────────────────
-        filed = await IG.supplier_scorecard(True, IG.SUPPLIER_WINDOW_DAYS, staff, db)
+        filed = await call(IG.supplier_scorecard, raise_advice=True, window_days=IG.SUPPLIER_WINDOW_DAYS, staff=staff, db=db)
         recs = filed.get("recommendations") or {}
         print(f"\n  recommendations: {recs}")
         rows = [dict(r) for r in (await db.execute(text(
@@ -214,7 +214,7 @@ async def main() -> int:
               "newcomer" not in subjects, str(subjects))
         check("nor is the dependable one", "steady" not in subjects, str(subjects))
 
-        again = await IG.supplier_scorecard(True, IG.SUPPLIER_WINDOW_DAYS, staff, db)
+        again = await call(IG.supplier_scorecard, raise_advice=True, window_days=IG.SUPPLIER_WINDOW_DAYS, staff=staff, db=db)
         check("running it twice does not raise the same advice twice",
               (again.get("recommendations") or {}).get("written") == 0,
               str(again.get("recommendations")))

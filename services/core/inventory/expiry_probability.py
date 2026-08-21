@@ -53,7 +53,8 @@ UNMODELLABLE = ("lumpy",)
 LIKELY = Decimal("0.50")
 POSSIBLE = Decimal("0.15")
 
-BASES = ("observed", "no_spread", "too_few_events", "unmodellable", "no_demand")
+BASES = ("observed", "no_spread", "too_few_events", "unmodellable",
+         "no_demand", "already_expired")
 
 
 @dataclass(frozen=True)
@@ -124,8 +125,10 @@ def assess_lot(*, lot_id: str, ndc11: str, units, days_left: int,
             expected_events=events, explanation=why, concerns=concerns)
 
     if days_left <= 0:
-        return refuse("observed", "Already expired — this is a write-off, not a "
-                                  "forecast.")
+        # Not `observed`: nothing was observed about this lot's demand. It is
+        # simply no longer a forecasting question.
+        return refuse("already_expired",
+                      "Already expired — this is a write-off, not a forecast.")
     if avg_daily_demand is None:
         return refuse("no_demand",
                       "No measured demand, so there is no distribution to "

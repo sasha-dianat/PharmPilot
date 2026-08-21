@@ -2268,3 +2268,88 @@ refusals. Forecast quality against real pharmacy behaviour is untested for every
 Tier B engine and will stay that way until the pilot dispenses — production holds
 46 fills across 7 NDCs on a single day. The engines are built to say so, and on
 that data they do.
+
+### 2026-08-18 — Claude (Opus 5) — review of the whole inventory section: six defects, one referred
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- A deliberate review pass over ~8,900 lines across 29 core modules, 6 routers and
+  the engine dashboards, rather than more building. Method: cross-module constant
+  audit, a provenance sweep for fabricated fallbacks, an AST check that every
+  id-taking handler is tenant-gated, adversarial inputs to all 40 pure entry
+  points, a declared-vocabulary-vs-reachable-code check, and the invariant
+  simulator over the ledger.
+
+**Clean.** The ledger survived 3,368 events over 8 seeds with **0 invariant
+violations**. All 40 pure entry points survived empty / None / zero / negative /
+huge inputs without raising. No fabricated fallback on a measurement anywhere —
+the provenance rule holds across every engine. Every id-taking handler in the
+inventory routers is tenant-gated.
+
+**Fixed.**
+
+1. **E12 called the most reliable supplier on the roster a 100% short-filler.**
+   `receiving` deliberately treats 999-of-1000 as an *exact* delivery, with a
+   comment saying that scoring a rounding gap as a failure "would make every
+   reliable supplier look unreliable". `supplier_reliability` compared exactly,
+   so a supplier delivering 999 on every line scored `short_lines = 8/8` and had
+   a concern raised against it. The same failure `EXACT_TOLERANCE` exists to
+   prevent, reintroduced one module over. There is now one definition of "short"
+   (`_is_short`), and it is receiving's.
+
+2. **The clinical escalation depended on a button on another tab.** E13 read
+   `stock_levels.avg_daily_demand`, which only exists after somebody runs a
+   demand refresh, while E6 and E10 compute from the fill record directly. With
+   no stored rate there is no days-of-cover, so `thin` was False and an identical
+   market shortage came out **`high / buffer_stock`** instead of
+   **`critical / alert_prescribers`** — measured both ways on the same shelf.
+   "Stop writing this prescription" must not depend on whether anyone pressed
+   Recalculate. The endpoint now falls back to the fill record when the stored
+   signal is absent, and says which source it used. Verified end to end: with the
+   signal nulled, cover comes back 800 days, basis `observed`, concern attached.
+
+3. **`/expiry-odds` returned 24,000 lots in one response** on a large tenant —
+   measured, not hypothetical. Now capped at 500 worst-first with
+   `lots_total` / `shown` / `truncated`, and the totals stay over every lot:
+   silent truncation would read as "that is all of them".
+
+4. **`pick_list.REASONS` declared three values no code path produced** and
+   omitted the four it did. A vocabulary the code cannot emit is a case the UI
+   may render and the engine can never reach. Renamed `SKIP_REASONS`, corrected,
+   and a test now asserts the declaration equals what `build` emits.
+
+5. **`shortage.ACTIONS` promised `seek_alternative`**, which nothing could
+   produce — proposing a therapeutic substitute needs an equivalence source this
+   platform does not have. Removed rather than left aspirational.
+
+6. **An already-expired lot was labelled `basis="observed"`** in E9 though nothing
+   had been observed about its demand. Now `already_expired`.
+
+Plus two pieces of hygiene: `expiryOdds` was in the API client with **zero call
+sites**, so E9's money figure was unreachable from the UI — now surfaced in the
+Value tab, `unknown` rows included with their reasons, because a list of only the
+quantified lots would read as the whole exposure. And the verification scripts
+called handlers positionally, so adding a query parameter shifted every argument
+and blew up inside a handler; they now go through a `call()` helper that resolves
+FastAPI defaults the way the framework would.
+
+**Referred, not fixed — outside CL-003 and it needs its owner.**
+`POST /inventory/products/{product_id}/price` (`routers/inventory.py:415`) gates
+on the `inventory:price` permission but **not on tenancy**, and the columns it
+writes — `drug_products.manual_shelf_price`, `manual_price_is_mandate`,
+`manual_price_set_by` — live on the **global product catalogue**, which has no
+`pharmacy_id`. `price_history` has none either. So on a multi-tenant deployment
+one pharmacy repricing a product changes what **every** pharmacy charges, and
+they share one price history. Latent today (production holds a single pharmacy)
+and invisible until the second one arrives. Verified against the live schema
+rather than inferred. This is the pricing workstream's file and migrations
+0042/0043 are its work, so it is recorded here for that owner rather than edited
+across the boundary — and it is exactly the "tenant isolation" gate this document
+lists as requiring independent review.
+
+**Verification.** 6 new regression tests, one per fixed defect. All four
+verification scripts pass on `pharmpilot_test` (30/30, 27/27, 28/28, 41/41).
+`scripts/inv_simulate.py --seeds 8` → 0 findings. `tsc --noEmit` clean.
+`pytest tests/unit -p no:randomly` → **1,902 passed, 1 failed**
+(`test_integrations_sandbox`, pre-existing and logged repeatedly above),
+1 xfailed, in 8:08.

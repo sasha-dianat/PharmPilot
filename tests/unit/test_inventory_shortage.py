@@ -210,3 +210,27 @@ def test_the_report_counts_the_two_causes_separately():
     assert (rep.market, rep.supplier_side, rep.unknown) == (1, 1, 1)
     assert rep.signals[0].verdict == "market_shortage"    # worst first
     assert "short from every supplier" in rep.explanation
+
+
+# ── the vocabulary matches what the engine can actually produce ───────────
+def test_every_action_the_engine_emits_is_a_declared_one():
+    cases = [item(short(4) + short(4, "other")),
+             item(short(4) + full(4, "other")),
+             item(full(4), on_hand=60, adq=10),
+             item(full(6)),
+             item(short(2)),
+             item([line(received=r, day=i) for i, r in
+                   enumerate([100] * 20 + [85] * 4)])]
+    seen = {SH.assess_item(c, leads=L).action for c in cases}
+    assert seen <= set(SH.ACTIONS)
+    assert "seek_alternative" not in SH.ACTIONS   # nothing could ever produce it
+
+
+def test_a_caller_can_add_a_concern_the_engine_could_not_know():
+    """The endpoint knows things the pure function cannot — such as that the
+    stored demand signal was never refreshed and the cover here was computed from
+    the fills instead."""
+    s = SH.assess_item({**item(full(6)),
+                        "extra_concerns": ["computed from the fill record"]},
+                       leads=L)
+    assert "computed from the fill record" in s.concerns

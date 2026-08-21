@@ -1508,12 +1508,36 @@ async def shortage_warning(
     for r in rows:
         by_ndc.setdefault(r["ndc11"], []).append(r)
 
-    items = [{"ndc11": ndc, "drug_name": names.get(ndc), "lines": lines,
-              "on_hand": (stock.get(ndc) or {}).get("quantity_on_hand") or 0,
-              "avg_daily_demand": (stock.get(ndc) or {}).get("avg_daily_demand"),
-              "demand_basis": (stock.get(ndc) or {}).get("demand_basis")
-                              or "no_history"}
-             for ndc, lines in by_ndc.items()]
+    # The stored demand signal is what purchasing acts on, so it is preferred.
+    # But it only exists once somebody has run a demand refresh, and until then
+    # this engine went blind in a way that changed its *action*: with no rate
+    # there is no days-of-cover, so a market shortage about to empty the shelf
+    # came out `high / buffer_stock` instead of `critical / alert_prescribers`.
+    # The clinical escalation must not depend on whether a button was pressed on
+    # another tab, so where the stored signal is absent the rate is computed from
+    # the fill record directly — the same source the refresh would have used.
+    _stock2, fills_by_ndc = await _demand_inputs(db, staff.pharmacy_id,
+                                                 DEMAND_WINDOW_DAYS)
+    items = []
+    for ndc, lines in by_ndc.items():
+        st = stock.get(ndc) or {}
+        adq, basis = st.get("avg_daily_demand"), st.get("demand_basis")
+        extra = []
+        if adq is None:
+            live = DM.estimate(ndc, fills_by_ndc.get(ndc, []),
+                               window_days=DEMAND_WINDOW_DAYS, as_of=today)
+            if live.avg_daily_demand is not None:
+                adq, basis = live.avg_daily_demand, live.basis
+                extra.append(
+                    "the stored demand signal has never been refreshed for this "
+                    "item, so days of cover here is computed from the fill "
+                    "record directly rather than from the figure purchasing uses")
+        items.append({
+            "ndc11": ndc, "drug_name": names.get(ndc), "lines": lines,
+            "on_hand": st.get("quantity_on_hand") or 0,
+            "avg_daily_demand": adq,
+            "demand_basis": basis or "no_history",
+            "extra_concerns": extra})
 
     report = SHORT.assess(items, leads=leads, as_of=today)
     out = report.as_dict()
@@ -1665,6 +1689,8 @@ async def seasonality(
 @router.get("/expiry-odds")
 async def expiry_odds(
     window_days: int = Query(DEMAND_WINDOW_DAYS, ge=7, le=365),
+    limit: int = Query(500, ge=1, le=5000,
+                       description="worst-first; the total is always reported"),
     staff: Staff = Depends(require_permission("inventory:read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1725,18 +1751,29 @@ async def expiry_odds(
                                         if l["expiry_date"] else None)})
 
     priced = [r for r in results if r["expected_loss"] is not None]
+    # Worst first, and capped. A pharmacy with 24,000 lots was getting all of
+    # them in one response, which invites the UI to render all of them; the
+    # useful part is the top of a list sorted by money. The totals below are over
+    # EVERY lot, so a cap narrows what is shown and never what is counted —
+    # silent truncation would read as "that is all of them".
+    ranked = sorted(results, key=lambda r: -(r["expected_loss"] or 0))
+    quantified = sum(1 for r in results if r["probability"] is not None)
     return {
-        "lots": sorted(results, key=lambda r: -(r["expected_loss"] or 0)),
+        "lots": ranked[:limit],
         "as_of": today.isoformat(),
-        "quantified": sum(1 for r in results if r["probability"] is not None),
+        "lots_total": len(results), "shown": min(limit, len(results)),
+        "truncated": len(results) > limit,
+        "quantified": quantified,
         "expected_loss": round(sum(r["expected_loss"] for r in priced), 2),
         "worth_discounting": [r["lot_id"] for r in results
                               if r["band"] in ("likely", "possible")],
         "explanation": (
-            f"{sum(1 for r in results if r['probability'] is not None)} of "
-            f"{len(results)} lot(s) have enough demand history behind them for a "
-            f"probability to mean anything. The rest keep E1's deterministic "
-            f"verdict, and each says why."),
+            f"{quantified} of {len(results)} lot(s) have enough demand history "
+            f"behind them for a probability to mean anything. The rest keep E1's "
+            f"deterministic verdict, and each says why."
+            + (f" Showing the {limit} with the most money on them; the totals "
+               f"here are over all {len(results)}."
+               if len(results) > limit else "")),
     }
 
 

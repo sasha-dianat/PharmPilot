@@ -145,3 +145,11 @@ def test_a_refusal_is_not_a_reason_to_discount():
     at a loss for no reason."""
     assert EP.worth_discounting(odds(stdev_daily=None)) is False
     assert EP.worth_discounting(odds(demand_class="lumpy")) is False
+
+
+def test_an_expired_lot_is_not_labelled_as_an_observation():
+    """Nothing was observed about its demand; it simply stopped being a
+    forecasting question."""
+    o = odds(days_left=0)
+    assert o.basis == "already_expired"
+    assert o.basis in EP.BASES

@@ -29,7 +29,7 @@ from services.platform.routers import inventory_admin as AD       # noqa: E402
 from services.platform.routers import inventory_integrity as IG   # noqa: E402
 from tests.simulation.driver import Staff                          # noqa: E402
 
-from verify_receiving import order, product, tenant, url           # noqa: E402
+from verify_receiving import call, order, product, tenant, url           # noqa: E402
 
 WINDOW = 84
 FAR = date.today() + timedelta(days=500)
@@ -127,7 +127,7 @@ async def main() -> int:
                                    prescriber=prescriber, ndc=ndc,
                                    pattern=SHAPES[key], staff_id=staff.id)
 
-        out = await IG.refresh_demand(False, WINDOW, staff, db)
+        out = await call(IG.refresh_demand, apply=False, window_days=WINDOW, staff=staff, db=db)
         rows = {r["ndc11"]: r for r in out["rows"] if r["ndc11"] in ndcs.values()}
         by_key = {k: rows[v] for k, v in ndcs.items() if v in rows}
 
@@ -201,7 +201,7 @@ async def main() -> int:
               str(out["summary"]["covered_for_one_event"]))
 
         # ── writing it ───────────────────────────────────────────────────
-        applied = await IG.refresh_demand(True, WINDOW, staff, db)
+        applied = await call(IG.refresh_demand, apply=True, window_days=WINDOW, staff=staff, db=db)
         stored = {r["ndc11"]: dict(r) for r in (await db.execute(text(
             "SELECT ndc11, avg_daily_demand, safety_stock, reorder_point, "
             "demand_basis FROM stock_levels WHERE pharmacy_id = :p"),
@@ -222,7 +222,7 @@ async def main() -> int:
         await AD.receive_stock(AD.ReceiveLot(
             ndc11=bare, lot_number="BARE-1", expiry_date=FAR, quantity=50,
             unit_cost=10.0, purchase_order_id=oid), staff, db)
-        out2 = await IG.refresh_demand(False, WINDOW, staff, db)
+        out2 = await call(IG.refresh_demand, apply=False, window_days=WINDOW, staff=staff, db=db)
         b = next(r for r in out2["rows"] if r["ndc11"] == bare)
         check("an item nobody has dispensed gets no shape and no rate",
               b["pattern"]["demand_class"] == "unknown"
@@ -233,7 +233,7 @@ async def main() -> int:
               str(b["signals"]["reorder_point"]))
 
         # ── E9: the odds a lot expires before it sells ──────────────────
-        odds = await IG.expiry_odds(WINDOW, staff, db)
+        odds = await call(IG.expiry_odds, window_days=WINDOW, staff=staff, db=db)
         by_ndc_odds: dict[str, list[dict]] = {}
         for r in odds["lots"]:
             by_ndc_odds.setdefault(r["ndc11"], []).append(r)
@@ -258,7 +258,7 @@ async def main() -> int:
                   for r in lumpy_lots))
         # Lots sharing an expiry date are ordinary, and the cascade among them
         # must not depend on what order the query planner felt like.
-        again = await IG.expiry_odds(WINDOW, staff, db)
+        again = await call(IG.expiry_odds, window_days=WINDOW, staff=staff, db=db)
         check("the same shelf gives the same answer twice",
               [(r["lot_id"], r["probability"]) for r in odds["lots"]]
               == [(r["lot_id"], r["probability"]) for r in again["lots"]])
@@ -269,8 +269,29 @@ async def main() -> int:
                      for r in smooth_lots[1:] for c in r["concerns"]),
               str([r["concerns"] for r in smooth_lots[1:2]]))
 
+        # ── E13 must not go blind when nobody has run a refresh ─────────
+        # The clinical escalation ("stop writing this prescription") depends on
+        # days-of-cover, which depends on a demand rate. That rate lives in
+        # stock_levels and only exists after somebody presses Recalculate on
+        # another tab. Blanking it here reproduces the default state of a real
+        # pharmacy.
+        await db.execute(text(
+            "UPDATE stock_levels SET avg_daily_demand = NULL, "
+            "demand_basis = 'no_history' WHERE pharmacy_id = :p AND ndc11 = :n"),
+            {"p": pid, "n": ndcs["smooth"]})
+        await db.commit()
+        blind = await call(IG.shortage_warning, window_days=365, raise_advice=False, staff=staff, db=db)
+        sig = next(s for s in blind["signals"] if s["ndc11"] == ndcs["smooth"])
+        print(f"\n  E13 with the demand signal never refreshed: "
+              f"cover={sig['days_of_cover']} basis={sig['demand_basis']}")
+        check("E13 still knows the cover when no refresh has been run",
+              sig["days_of_cover"] is not None, str(sig["days_of_cover"]))
+        check("and says which source it used",
+              any("never been refreshed" in c for c in sig["concerns"]),
+              str(sig["concerns"]))
+
         # ── E7: two cycles, and this tenant has weeks ───────────────────
-        seas = await IG.seasonality(0, staff, db)
+        seas = await call(IG.seasonality, min_units=0, staff=staff, db=db)
         print(f"\n  E7: {seas['explanation']}")
         judged = [s for s in seas["items"] if s["ndc11"] in ndcs.values()]
         check("no seasonal claim is made from twelve weeks of history",
@@ -284,7 +305,7 @@ async def main() -> int:
                   for s in judged))
 
         # ── E10: the morning round ──────────────────────────────────────
-        pick = await IG.morning_pick_list(1, WINDOW, staff, db)
+        pick = await call(IG.morning_pick_list, cover_days=1, window_days=WINDOW, staff=staff, db=db)
         print(f"\n  E10: {pick['explanation']}")
         for l in pick["lines"]:
             label = next((k for k, v in ndcs.items() if v == l["ndc11"]), l["ndc11"])

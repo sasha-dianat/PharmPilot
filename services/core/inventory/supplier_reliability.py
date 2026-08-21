@@ -153,6 +153,21 @@ def _consistency(lead: LT.LeadTime) -> tuple[Decimal | None, Decimal | None]:
 MIN_STALLED_LINES = 3
 
 
+def _is_short(line: dict) -> bool:
+    """Whether this line arrived short *by receiving's own definition*.
+
+    One definition of "short", in one place. Three modules previously carried
+    three: `receiving` allowed 2%, `shortage` compared an aggregate against 95%,
+    and this compared exactly and called a one-unit gap on a thousand-unit line
+    a failure.
+    """
+    ordered = q(line.get("quantity_ordered") or 0)
+    if ordered <= 0:
+        return False
+    gap = ordered - q(line.get("quantity_received") or 0)
+    return gap > q(ordered * RCV.EXACT_TOLERANCE)
+
+
 def _stalled(outstanding: int, settled: int) -> bool:
     """Whether this supplier's short deliveries are piling up unclosed."""
     return outstanding >= MIN_STALLED_LINES and outstanding >= settled
@@ -179,8 +194,13 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
     consistency, cv = _consistency(lead)
 
     closed = [l for l in lines if str(l.get("status")) in RCV.SETTLED]
-    short = [l for l in closed
-             if q(l.get("quantity_received") or 0) < q(l.get("quantity_ordered") or 0)]
+    # The same tolerance `receiving` applies at the door, and for the same
+    # reason. Counting a 999-of-1000 delivery as a short line — which this did —
+    # scores the most reliable supplier on the roster at 100% short and raises a
+    # concern against it. Whole packs do not always split evenly, and it is the
+    # failure `receiving.EXACT_TOLERANCE` exists to prevent, reintroduced one
+    # module over.
+    short = [l for l in closed if _is_short(l)]
     short_rate = q(Decimal(len(short)) / Decimal(len(closed))) if closed else None
     # Lines where a delivery *arrived short* and the order was never closed out.
     # Deliberately not lines still in transit: an order placed yesterday has not

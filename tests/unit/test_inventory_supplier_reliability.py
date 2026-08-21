@@ -260,3 +260,30 @@ def test_a_poor_record_is_raised():
                              supplier="poor")
     assert poor.grade in ("mixed", "poor")
     assert SR.worth_raising(poor) is True
+
+
+# ── one definition of "short", across three modules ───────────────────────
+def test_a_rounding_gap_is_not_a_short_line_here_either():
+    """`receiving` calls 999 of 1000 an EXACT delivery, deliberately: whole packs
+    do not always split evenly and scoring it as a failure makes every reliable
+    supplier look unreliable. This module compared exactly, so the most reliable
+    supplier on the roster scored 100% short lines and got a concern raised
+    against it — the same failure, one module over."""
+    from services.core.inventory import receiving as RCV
+    line = {"quantity_ordered": Decimal("1000"), "quantity_received": Decimal("999")}
+    assert RCV.apply_receipt({**line, "quantity_received": Decimal("0"),
+                              "id": "L", "ndc11": "N", "status": "ordered"},
+                             999).shape == "exact"
+
+    ls = [{"wholesaler": "acme", "ndc11": f"N{i}", "status": "complete", **line}
+          for i in range(8)]
+    s = SR.score_supplier(orders([5] * 8), ls, supplier="acme")
+    assert s.short_lines == 0
+    assert not any("closed short" in c for c in s.concerns)
+
+
+def test_a_real_shortfall_is_still_counted():
+    ls = [{"wholesaler": "acme", "ndc11": f"N{i}", "status": "complete",
+           "quantity_ordered": Decimal("1000"),
+           "quantity_received": Decimal("900")} for i in range(8)]
+    assert SR.score_supplier(orders([5] * 8), ls, supplier="acme").short_lines == 8
