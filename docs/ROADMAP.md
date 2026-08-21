@@ -91,6 +91,31 @@ The chain the owner specified is now closed end to end:
   with a manual price. `price_source` therefore reads `nfi_fallback` catalog-wide.
   This is data entry, not code: receive with the invoice's consumer price, or set
   a price in the InventoryAdmin drawer.
-- ⬜ Verify against a real pharmacy receipt — still the open item from before,
-  and the one that proves the arithmetic rather than the wiring.
+- ✅ **The money adds up now.** `covered_base` and `differential` were each
+  rounded on their own, and `round(a) + round(b) ≠ round(a + b)`: a 48,000-line
+  sweep broke the engine's own documented identity on ~4% of lines at the default
+  whole-Rial unit and ~7% at the 1,000-Rial unit `config.py` invites a pharmacy
+  to set. The differential is now DERIVED as `gross − covered_base`, so
+  `covered_base + differential == gross` holds by construction at any unit. Both
+  reachable in production: `sell_price` and `manual_shelf_price` are Numeric(12,4)
+  and fractional quantities are ordinary.
+- ✅ Three smaller precision defects with it: the rounding unit was bound at
+  import (a coarse-rounding deployment silently kept whole-Rial rounding until
+  restart); `Decimal(qty)` on a float carried binary noise into every product
+  below it; and a negative quantity produced a negative insurer share instead of
+  being refused.
+- ✅ `covered_base` is now on the quote line. A line showing مابه‌التفاوت without
+  the base it was measured against cannot be checked by the person paying it.
+- ✅ Pinned by `tests/unit/test_pricing_ir.py` (a 5,376-combination sweep) and
+  `scripts/verify_pricing_conservation.py` (4,608 lines on real formulary rows
+  through the real endpoint, four rounding units).
+- ⬜ Verify against a real pharmacy receipt — still the open item, and now the
+  ONLY thing between here and a trustworthy quote. The arithmetic is proven
+  self-consistent; what is unproven is whether the tariffs match what a real
+  pharmacy charges.
 - ⬜ Confirm the 30/70 franchise, حق فنی and VAT exemptions (`pricing_ir/config.py`).
+  Every one of these is still VERIFY-tagged in the config, and a self-consistent
+  engine fed a wrong franchise is confidently wrong.
+- ⬜ Special populations are not modelled: کمیته امداد / روستایی at 15%, and
+  special-disease patients (هموفیلی، تالاسمی، دیالیز) at 0% for formulary drugs.
+  A patient in one of those groups is currently over-charged by the engine.

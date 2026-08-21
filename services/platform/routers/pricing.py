@@ -207,6 +207,13 @@ async def quote(body: QuoteRequest,
             # counter knows to price the item properly before dispensing it.
             "price_source": meta.get("price_source", "nfi_fallback"),
             "gross": float(b.gross), "covered": b.covered,
+            # The base the insurer actually recognised — reference × quantity,
+            # capped at the sale price. Without it a line shows a مابه‌التفاوت
+            # that nobody can check: the patient is told what they owe above the
+            # reference but not what the reference came to, and
+            # covered_base + differential == gross is the identity that makes
+            # the line auditable at the counter.
+            "covered_base": float(b.covered_base),
             "insurer_share": float(b.insurer_share), "patient_share": float(b.patient_share),
             "differential": float(b.differential), "vat": float(b.vat),
             "patient_total": float(b.patient_total),

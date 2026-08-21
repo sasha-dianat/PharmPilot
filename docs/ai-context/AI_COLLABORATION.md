@@ -1999,3 +1999,58 @@ absorbed here.
 E8 reorder point, E10 pick list), and none of it is blocked on code: it needs
 prescriptions flowing through the platform. ㉑ in particular wants two full
 years before it may make an annual claim.
+
+### 2026-08-17 — Claude (Opus 5) — the pricing engine did not add up
+
+- Workstream: `inventory-integrity` (pricing chain)
+- Branch: `feat/inventory-integrity`
+- `engine.py` has documented one identity since it was written:
+  `insurer_share + patient_total == gross + vat`. It was not true. A randomised
+  sweep of 48,000 lines broke it on **489 lines (~4%) at the DEFAULT whole-Rial
+  unit** and 820 (~7%) at the 1,000-Rial unit `config.py` explicitly invites a
+  pharmacy to set. Money appeared and vanished a Rial at a time on a receipt a
+  patient is handed, and the insurer was billed the difference.
+- Cause: `covered_base` and `differential` were each `_round`ed independently,
+  and `round(a) + round(b) ≠ round(a + b)`. Not hypothetical — `sell_price` and
+  `manual_shelf_price` are both `Numeric(12,4)`, so sub-Rial shelf prices are
+  ordinary, and fractional quantities are ordinary. Example that broke at the
+  default unit: 3,324.5 against a 1,662.25 reference over 30 units, out by 1 Rial.
+- Fix: the differential is DERIVED, `gross − covered_base`, never rounded on its
+  own. `ref_unit ≤ consumer_price` and quantize is monotone, so it is never
+  negative and `covered_base + differential == gross` holds **by construction at
+  any rounding unit**. It is also the truer reading of مابه‌التفاوت: the part of
+  the sale price the insurer does not recognise.
+- Three more found while testing:
+  * `ROUNDING_UNIT_RIAL` was bound at import (`from .config import …`). A
+    deployment that set a coarser unit kept rounding to the whole Rial until the
+    process restarted, and no test could change it. An engine documented as
+    config-driven now reads the config at call time.
+  * `Decimal(line.quantity)` on a float carried
+    `0.1000000000000000055511151231257827…` into every product below it. The
+    router stringified; the engine no longer depends on callers remembering.
+  * A negative quantity inverted the `ref×qty ≤ consumer×qty` assumption and
+    produced a negative insurer share. Now refused — a return is a different
+    operation, not a line with a minus sign.
+- `covered_base` is now on the quote line. A line showing مابه‌التفاوت without
+  the base it was measured against cannot be checked by whoever pays it.
+- **A false alarm worth recording**, because it will recur: the first run of the
+  verification script reported 80 broken lines at every rounding unit. The
+  engine was right and the CHECK was wrong — on an uncovered line `covered_base`
+  and `differential` are zero by design, so that identity does not apply. It
+  only ever fired under salamat, which marks rows uncovered that the other plans
+  fall back to covering. Rounding-independent + insurer-specific is the signature
+  of a wrong assertion, not a wrong calculation.
+- Verification: `tests/unit/test_pricing_ir.py` now carries a 5,376-combination
+  sweep (price × reference ratio × quantity × rounding unit × VAT × setting) plus
+  regression pins for both broken lines → **18 passed**.
+  `scripts/verify_pricing_conservation.py` drives the real `/pricing/quote`
+  against the working database (read-only) on real formulary rows — **4,608
+  priced lines across four rounding units, all identities holding**. It targets
+  the working DB deliberately: `pharmpilot_test` holds one priced row and none
+  with a reference, so running it there would report success while proving
+  nothing.
+- **Still unproven and now the only thing in the way**: the tariffs. The engine
+  is self-consistent; whether 30/70, حق فنی and the VAT exemptions match what a
+  real pharmacy charges is untested, and every one is VERIFY-tagged in the
+  config. Special populations (کمیته امداد/روستایی 15%, special-disease 0%) are
+  not modelled at all — such a patient is over-charged today.
