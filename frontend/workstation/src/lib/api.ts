@@ -354,6 +354,16 @@ export const inventoryEnginesApi = {
   // benchmark: every comparison is a price this pharmacy has already paid.
   negotiationBrief: (supplier: string) =>
     apiClient.get('/inventory/negotiation-brief', { params: { supplier } }),
+  // E7 — Jalali-month seasonality. Claims nothing below two complete cycles.
+  seasonality: (min_units = 50) =>
+    apiClient.get('/inventory/seasonality', { params: { min_units } }),
+  // E9 — the odds a lot expires unsold, where a probability is honest.
+  expiryOdds: (window_days = 28) =>
+    apiClient.get('/inventory/expiry-odds', { params: { window_days } }),
+  // E10 — the morning round, stocked to the 90th percentile rather than the
+  // average, because a shelf stocked to the average runs out half the time.
+  pickList: (cover_days = 1) =>
+    apiClient.get('/inventory/pick-list', { params: { cover_days } }),
 }
 
 // ── Recall cases: the pharmacy's response, not the notice ─────────────────

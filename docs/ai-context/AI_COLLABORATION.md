@@ -2176,3 +2176,95 @@ years before it may make an annual claim.
   full seasonal cycles before it may make an annual claim — so it can be built to
   refuse, but it will refuse for a long time. E10 pick list is the more useful
   one and needs storage locations more than history.
+
+### 2026-08-18 — Claude (Opus 5) — E7, E9, E10: the roster is complete
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- The last three engines on the roster. No migration — all three are read-only
+  computations over columns that already exist.
+
+**E7 / ㉑ seasonality — `seasonality.py`, `GET /inventory/seasonality`.**
+
+- Buckets by **Jalali month**, using the existing `services/core/localization/
+  jalali.py`. This is arithmetic, not decoration: Nowruz is 1 Farvardin every
+  year and drifts across 20-21 March, so a Gregorian March bucket splits the
+  new-year peak across two months and halves it. The school year turns on 1 Mehr,
+  which lands in September or October.
+- Two refusals carry it. **Two complete cycles or no claim, ever** — with one
+  turn of the year there is no second observation of any month, so a real peak
+  and one unusual month are the same data. And where the month explains less than
+  30% of the variance, the answer is "no detectable seasonality" rather than a
+  flat line with a shape drawn on it. The strength statistic is reported so the
+  claim can be argued with.
+- **Ramadan is not captured and every response says so.** It is lunar and moves
+  against the Jalali calendar as well, roughly eleven days a year, so it smears
+  across Jalali months exactly the way Nowruz smears across Gregorian ones.
+  Capturing it needs a Hijri conversion this codebase does not have. The effect
+  lands in the residual, which *depresses* the strength statistic — so the
+  omission makes a seasonal claim harder to make, not easier, which is the safe
+  direction for a gap to fail in.
+- On the pilot's data it will answer `insufficient_cycles` for a long time. That
+  is the engine working, not waiting.
+
+**E9 expiry probability — `expiry_probability.py`, `GET /inventory/expiry-odds`.**
+
+- E1 says a lot either clears or does not. Most real stock is in the middle, and
+  the middle is where the money is: a lot at 5% is not worth discounting, the same
+  lot at 60% is worth discounting today while a customer still exists, and E1 puts
+  both in the same bucket.
+- The guard is that the normal approximation is the central limit theorem doing
+  the work, and the theorem needs a sum of many things. A probability is quoted
+  only where the horizon is expected to contain ≥10 demand events, computed from
+  E6's measured interval. **Lumpy items are refused outright** — E6 declines to
+  forecast them and this declines to put a number on them, the same judgement
+  twice. No measured spread is also a refusal: the whole probability is a function
+  of σ.
+- Carries E1's FEFO allocation through, so lots expiring sooner take their share
+  of the same demand stream first. Charging every lot the item's whole demand is
+  the defect E1 was rebuilt to fix and it would have reappeared here unchanged.
+
+**E10 morning pick list — `pick_list.py`, `GET /inventory/pick-list`.**
+
+- The replenishment machinery already existed — shelves, placements, a
+  dual-verified session, a transfer ledger. What it never had was an answer to
+  *which items and how many*: `create_session` takes a list of NDCs somebody
+  typed in, so the intelligence in the morning round has been a person
+  remembering what ran out yesterday.
+- **A shelf stocked to the mean runs out half the time**, which is not a service
+  level anybody would choose out loud. The target is the 90th percentile of a
+  day's demand — except for items whose demand arrives whole, where a percentile
+  of a daily total is meaningless and the shelf needs one event.
+- Two refusals, physical rather than statistical, and both **drops rather than
+  warnings** because a warning on a picking list is read at speed by somebody
+  holding a crate: a refrigerated drug is never proposed for a room-temperature
+  shelf, and nothing quarantined, recalled or expired is ever picked. Shelf
+  capacity caps the request whatever the target says.
+- Items with no measured demand are left off and the omission is explained.
+  Shelf space is the one thing in a pharmacy that cannot be ordered more of.
+- The skipped list is rendered as prominently as the round: "not on the list"
+  reads as "not needed" unless the reason is given.
+
+**A defect found by running it.** `expiry-odds` ordered lots by `(ndc11,
+expiry_date)` only. Lots sharing an expiry date are entirely ordinary, and with
+no second key the FEFO cascade ran in whatever order the query planner returned —
+so the same shelf could be given different per-lot probabilities on two
+consecutive runs. Fixed with a `lot_number` tiebreak, matching what
+`pick_list._fefo` already did, and the verification now asserts twice-identical
+output.
+
+**Verification.** 54 new unit tests (16 E7, 18 E9, 20 E10).
+`scripts/verify_demand_shape.py` extended to cover all four Tier B engines end to
+end on a tenant with three deliberately-shaped dispensing histories → **39/39**,
+including the three-item table where the same rate produces reorder points of
+8.6 / 22.9 / 87.6 and pick-list targets of 2.3 / 14 / 80. `tsc --noEmit` clean.
+`pytest tests/unit -p no:randomly` → **1,896 passed, 1 failed**
+(`test_integrations_sandbox`, pre-existing and logged repeatedly above),
+1 xfailed, in 9:57.
+
+**The roster is complete.** Every engine E1–E14 plus ⑳ and ㉑ is built. What is
+*validated* is narrower and worth stating plainly: the arithmetic and the
+refusals. Forecast quality against real pharmacy behaviour is untested for every
+Tier B engine and will stay that way until the pilot dispenses — production holds
+46 fills across 7 NDCs on a single day. The engines are built to say so, and on
+that data they do.

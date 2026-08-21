@@ -232,6 +232,90 @@ async def main() -> int:
               b["signals"]["reorder_point"] is None,
               str(b["signals"]["reorder_point"]))
 
+        # ── E9: the odds a lot expires before it sells ──────────────────
+        odds = await IG.expiry_odds(WINDOW, staff, db)
+        by_ndc_odds: dict[str, list[dict]] = {}
+        for r in odds["lots"]:
+            by_ndc_odds.setdefault(r["ndc11"], []).append(r)
+        print("\n  E9:")
+        for k, ndc in ndcs.items():
+            for r in by_ndc_odds.get(ndc, []):
+                print(f"    {k:<13} {r['lot_number']:<15} p={r['probability']} "
+                      f"band={r['band']:<9} basis={r['basis']} "
+                      f"loss={r['expected_loss']}")
+
+        smooth_lots = by_ndc_odds.get(ndcs["smooth"], [])
+        lumpy_lots = by_ndc_odds.get(ndcs["lumpy"], [])
+        check("a probability is quoted for the steady seller",
+              any(r["probability"] is not None for r in smooth_lots),
+              str([r["basis"] for r in smooth_lots]))
+        check("and refused for the unforecastable one",
+              all(r["probability"] is None for r in lumpy_lots)
+              and all(r["basis"] == "unmodellable" for r in lumpy_lots),
+              str([r["basis"] for r in lumpy_lots]))
+        check("the refusal says why rather than showing a blank",
+              all("describes a different drug" in r["explanation"]
+                  for r in lumpy_lots))
+        # Lots sharing an expiry date are ordinary, and the cascade among them
+        # must not depend on what order the query planner felt like.
+        again = await IG.expiry_odds(WINDOW, staff, db)
+        check("the same shelf gives the same answer twice",
+              [(r["lot_id"], r["probability"]) for r in odds["lots"]]
+              == [(r["lot_id"], r["probability"]) for r in again["lots"]])
+        check("later lots inherit less demand than the first",
+              len(smooth_lots) < 2
+              or smooth_lots[0]["probability"] is None
+              or any("already spoken for" in c
+                     for r in smooth_lots[1:] for c in r["concerns"]),
+              str([r["concerns"] for r in smooth_lots[1:2]]))
+
+        # ── E7: two cycles, and this tenant has weeks ───────────────────
+        seas = await IG.seasonality(0, staff, db)
+        print(f"\n  E7: {seas['explanation']}")
+        judged = [s for s in seas["items"] if s["ndc11"] in ndcs.values()]
+        check("no seasonal claim is made from twelve weeks of history",
+              all(s["verdict"] == "insufficient_cycles" for s in judged),
+              str([s["verdict"] for s in judged]))
+        check("and each says how many cycles it actually has",
+              all(s["cycles"] < 2 and "are the same data" in s["explanation"]
+                  for s in judged))
+        check("Ramadan is declared uncaptured rather than silently missing",
+              all(any("Ramadan is lunar" in c for c in s["concerns"])
+                  for s in judged))
+
+        # ── E10: the morning round ──────────────────────────────────────
+        pick = await IG.morning_pick_list(1, WINDOW, staff, db)
+        print(f"\n  E10: {pick['explanation']}")
+        for l in pick["lines"]:
+            label = next((k for k, v in ndcs.items() if v == l["ndc11"]), l["ndc11"])
+            print(f"    {label:<13} on_shelf={l['on_shelf']} target={l['target']} "
+                  f"pull={l['pull']} class={l['demand_class']} "
+                  f"lots={[x['lot_number'] for x in l['lots']]}")
+        for s in pick["skipped"][:3]:
+            print(f"    skipped {s['ndc11']}: {s['reason']}")
+
+        lines = {next((k for k, v in ndcs.items() if v == l["ndc11"]), l["ndc11"]): l
+                 for l in pick["lines"]}
+        check("the three dispensed items are all on the round", 
+              {"smooth", "intermittent", "lumpy"} <= set(lines), str(list(lines)))
+        check("each is stocked above its own daily average",
+              all(lines[k]["target"] > 0 for k in ("smooth", "intermittent", "lumpy")))
+        check("the item that sells in bursts is stocked for a whole one",
+              lines["lumpy"]["target"] == 80.0, str(lines["lumpy"]["target"]))
+        check("and the steady one is not stocked like it",
+              lines["smooth"]["target"] < lines["lumpy"]["target"],
+              f"{lines['smooth']['target']} vs {lines['lumpy']['target']}")
+        check("oldest stock comes forward first",
+              all(l["lots"] == sorted(l["lots"], key=lambda x: x["expiry_date"] or "")
+                  for l in pick["lines"]))
+        check("the item nobody dispenses is left off rather than given a target",
+              any(s["ndc11"] == bare and s["reason"] == "no_measured_demand"
+                  for s in pick["skipped"]),
+              str([(s["ndc11"], s["reason"]) for s in pick["skipped"]][:4]))
+        check("and the omission is explained, not silent",
+              any("cannot be ordered more of" in s["explanation"]
+                  for s in pick["skipped"]))
+
     await engine.dispose()
     print(f"\n{'PASS' if not fails else 'FAIL: ' + ', '.join(fails)}\n")
     return 1 if fails else 0

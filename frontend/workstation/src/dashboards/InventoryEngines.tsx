@@ -21,14 +21,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryEnginesApi, apiErrorText } from '../lib/api'
 import { useLang } from '../lib/i18n'
 
-type Tab = 'advice' | 'count' | 'demand' | 'value' | 'suppliers' | 'shortages'
+type Tab = 'advice' | 'pick' | 'count' | 'demand' | 'season' | 'value'
+         | 'suppliers' | 'shortages'
 
 type Pair = readonly [string, string]
 
 const TABS: { id: Tab; label: Pair; hint: Pair }[] = [
   { id: 'advice', label: ['Advice', 'توصیه‌ها'], hint: ['What the engines propose, and your decision', 'پیشنهادهای موتورها و تصمیم شما'] },
   { id: 'count', label: ['Cycle counting', 'شمارش دوره‌ای'], hint: ['Where the counting hours go', 'کجا وقت شمارش صرف شود'] },
+  { id: 'pick', label: ['Morning round', 'نوبت صبح'], hint: ['What to bring from the depot before opening', 'پیش از بازگشایی چه چیزی از انبار بیاورید'] },
   { id: 'demand', label: ['Demand signal', 'سیگنال تقاضا'], hint: ['The measured consumption rate', 'نرخ مصرف اندازه‌گیری‌شده'] },
+  { id: 'season', label: ['Seasonality', 'فصلی بودن'], hint: ['Real annual patterns, by Jalali month — nothing claimed below two cycles', 'الگوهای واقعی سالانه بر پایهٔ ماه شمسی — زیر دو دوره ادعایی نمی‌شود'] },
   { id: 'shortages', label: ['Shortages', 'کمبودها'], hint: ['What is running out, and whether the market or one supplier is the cause', 'چه چیزی دارد تمام می‌شود و علت بازار است یا یک تأمین‌کننده'] },
   { id: 'suppliers', label: ['Suppliers', 'تأمین‌کنندگان'], hint: ['How long each one takes, and how much of an order turns up', 'هر کدام چقدر طول می‌کشند و چه مقدار از سفارش می‌رسد'] },
   { id: 'value', label: ['Value and shrinkage', 'ارزش و ضایعات'], hint: ['Stock value and the cost of losses', 'ارزش موجودی و بهای زیان'] },
@@ -115,6 +118,8 @@ export default function InventoryEngines() {
       {tab === 'advice' && <AdviceTab onMsg={setMsg} />}
       {tab === 'count' && <CountTab />}
       {tab === 'demand' && <DemandTab onMsg={setMsg} />}
+      {tab === 'pick' && <PickTab />}
+      {tab === 'season' && <SeasonTab />}
       {tab === 'shortages' && <ShortageTab />}
       {tab === 'suppliers' && <SupplierTab />}
       {tab === 'value' && <ValueTab />}
@@ -1065,6 +1070,225 @@ function ShortageTab() {
             {t(`${fa(data.unknown)} item(s) have too few settled order lines to judge. They are counted, not scored — a risk number from two deliveries would be a guess with a decimal point on it.`,
                `${fa(data.unknown)} قلم ردیف سفارش تسویه‌شدهٔ کافی برای داوری ندارند. شمرده می‌شوند اما امتیاز نمی‌گیرند — عددِ ریسک از دو تحویل، یک حدس با ممیز است.`)}
           </p>)}
+      </>)}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   E10 — the morning round
+
+   The skipped list is shown as prominently as the round itself. An item left
+   off because nobody has dispensed it, or because the depot is empty, is
+   information the person walking the floor needs — and "not on the list" reads
+   as "not needed" unless the omission is spelled out.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface PickLine {
+  ndc11: string; drug_name: string | null; shelf_label: string | null
+  on_shelf: number; target: number | null; shortfall: number; pull: number
+  lots: { lot_number: string; expiry_date: string | null; units: number }[]
+  demand_class: string; basis: string; depot_short: boolean; explanation: string
+}
+interface PickData {
+  lines: PickLine[]
+  skipped: { ndc11: string; reason: string; explanation: string }[]
+  units: number; depot_shortfalls: number; explanation: string
+  concerns: string[]; cover_days: number
+}
+
+const SKIP_REASON: Record<string, Pair> = {
+  no_measured_demand: ['No measured demand', 'مصرفی اندازه‌گیری نشده'],
+  storage_mismatch: ['Wrong storage condition', 'شرایط نگهداری نادرست'],
+  shelf_full: ['Shelf is full', 'قفسه پر است'],
+  depot_empty: ['Nothing in the depot', 'در انبار موجود نیست'],
+}
+
+function PickTab() {
+  const { t, tp, n: fa } = useLang()
+  const [coverDays, setCoverDays] = useState(1)
+  const { data, isLoading, error } = useQuery<PickData>({
+    queryKey: ['inv-pick', coverDays],
+    queryFn: () => inventoryEnginesApi.pickList(coverDays).then(r => r.data),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
+                      flex flex-wrap items-center gap-x-8 gap-y-3">
+        <label className="flex items-center gap-2 text-[12px]">
+          <span className="text-slate-400">{t('Cover until the next round (days)', 'پوشش تا نوبت بعد (روز)')}</span>
+          <input type="number" min={1} max={14} value={coverDays}
+            onChange={e => setCoverDays(Math.min(14, Math.max(1, Number(e.target.value) || 1)))}
+            className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1
+                       tabular-nums focus:outline-none focus:border-sky-500" />
+        </label>
+        {data && <>
+          <Metric label={t('Items', 'اقلام')} value={fa(data.lines.length)} />
+          <Metric label={t('Units to carry', 'واحد برای حمل')} value={fa(data.units)} />
+          <Metric label={t('Depot cannot cover', 'انبار پوشش نمی‌دهد')} value={fa(data.depot_shortfalls)} />
+        </>}
+      </div>
+
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
+      {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      {data && (<>
+        <p className="text-[11px] text-slate-500">{data.explanation}</p>
+        {data.concerns.map((c, i) => (
+          <p key={i} className="text-[11px] text-amber-300/90">• {c}</p>))}
+
+        {data.lines.length > 0 && (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-[12px]">
+                <thead className="text-slate-500 text-[11px]">
+                  <tr className="border-b border-slate-700">
+                    <th className="text-start font-normal py-1.5">{t('Shelf', 'قفسه')}</th>
+                    <th className="text-start font-normal">{t('Item', 'قلم')}</th>
+                    <th className="text-start font-normal">{t('On shelf', 'روی قفسه')}</th>
+                    <th className="text-start font-normal">{t('Target', 'هدف')}</th>
+                    <th className="text-start font-normal">{t('Bring', 'بیاورید')}</th>
+                    <th className="text-start font-normal">{t('From batch', 'از بچ')}</th>
+                    <th className="text-start font-normal">{t('Shape', 'الگو')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.lines.map(l => (
+                    <tr key={l.ndc11} className="border-b border-slate-800/60">
+                      <td className="py-1.5 font-mono text-slate-400">{l.shelf_label ?? '—'}</td>
+                      <td>
+                        <span className="font-mono text-slate-300">{l.ndc11}</span>
+                        {l.drug_name && <span className="text-slate-400 ms-2">{l.drug_name}</span>}
+                      </td>
+                      <td className="tabular-nums text-slate-400">{fa(l.on_shelf)}</td>
+                      <td className="tabular-nums text-slate-400">
+                        {l.target === null ? '—' : fa(l.target)}</td>
+                      <td className="tabular-nums font-semibold">
+                        {fa(l.pull)}
+                        {l.depot_short && (
+                          <span className="text-amber-300 ms-1" title={l.explanation}>!</span>)}
+                      </td>
+                      <td className="text-slate-400 font-mono text-[11px]">
+                        {l.lots.map(x => `${x.lot_number} (${fa(x.units)})`).join(', ')}</td>
+                      <td><ClassChip cls={l.demand_class} /></td>
+                    </tr>))}
+                </tbody>
+              </table>
+            </div>
+          </div>)}
+
+        {data.skipped.length > 0 && (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-1">
+            <p className="text-[11px] text-slate-400 font-semibold">
+              {t('Deliberately not on the round', 'عمداً در این نوبت نیست')}
+              <span className="text-slate-500 font-normal"> · {fa(data.skipped.length)}</span>
+            </p>
+            <p className="text-[11px] text-slate-500">
+              {t('“Not on the list” reads as “not needed” unless the reason is given.',
+                 '«در فهرست نیست» یعنی «لازم نیست»، مگر آنکه دلیلش گفته شود.')}
+            </p>
+            {data.skipped.slice(0, 25).map((s, i) => (
+              <p key={i} className="text-[11px] text-slate-400">
+                <span className="font-mono">{s.ndc11}</span>
+                <span className="text-slate-500"> — {SKIP_REASON[s.reason] ? tp(SKIP_REASON[s.reason]) : s.reason}</span>
+                <span className="text-slate-600"> · {s.explanation}</span>
+              </p>))}
+          </div>)}
+      </>)}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   E7 — seasonality, by Jalali month
+
+   The verdict is shown before any number. "Insufficient cycles" is the most
+   common answer for a long time and it is not a failure state — it is the
+   engine declining to buy for a season it cannot yet see.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface SeasonItem {
+  ndc11: string; drug_name: string | null; verdict: string; cycles: number
+  months_observed: number; total_units: number; strength: number | null
+  peak: { month: number; name: string; index: number | null } | null
+  trough: { month: number; name: string; index: number | null } | null
+  months: { month: number; name: string; observations: number
+            index: number | null; basis: string }[]
+  explanation: string; concerns: string[]
+}
+interface SeasonData {
+  items: SeasonItem[]; seasonal: number; insufficient_cycles: number
+  no_pattern: number; explanation: string; as_of: string
+}
+
+const SEASON_VERDICT: Record<string, { label: Pair; cls: string }> = {
+  seasonal: { label: ['Seasonal', 'فصلی'], cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' },
+  no_detectable_seasonality: { label: ['No pattern', 'بدون الگو'], cls: 'bg-slate-600/20 text-slate-400 border-slate-600' },
+  insufficient_cycles: { label: ['Not enough years', 'سال‌های کافی نیست'], cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+  no_history: { label: ['No history', 'سابقه‌ای نیست'], cls: 'bg-slate-600/20 text-slate-400 border-slate-600' },
+}
+
+function SeasonTab() {
+  const { t, tp, n: fa } = useLang()
+  const { data, isLoading, error } = useQuery<SeasonData>({
+    queryKey: ['inv-season'],
+    queryFn: () => inventoryEnginesApi.seasonality().then(r => r.data),
+  })
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] text-slate-500">
+        {t('Months are Jalali. Nowruz is 1 Farvardin every year and drifts across 20–21 March, so a Gregorian bucket splits the new-year peak in two and halves it.',
+           'ماه‌ها شمسی است. نوروز هر سال ۱ فروردین است و در تقویم میلادی میان ۲۰ و ۲۱ مارس جابه‌جا می‌شود؛ بنابراین دسته‌بندی میلادی اوج نوروز را دو نیم می‌کند.')}
+      </p>
+
+      {isLoading && <p className="text-sm text-slate-400">{t('Calculating…', 'در حال محاسبه…')}</p>}
+      {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      {data && (<>
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
+                        flex flex-wrap items-center gap-x-8 gap-y-3">
+          <Metric label={t('Seasonal', 'فصلی')} value={fa(data.seasonal)} />
+          <Metric label={t('No pattern', 'بدون الگو')} value={fa(data.no_pattern)} />
+          <Metric label={t('Not enough years', 'سال‌های کافی نیست')} value={fa(data.insufficient_cycles)} />
+          <p className="text-[11px] text-slate-500 max-w-lg">{data.explanation}</p>
+        </div>
+
+        <div className="space-y-2">
+          {data.items.slice(0, 40).map(s => {
+            const v = SEASON_VERDICT[s.verdict] ?? SEASON_VERDICT.no_history
+            return (
+              <div key={s.ndc11} className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 space-y-1">
+                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+                  <span className="font-mono text-[12px] text-slate-300">{s.ndc11}</span>
+                  {s.drug_name && <span className="text-[12px]">{s.drug_name}</span>}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${v.cls}`}>{tp(v.label)}</span>
+                  {s.strength !== null && (
+                    <Metric label={t('Strength', 'شدت')} value={`${fa(Math.round(s.strength * 100))}٪`} />)}
+                  <Metric label={t('Cycles', 'دوره‌ها')} value={fa(s.cycles)} />
+                </div>
+                {s.verdict === 'seasonal' && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {s.months.map(m => (
+                      <span key={m.month}
+                        title={m.index === null
+                          ? tp(['Seen too few times to quote', 'دفعات مشاهده برای اعلام کافی نیست'])
+                          : `${m.name}: ${m.index}\u00d7`}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border tabular-nums ${
+                          m.index === null ? 'bg-slate-800 border-slate-700 text-slate-600'
+                          : m.index >= 1.2 ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                          : m.index <= 0.8 ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                          : 'bg-slate-700/40 border-slate-600 text-slate-400'}`}>
+                        {m.name.slice(0, 3)} {m.index === null ? '—' : fa(m.index)}
+                      </span>))}
+                  </div>)}
+                <p className="text-[11px] text-slate-400">{s.explanation}</p>
+                {s.concerns.map((c, i) => (
+                  <p key={i} className="text-[11px] text-slate-500">• {c}</p>))}
+              </div>)
+          })}
+        </div>
       </>)}
     </div>
   )

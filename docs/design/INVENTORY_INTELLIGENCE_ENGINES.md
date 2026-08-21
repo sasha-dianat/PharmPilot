@@ -76,10 +76,10 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 | Engine | Question | Blocked on |
 |---|---|---|
 | **E6 Intermittent demand** — **built 2026-08-18** | What *shape* the demand has, which a rate cannot express | Nothing to build. `intermittent.py` classifies (Syntetos–Boylan) and sets an event-cover floor on the reorder point; it degrades to `unknown` until an item has three demand events. Real *validation* still needs months of dispensing |
-| **E7 Seasonality decomposition** *(new)* | Is this a real annual pattern or last month's noise | ≥2 seasonal cycles; before that it reports "insufficient cycles" |
+| **E7 / ㉑ Seasonality** *(new)* — **built 2026-08-18** | Is this a real annual pattern or last month's noise | Nothing to build. `seasonality.py`, Jalali-month buckets, at `GET /inventory/seasonality`. It will answer `insufficient_cycles` until the pilot has two full years, and that is the engine working |
 | **E8 Reorder point / safety stock** — **live 2026-08-18** | When to order and how much cover | Nothing. Fed by E6's shape and E11's per-supplier lead time; returns None where either input is unmeasured rather than assuming one |
-| **E9 Expiry-before-sale probability** | Upgrade of E1 from deterministic to probabilistic | E6's variance |
-| **E10 Morning pick list** (supervision §6) | What to pull from depot to shelf before opening | E6 at q85–q90 |
+| **E9 Expiry-before-sale probability** — **built 2026-08-18** | Upgrade of E1 from deterministic to probabilistic | Nothing. `expiry_probability.py` at `GET /inventory/expiry-odds`; refuses a probability where the normal approximation has too few demand events behind it |
+| **E10 Morning pick list** (supervision §6) — **built 2026-08-18** | What to pull from depot to shelf before opening | Nothing. `pick_list.py` at `GET /inventory/pick-list`, stocked to the 90th percentile — or to one whole demand event where demand arrives whole |
 
 ### Tier C — needs supplier event history
 
@@ -301,8 +301,45 @@ Ordered by *value per unit of available data*, not by ambition.
      now returns no cover rather than assumed cover, which is the same rule the
      demand signal itself follows.
 
-   Still Tier B and still waiting: E7/㉑ seasonality (two full years), E9
-   (E6's variance), E10 pick list.
+   *E7, E9 and E10 done, 2026-08-18 — the roster is complete.*
+
+   **E7/㉑ seasonality** buckets by **Jalali month**, and that is arithmetic
+   rather than decoration: Nowruz is 1 Farvardin every year and drifts across
+   20–21 March, so a Gregorian March bucket splits the new-year peak across two
+   months and halves it; the school year turns on 1 Mehr, which lands in
+   September or October. Two refusals carry it — nothing is claimed below two
+   complete cycles (one cold season is an anecdote, and a system that buys for a
+   season that never comes is worse than one that does not try), and where the
+   month explains less than 30% of the variance the answer is "no detectable
+   seasonality" rather than a flat line with a shape drawn on it. **Ramadan is
+   lunar and moves against the Jalali calendar too, so it is not captured** — it
+   lands in the residual, which depresses the strength statistic and therefore
+   makes a claim harder to make rather than easier. That is stated in every
+   response rather than left as a silent gap.
+
+   **E9 expiry probability** gives E1 the middle it has no vocabulary for. A lot
+   with a 5% chance of expiring is not worth discounting; the same lot at 60% is
+   worth discounting today, while a customer still exists, and E1 puts both in
+   the same bucket. The guard is that a normal approximation is the central limit
+   theorem doing the work, and the theorem needs a sum of many things — so a
+   probability is quoted only where the horizon is expected to contain at least
+   ten demand events, computed from E6's measured interval. Lumpy items are
+   refused outright: E6 declines to forecast them and this declines to put a
+   number on them, which is the same judgement twice.
+
+   **E10 morning pick list** answers the question the replenishment machinery
+   never had: `create_session` takes a list of NDCs somebody typed in, so the
+   intelligence in the morning round has been a person remembering what ran out
+   yesterday. The target is the 90th percentile of a day's demand, because **a
+   shelf stocked to the mean runs out half the time** — except for items whose
+   demand arrives whole, where a percentile of a daily total is meaningless and
+   the shelf needs one event. Two refusals are physical rather than statistical:
+   a refrigerated drug is never proposed for a room-temperature shelf, and
+   nothing quarantined, recalled or expired is ever picked. Both are drops rather
+   than warnings, because a warning on a picking list is read at speed by
+   somebody holding a crate. Items with no measured demand are left off and the
+   omission is explained — shelf space is the one thing in a pharmacy that cannot
+   be ordered more of.
 
 Every engine reports into the **recommendation ledger** built on 2026-08-09, so
 each one's acceptance rate is visible from its first week and a detector that is

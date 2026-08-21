@@ -28,7 +28,10 @@ from services.core.inventory import anomaly_bridge as AB
 from services.core.inventory import clock as CLK
 from services.core.inventory import cycle_count as CC
 from services.core.inventory import expiry_risk as ER
+from services.core.inventory import expiry_probability as EXP
 from services.core.inventory import intermittent as IM
+from services.core.inventory import pick_list as PICK
+from services.core.inventory import seasonality as SEA
 from services.core.inventory import recommendations as RC
 from services.core.inventory import valuation as VAL
 from services.core.inventory import ledger as L
@@ -1600,3 +1603,223 @@ async def negotiation_brief(
                     safety_stock=safety,
                     months_of_history=int(months) if months is not None else None)
     return out.as_dict()
+
+
+# ── E7 / ㉑: is this a real annual pattern, or last month being unusual? ──
+
+@router.get("/seasonality")
+async def seasonality(
+    min_units: int = Query(50, ge=0, description="skip items too small to judge"),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Which items have a real seasonal pattern, bucketed by Jalali month.
+
+    The buckets matter arithmetically, not decoratively. Nowruz is 1 Farvardin
+    every year and drifts across 20-21 March, so a Gregorian March bucket splits
+    the new-year peak across two months and halves it; the school year turns on
+    1 Mehr, which lands in September or October.
+
+    Nothing is claimed below two complete cycles. One cold season is an anecdote,
+    and a system that buys for a season that never comes is worse than one that
+    does not try.
+    """
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
+    # Three years, so two complete cycles are reachable at all.
+    _stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, 365 * 3)
+
+    names = {r["ndc11"]: r["generic_name"] for r in (await db.execute(text(
+        "SELECT ndc11, generic_name FROM drug_products WHERE ndc11 = ANY(:n)"),
+        {"n": list(by_ndc)})).mappings().all()} if by_ndc else {}
+
+    out = []
+    for ndc, fills in by_ndc.items():
+        total = sum(float(f.get("quantity_dispensed") or 0) for f in fills)
+        if total < min_units:
+            continue
+        s = SEA.assess(ndc, fills, as_of=today)
+        out.append({**s.as_dict(), "drug_name": names.get(ndc)})
+
+    ranked = sorted(out, key=lambda s: -(s["strength"] or 0))
+    seasonal = [s for s in ranked if s["verdict"] == "seasonal"]
+    return {
+        "items": ranked, "as_of": today.isoformat(),
+        "seasonal": len(seasonal),
+        "insufficient_cycles": sum(1 for s in ranked
+                                   if s["verdict"] == "insufficient_cycles"),
+        "no_pattern": sum(1 for s in ranked
+                          if s["verdict"] == "no_detectable_seasonality"),
+        "explanation": (
+            f"{len(seasonal)} of {len(ranked)} item(s) show a seasonal pattern "
+            f"strong enough to act on. Buckets are Jalali months; Ramadan is "
+            f"lunar and is not captured, which understates seasonality rather "
+            f"than inventing it." if ranked else
+            "No item has enough dispensing history to judge. A seasonal claim "
+            "needs two complete turns of the year and none is made without "
+            "them."),
+    }
+
+
+# ── E9: the odds a lot expires before it sells ───────────────────────────
+
+@router.get("/expiry-odds")
+async def expiry_odds(
+    window_days: int = Query(DEMAND_WINDOW_DAYS, ge=7, le=365),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """E1's deterministic verdict, upgraded to a probability where one is honest.
+
+    A lot with a 5% chance of expiring is not worth discounting; the same lot at
+    60% is worth discounting today, while there is still a customer for it. E1
+    puts both in the same bucket.
+
+    A probability is quoted only where the normal approximation has enough demand
+    events behind it to mean something. Everywhere else the deterministic verdict
+    stands and the refusal says why.
+    """
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
+    _stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, window_days)
+
+    lots = [dict(r) for r in (await db.execute(text("""
+        SELECT il.id AS lot_id, il.ndc11, il.lot_number, il.expiry_date,
+               il.quantity_on_hand, il.unit_cost, dp.generic_name
+        FROM inventory_lots il
+        LEFT JOIN drug_products dp ON dp.ndc11 = il.ndc11
+        WHERE il.pharmacy_id = :pid AND il.is_deleted = false
+          AND COALESCE(il.quantity_on_hand, 0) > 0
+          AND COALESCE(il.is_quarantined, false) = false
+        -- lot_number breaks the tie. Lots sharing an expiry date are a normal
+        -- case, and without a second key the FEFO cascade below runs in
+        -- whatever order the planner returned — so the same shelf could be
+        -- given different per-lot answers on two consecutive runs.
+        ORDER BY il.ndc11, il.expiry_date, il.lot_number"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+
+    patterns = {ndc: IM.assess(ndc, fills, window_days=window_days, as_of=today)
+                for ndc, fills in by_ndc.items()}
+
+    results, consumed = [], {}
+    for l in lots:
+        ndc = l["ndc11"]
+        p = patterns.get(ndc)
+        days_left = ((l["expiry_date"] - today).days
+                     if l["expiry_date"] else 0)
+        # FEFO: lots expiring sooner take their share of the same demand stream
+        # first. Charging every lot the item's whole demand is the defect E1 was
+        # rebuilt to fix, and it would reappear here unchanged.
+        earlier = consumed.get(ndc, 0)
+        o = EXP.assess_lot(
+            lot_id=str(l["lot_id"]), ndc11=ndc, units=l["quantity_on_hand"],
+            days_left=days_left,
+            avg_daily_demand=p.mean_rate if p else None,
+            stdev_daily=p.stdev_daily if p else None,
+            unit_cost=l["unit_cost"],
+            demand_class=p.demand_class if p else "unknown",
+            adi=p.adi if p else None,
+            consumed_by_earlier=earlier)
+        consumed[ndc] = earlier + float(l["quantity_on_hand"] or 0)
+        results.append({**o.as_dict(), "lot_number": l["lot_number"],
+                        "drug_name": l["generic_name"],
+                        "expiry_date": (l["expiry_date"].isoformat()
+                                        if l["expiry_date"] else None)})
+
+    priced = [r for r in results if r["expected_loss"] is not None]
+    return {
+        "lots": sorted(results, key=lambda r: -(r["expected_loss"] or 0)),
+        "as_of": today.isoformat(),
+        "quantified": sum(1 for r in results if r["probability"] is not None),
+        "expected_loss": round(sum(r["expected_loss"] for r in priced), 2),
+        "worth_discounting": [r["lot_id"] for r in results
+                              if r["band"] in ("likely", "possible")],
+        "explanation": (
+            f"{sum(1 for r in results if r['probability'] is not None)} of "
+            f"{len(results)} lot(s) have enough demand history behind them for a "
+            f"probability to mean anything. The rest keep E1's deterministic "
+            f"verdict, and each says why."),
+    }
+
+
+# ── E10: what to bring from the depot before the doors open ──────────────
+
+@router.get("/pick-list")
+async def morning_pick_list(
+    cover_days: int = Query(1, ge=1, le=14),
+    window_days: int = Query(84, ge=28, le=365),
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The morning round: which items, how many, and from which lots.
+
+    The replenishment session machinery already existed; what it never had was an
+    answer to *which items and how many*. `create_session` takes a list somebody
+    typed in, so the intelligence in the morning round has been a person
+    remembering what ran out yesterday.
+
+    The target is the 90th percentile of a day's demand, not the average, because
+    a shelf stocked to the average runs out half the time.
+    """
+    _tz, today = await _pharmacy_clock(db, staff.pharmacy_id)
+    _stock, by_ndc = await _demand_inputs(db, staff.pharmacy_id, window_days)
+    p = {"pid": staff.pharmacy_id}
+
+    # On the shelf now, and which shelf it lives on.
+    placed = {r["ndc11"]: dict(r) for r in (await db.execute(text("""
+        SELECT sp.ndc11, SUM(sp.units) AS on_shelf,
+               MIN(sh.id::text) AS shelf_id, MIN(sh.label) AS shelf_label,
+               MIN(sh.storage_condition) AS storage_condition,
+               MIN(sh.capacity_units) AS capacity_units,
+               MIN(sh.current_units) AS current_units
+        FROM shelf_placements sp
+        JOIN pharmacy_shelves sh ON sh.id = sp.shelf_id
+        WHERE sp.pharmacy_id = :pid AND sp.is_deleted = false
+        GROUP BY sp.ndc11"""), p)).mappings().all()}
+
+    # Depot back-stock is computed, never stored: what the lot holds minus what
+    # is already out on a shelf.
+    lots = [dict(r) for r in (await db.execute(text("""
+        SELECT il.id, il.ndc11, il.lot_number, il.expiry_date,
+               COALESCE(il.is_quarantined, false) AS is_quarantined,
+               COALESCE(il.is_recalled, false) AS is_recalled,
+               COALESCE(il.quantity_on_hand, 0)
+                 - COALESCE((SELECT SUM(sp.units) FROM shelf_placements sp
+                             WHERE sp.inventory_lot_id = il.id
+                               AND sp.is_deleted = false), 0) AS available,
+               dp.generic_name,
+               COALESCE(dp.requires_refrigeration, false) AS requires_refrigeration
+        FROM inventory_lots il
+        LEFT JOIN drug_products dp ON dp.ndc11 = il.ndc11
+        WHERE il.pharmacy_id = :pid AND il.is_deleted = false
+        ORDER BY il.ndc11, il.expiry_date"""), p)).mappings().all()]
+
+    by_lot_ndc: dict[str, list[dict]] = {}
+    meta: dict[str, dict] = {}
+    for l in lots:
+        by_lot_ndc.setdefault(l["ndc11"], []).append(l)
+        meta.setdefault(l["ndc11"], {
+            "drug_name": l["generic_name"],
+            "requires_refrigeration": l["requires_refrigeration"]})
+
+    items = []
+    for ndc in sorted(set(by_lot_ndc) | set(placed) | set(by_ndc)):
+        sh = placed.get(ndc)
+        items.append({
+            "ndc11": ndc,
+            "drug_name": (meta.get(ndc) or {}).get("drug_name"),
+            "requires_refrigeration": (meta.get(ndc) or {}).get(
+                "requires_refrigeration", False),
+            "on_shelf": (sh or {}).get("on_shelf") or 0,
+            "shelf": ({"id": sh["shelf_id"], "label": sh["shelf_label"],
+                       "storage_condition": sh["storage_condition"],
+                       "capacity_units": sh["capacity_units"],
+                       "current_units": sh["current_units"]} if sh else None),
+            "depot_lots": by_lot_ndc.get(ndc, []),
+            "fills": by_ndc.get(ndc, []),
+        })
+
+    result = PICK.build(items, as_of=today, cover_days=cover_days,
+                        window_days=window_days)
+    out = result.as_dict()
+    out["as_of"] = today.isoformat()
+    out["cover_days"] = cover_days
+    return out
