@@ -2112,3 +2112,67 @@ years before it may make an annual claim.
   `scripts/verify_pricing_conservation.py` → 4,608 real formulary lines at four
   rounding units, all identities holding with the new fee in place. Full suite:
   **1 failed, 1,813 passed** (`test_integrations_sandbox`, pre-existing ordering).
+
+### 2026-08-18 — Claude (Opus 5) — E6: two items with the same rate and nothing else in common
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- Roster step 6, first of Tier B. `services/core/inventory/intermittent.py`, wired
+  into `POST /inventory/demand/refresh`. No migration — nothing new is stored;
+  the classification feeds the reorder point that column already held.
+- **The roster's framing was "Croston/TSB, not ARIMA", and building it corrected
+  that.** Croston is implemented and reported, but it is not what makes E6 worth
+  having: a mean over the window is already an unbiased estimate of the long-run
+  rate, and beating it is not the problem. The problem is that a rate cannot
+  express *shape*. Measured through the refresh endpoint on real rows:
+
+      2 units a day, most days      2.00/day   reorder point   8.6
+      14 units every week           2.00/day   reorder point  22.9
+      5, 60, 12, 80, 8 at random    1.96/day   reorder point  87.6
+
+  A tenfold spread between items whose rates differ by less than 0.2 units a day.
+- Classification is Syntetos-Boylan on ADI and CV² of event sizes, **at the
+  published cut-offs (1.32 / 0.49) rather than house values** — tuning them here
+  would make the scheme unfalsifiable against the literature it comes from.
+  `lumpy` is the honest quadrant: rare events of wildly varying size cannot be
+  forecast well by any method, so the engine reports the size of one event and
+  says plainly that a daily figure would be a claim about accuracy nobody can
+  support.
+- `lead_time.reorder_signals` gained an **event-cover floor**. It is a floor, not
+  an override: for a *regular* burst pattern the daily-bucket σ — with the zeros
+  in it — already covers one event, and raising nothing there is correct. In the
+  verification it bit on the lumpy item and on nothing else.
+- **Two corrections to my own first design, both found by running it:**
+  - Croston cannot detect a moving rate at α = 0.1. When demand rises the
+    smoothed size climbs while the smoothed interval shortens, and the two
+    effects very nearly cancel in the ratio — on a series that went from 2 units
+    a week to 60 every three days, SBA and the mean differed by **1%**. The
+    drift detector was rebuilt on a half-window comparison, which needs no
+    smoothing constant to argue about and lets both numbers be shown. The first
+    version would have shipped a detector that never fired.
+  - A unit test I expected to pass caught a fixture that generated 60 daily fills
+    into an 84-day window, so the series began a third of the way in. The drift
+    detector called it "rising" and was right — that is an item that *started
+    selling*, not a steady one.
+- **A latent fabrication removed.** `reorder_signals` turned an unmeasured spread
+  into `demand × 0.5` — an invented coefficient of variation presented as a
+  safety stock, and several-fold too small for exactly the lumpy items that most
+  need cover. It now returns no cover rather than assumed cover. Currently
+  reachable only by callers other than `refresh_demand`, so this is a trap
+  removed rather than a live defect fixed.
+- **Data honesty.** Production has 46 fills across 7 NDCs on a single day;
+  `pharmpilot_test` has 19 days and no item with more than 5 dispensing days.
+  Neither can validate a forecast. The unit tests pin the arithmetic on synthetic
+  series and `scripts/verify_demand_shape.py` writes three deliberately-shaped
+  dispensing histories and drives the real endpoint — so what is proven is the
+  classification, the floor, and the degradation. **Forecast quality against real
+  pharmacy behaviour is not proven and cannot be until the pilot dispenses.**
+- Verification: 25 new unit tests for E6, 4 more for the reorder floor;
+  `scripts/verify_demand_shape.py` → 24/24; the three earlier scripts still pass
+  (30/30, 27/27, 28/28). `pytest tests/unit -p no:randomly` → **1,842 passed,
+  1 failed** (`test_integrations_sandbox`, pre-existing and logged repeatedly
+  above), 1 xfailed, in 5:52. `tsc --noEmit` clean.
+- Next: E7/㉑ seasonality is the only Tier B engine with a hard data gate — two
+  full seasonal cycles before it may make an annual claim — so it can be built to
+  refuse, but it will refuse for a long time. E10 pick list is the more useful
+  one and needs storage locations more than history.

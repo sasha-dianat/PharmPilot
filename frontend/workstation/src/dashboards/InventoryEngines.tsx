@@ -405,9 +405,20 @@ interface RefreshRow {
   ndc11: string; stored_adq: number | null; new_adq: number | null
   basis: string; confidence: number; units_observed: number
   window_days: number; changed: boolean; verdict: string; explanation: string
+  supplier?: string | null
   signals: {
     reorder_point: number | null; safety_stock: number | null
     lead_time_basis: string; lead_time_days: number; explanation: string
+    demand_class: string; event_floor: number | null; floor_applied: boolean
+  }
+  // E6 — the shape behind the rate.
+  pattern: {
+    demand_class: string; adi: number | null; cv2: number | null
+    typical_event: number | null; largest_event: number | null
+    mean_rate: number | null; drifting: boolean; direction: string
+    earlier_rate: number | null; recent_rate: number | null
+    forecastable: boolean; basis: string; concerns: string[]
+    explanation: string
   }
 }
 interface Refresh {
@@ -417,7 +428,54 @@ interface Refresh {
   summary: {
     items: number; changed: number; by_basis: Record<string, number>
     prior_signal_verdict: Record<string, number>; reorder_points_set: number
+    by_demand_class: Record<string, number>; covered_for_one_event: number
   }
+}
+
+/**
+ * The shape of an item's demand, which a rate cannot express.
+ *
+ * Two units a day and forty units once every three weeks are the same rate and
+ * want completely different reorder points. `lumpy` is deliberately worded as a
+ * limitation rather than a category: rare events of wildly varying size cannot
+ * be forecast well by anything, and the useful output there is the size of one
+ * event, not a daily figure.
+ */
+const DEMAND_CLASS: Record<string, { label: Pair; cls: string; title: Pair }> = {
+  smooth: {
+    label: ['Steady', 'یکنواخت'], cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
+    title: ['Moves most days in steady quantities — a rate describes it well',
+            'بیشتر روزها با مقدار ثابت مصرف می‌شود — نرخ آن را به‌خوبی توصیف می‌کند'],
+  },
+  intermittent: {
+    label: ['In bursts', 'دوره‌ای'], cls: 'bg-sky-500/15 text-sky-300 border-sky-500/40',
+    title: ['Moves in bursts with quiet stretches — cover has to serve a whole burst',
+            'به‌صورت دوره‌ای با فاصله‌های خالی مصرف می‌شود — پوشش باید یک دورهٔ کامل را جواب دهد'],
+  },
+  erratic: {
+    label: ['Uneven', 'ناهموار'], cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+    title: ['Moves most days but in unpredictable quantities',
+            'بیشتر روزها مصرف می‌شود اما با مقادیر غیرقابل پیش‌بینی'],
+  },
+  lumpy: {
+    label: ['Cannot be forecast', 'قابل پیش‌بینی نیست'], cls: 'bg-rose-500/15 text-rose-300 border-rose-500/40',
+    title: ['Rare and unpredictable in both timing and size — no method forecasts this well, so plan cover for one event rather than a daily rate',
+            'هم در زمان و هم در مقدار نادر و غیرقابل پیش‌بینی — هیچ روشی این را خوب پیش‌بینی نمی‌کند؛ به‌جای نرخ روزانه، پوشش یک نوبت را برنامه‌ریزی کنید'],
+  },
+  unknown: {
+    label: ['Not yet classified', 'هنوز طبقه‌بندی نشده'], cls: 'bg-slate-600/20 text-slate-400 border-slate-600',
+    title: ['Too few demand events to describe a shape', 'رویدادهای مصرف برای توصیف الگو کافی نیست'],
+  },
+}
+
+function ClassChip({ cls }: { cls: string }) {
+  const { tp } = useLang()
+  const c = DEMAND_CLASS[cls] ?? DEMAND_CLASS.unknown
+  return (
+    <span title={tp(c.title)}
+      className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${c.cls}`}>
+      {tp(c.label)}
+    </span>)
 }
 
 const PRIOR_VERDICT: Record<string, { label: Pair; cls: string }> = {
@@ -468,6 +526,10 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
           <Metric label={t('Items', 'اقلام')} value={fa(data.summary.items)} />
           <Metric label={t('Will change', 'تغییر می‌کند')} value={fa(data.summary.changed)} />
           <Metric label={t('Reorder point determinable', 'نقطهٔ سفارش قابل تعیین')} value={fa(data.summary.reorder_points_set)} />
+          <Metric label={t('Cannot be forecast', 'قابل پیش‌بینی نیست')}
+                  value={fa(data.summary.by_demand_class?.lumpy ?? 0)} />
+          <Metric label={t('Covered for one event', 'پوشش یک نوبت')}
+                  value={fa(data.summary.covered_for_one_event ?? 0)} />
           <div>
             <div className="text-[10px] text-slate-500">{t('Lead time', 'زمان تدارک')}</div>
             <div className="flex items-center gap-1.5">
@@ -500,6 +562,7 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
                   <th className="text-start font-normal">{t('Current value', 'مقدار فعلی')}</th>
                   <th className="text-start font-normal">{t('New value', 'مقدار جدید')}</th>
                   <th className="text-start font-normal">{t('Basis', 'منشأ')}</th>
+                  <th className="text-start font-normal">{t('Shape', 'الگو')}</th>
                   <th className="text-start font-normal">{t('Observed consumption', 'مصرف مشاهده‌شده')}</th>
                   <th className="text-start font-normal">{t('Reorder point', 'نقطهٔ سفارش')}</th>
                   <th className="text-start font-normal">{t('Prior value', 'وضعیت مقدار قبلی')}</th>
@@ -519,6 +582,20 @@ function DemandTab({ onMsg }: { onMsg: (m: { kind: 'ok' | 'err'; text: string })
                           : <span className="text-slate-100 font-semibold">{fa(r.new_adq)}</span>}
                       </td>
                       <td><BasisChip basis={r.basis} /></td>
+                      <td className="whitespace-nowrap">
+                        <ClassChip cls={r.pattern?.demand_class ?? 'unknown'} />
+                        {r.pattern?.typical_event != null
+                         && r.pattern.demand_class !== 'smooth'
+                         && r.pattern.demand_class !== 'unknown' && (
+                          <span className="text-[10px] text-slate-500 ms-1 tabular-nums"
+                                title={tp(['One typical demand event. Cover has to serve this, not the daily average.',
+                                           'یک نوبت معمول مصرف. پوشش باید همین را جواب دهد، نه میانگین روزانه.'])}>
+                            ×{fa(r.pattern.typical_event)}</span>)}
+                        {r.pattern?.drifting && (
+                          <span className="text-[10px] text-amber-300 ms-1"
+                                title={r.pattern.concerns.join(' · ')}>
+                            {r.pattern.direction === 'falling' ? '↓' : '↑'}</span>)}
+                      </td>
                       <td className="tabular-nums text-slate-400">
                         {t(`${fa(r.units_observed)} in ${fa(r.window_days)} d`,
                            `${fa(r.units_observed)} در ${fa(r.window_days)} روز`)}</td>

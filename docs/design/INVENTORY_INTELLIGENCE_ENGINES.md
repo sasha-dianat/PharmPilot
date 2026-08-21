@@ -75,9 +75,9 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 
 | Engine | Question | Blocked on |
 |---|---|---|
-| **E6 Intermittent demand forecast** | How much will actually sell | dispense history. **Croston/TSB, not ARIMA** — pharmacy line-item demand is mostly zeros, and a mean fitted to zeros is a lie |
+| **E6 Intermittent demand** — **built 2026-08-18** | What *shape* the demand has, which a rate cannot express | Nothing to build. `intermittent.py` classifies (Syntetos–Boylan) and sets an event-cover floor on the reorder point; it degrades to `unknown` until an item has three demand events. Real *validation* still needs months of dispensing |
 | **E7 Seasonality decomposition** *(new)* | Is this a real annual pattern or last month's noise | ≥2 seasonal cycles; before that it reports "insufficient cycles" |
-| **E8 Reorder point / safety stock** (built, dormant) | When to order and how much cover | E6 + measured lead time |
+| **E8 Reorder point / safety stock** — **live 2026-08-18** | When to order and how much cover | Nothing. Fed by E6's shape and E11's per-supplier lead time; returns None where either input is unmeasured rather than assuming one |
 | **E9 Expiry-before-sale probability** | Upgrade of E1 from deterministic to probabilistic | E6's variance |
 | **E10 Morning pick list** (supervision §6) | What to pull from depot to shelf before opening | E6 at q85–q90 |
 
@@ -260,6 +260,49 @@ Ordered by *value per unit of available data*, not by ambition.
    the fingerprint exists to protect.
 6. **E6 demand, E7 seasonality, E8 reorder point, E10 pick list** — as history
    accumulates, in that order.
+
+   *E6 and E8 done, 2026-08-18.* The framing in this document was
+   "Croston/TSB, not ARIMA", and building it corrected that. Croston is in
+   `intermittent.py` and reported, but it is **not** what makes E6 worth having.
+   A mean over the window is already an unbiased estimate of the long-run rate;
+   beating it is not the problem. The problem is that a rate cannot express
+   *shape*:
+
+   | | rate | reorder point |
+   |---|---|---|
+   | 2 units a day, most days | 2.00/day | **8.6** |
+   | 14 units every week | 2.00/day | **22.9** |
+   | 5, 60, 12, 80, 8 at random | 1.96/day | **87.6** |
+
+   Those three reorder points are measured, from the refresh endpoint, on items
+   whose rates differ by less than 0.2 units a day. Classification is
+   Syntetos–Boylan on ADI and CV² of event sizes, at the published cut-offs
+   rather than house values — inventing our own would make the scheme
+   unfalsifiable against the literature it comes from. **Lumpy is the honest
+   quadrant**: rare events of wildly varying size cannot be forecast well by any
+   method, so the engine says so and reports the size of one event instead of a
+   daily figure.
+
+   The reorder point gained an **event-cover floor** for intermittent and lumpy
+   items. It is a floor and not an override: for a *regular* burst pattern the
+   daily-bucket σ — with the zeros in it — already covers an event, and raising
+   nothing there is correct. It bit on the lumpy item and on nothing else.
+
+   Two things found by building it, both corrections to my own first design:
+   - **Croston cannot detect a moving rate at α = 0.1.** When demand rises the
+     smoothed size climbs while the smoothed interval shortens, and the two
+     effects nearly cancel in the ratio. On a series that went from 2 units a
+     week to 60 every three days, SBA and the mean differed by 1%. Drift is
+     measured by halving the window instead — crude, but it needs no smoothing
+     constant to argue about and both numbers can be shown.
+   - **`reorder_signals` was inventing a variance.** An unmeasured spread became
+     `demand × 0.5` — a coefficient of variation presented as a safety stock,
+     several-fold too small for exactly the lumpy items that most need cover. It
+     now returns no cover rather than assumed cover, which is the same rule the
+     demand signal itself follows.
+
+   Still Tier B and still waiting: E7/㉑ seasonality (two full years), E9
+   (E6's variance), E10 pick list.
 
 Every engine reports into the **recommendation ledger** built on 2026-08-09, so
 each one's acceptance rate is visible from its first week and a detector that is

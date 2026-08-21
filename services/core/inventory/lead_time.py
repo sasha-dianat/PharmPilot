@@ -185,6 +185,11 @@ class ReorderSignals:
     lead_time_days: int
     confidence: float
     explanation: str
+    # E6: the shape of the demand this was computed from, and whether the shape
+    # rather than the arithmetic set the floor.
+    demand_class: str = "unknown"
+    event_floor: Decimal | None = None
+    floor_applied: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -194,12 +199,17 @@ class ReorderSignals:
             "lead_time_basis": self.lead_time_basis,
             "lead_time_days": self.lead_time_days,
             "confidence": self.confidence,
+            "demand_class": self.demand_class,
+            "event_floor": None if self.event_floor is None else float(self.event_floor),
+            "floor_applied": self.floor_applied,
             "explanation": self.explanation,
         }
 
 
 def reorder_signals(*, avg_daily_demand, demand_basis: str,
-                    demand_stdev=None, lead: LeadTime) -> ReorderSignals:
+                    demand_stdev=None, lead: LeadTime,
+                    demand_class: str = "unknown",
+                    event_floor=None) -> ReorderSignals:
     """Reorder point and safety stock from measured demand and measured lead time.
 
         safety stock  = z × sqrt( lead × var(demand) + demand² × var(lead) )
@@ -209,31 +219,64 @@ def reorder_signals(*, avg_daily_demand, demand_basis: str,
     that matters here: a supplier whose delivery time varies puts as much stock
     at risk as a drug whose demand does. Ignoring it understates safety stock
     for exactly the suppliers worth carrying cover against.
+
+    `event_floor` comes from E6 and applies to intermittent and lumpy items only.
+    Demand that arrives all at once cannot be served from a cover computed off a
+    daily average, however carefully: the arithmetic is sound and the shelf is
+    still empty on the one day somebody is standing at the counter. Where the
+    floor exceeds the formula, the floor wins and says so — for a smooth item it
+    is None and nothing changes.
     """
     if avg_daily_demand is None or demand_basis == "no_history":
         return ReorderSignals(
             reorder_point=None, safety_stock=None, demand_basis=demand_basis,
             lead_time_basis=lead.basis, lead_time_days=lead.days,
-            confidence=0.0,
+            confidence=0.0, demand_class=demand_class,
             explanation=("No measured demand — a reorder point would be a "
                          "restatement of the assumption, not a decision rule."),
         )
 
+    # An unmeasured spread used to become `d × 0.5` here — an invented
+    # coefficient of variation, presented as a safety stock. For the lumpy items
+    # that most need cover it understated the true spread several-fold, and it
+    # is the same class of fabrication the demand signal was purged of.
+    if demand_stdev is None:
+        return ReorderSignals(
+            reorder_point=None, safety_stock=None, demand_basis=demand_basis,
+            lead_time_basis=lead.basis, lead_time_days=lead.days,
+            confidence=0.0, demand_class=demand_class,
+            explanation=("Demand rate is known but its day-to-day spread is not, "
+                         "and safety stock is entirely a function of that spread. "
+                         "No cover is proposed rather than one derived from an "
+                         "assumed variability."),
+        )
+
     d = q(avg_daily_demand)
-    sd_d = q(demand_stdev if demand_stdev is not None else d * Decimal("0.5"))
+    sd_d = q(demand_stdev)
     sd_l = Decimal(str(lead.stdev_days or 0))
     lead_days = Decimal(str(lead.days))
 
     variance = (lead_days * sd_d * sd_d) + (d * d * sd_l * sd_l)
     safety = q(Decimal(str(SERVICE_FACTOR)) * Decimal(str(float(variance) ** 0.5)))
+
+    floor = None if event_floor is None else q(event_floor)
+    applied = False
+    if floor is not None and floor > safety:
+        safety, applied = floor, True
     rop = q(d * lead_days + safety)
 
     conf = round(min(1.0, 0.5 + 0.5 * lead.confidence), 3) \
         if lead.basis != "declared_default" else 0.3
+    why = (f"{d}/day over a {lead.days}-day lead time ({lead.basis}) "
+           f"+ {safety} safety stock at {SERVICE_FACTOR} sigma = reorder at {rop}.")
+    if applied:
+        why = (f"{d}/day over a {lead.days}-day lead time ({lead.basis}), but "
+               f"demand is {demand_class}: cover is set to {safety} — one typical "
+               f"demand event — rather than the {SERVICE_FACTOR}-sigma figure, "
+               f"which cannot serve a demand that arrives all at once. Reorder "
+               f"at {rop}.")
     return ReorderSignals(
         reorder_point=rop, safety_stock=safety, demand_basis=demand_basis,
         lead_time_basis=lead.basis, lead_time_days=lead.days, confidence=conf,
-        explanation=(
-            f"{d}/day over a {lead.days}-day lead time ({lead.basis}) "
-            f"+ {safety} safety stock at {SERVICE_FACTOR} sigma = reorder at {rop}."),
-    )
+        demand_class=demand_class, event_floor=floor, floor_applied=applied,
+        explanation=why)

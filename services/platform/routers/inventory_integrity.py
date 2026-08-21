@@ -28,6 +28,7 @@ from services.core.inventory import anomaly_bridge as AB
 from services.core.inventory import clock as CLK
 from services.core.inventory import cycle_count as CC
 from services.core.inventory import expiry_risk as ER
+from services.core.inventory import intermittent as IM
 from services.core.inventory import recommendations as RC
 from services.core.inventory import valuation as VAL
 from services.core.inventory import ledger as L
@@ -370,10 +371,20 @@ async def refresh_demand(
         {"pid": staff.pharmacy_id})).mappings().all()}
     by_supplier = LT.by_supplier(pos)
 
+    # E6: the shape of each item's demand. A rate cannot distinguish "2 a day,
+    # most days" from "40 once every three weeks", and only the second needs
+    # cover for a whole event — a safety stock derived from a daily average
+    # cannot serve a demand that arrives all at once.
+    patterns = {r.ndc11: IM.assess(r.ndc11, by_ndc.get(r.ndc11, []),
+                                   window_days=window_days, as_of=today)
+                for r in plan}
+
     signals = {r.ndc11: LT.reorder_signals(
         avg_daily_demand=r.new_adq, demand_basis=r.basis,
         demand_stdev=r.stdev_daily,
-        lead=by_supplier.get(supplier_of.get(r.ndc11, ""), lead)) for r in plan}
+        lead=by_supplier.get(supplier_of.get(r.ndc11, ""), lead),
+        demand_class=patterns[r.ndc11].demand_class,
+        event_floor=IM.cover_floor(patterns[r.ndc11])) for r in plan}
 
     written = 0
     if apply:
@@ -419,7 +430,8 @@ async def refresh_demand(
         "lead_time": lead.as_dict(),
         "lead_time_by_supplier": {k: v.as_dict() for k, v in by_supplier.items()},
         "rows": [{**r.as_dict(), "signals": signals[r.ndc11].as_dict(),
-                  "supplier": supplier_of.get(r.ndc11)}
+                  "supplier": supplier_of.get(r.ndc11),
+                  "pattern": patterns[r.ndc11].as_dict()}
                  for r in plan],
         "written": written,
         "summary": {
@@ -429,6 +441,11 @@ async def refresh_demand(
             "prior_signal_verdict": by_verdict,
             "reorder_points_set": sum(
                 1 for s in signals.values() if s.reorder_point is not None),
+            "by_demand_class": {
+                c: sum(1 for p in patterns.values() if p.demand_class == c)
+                for c in IM.CLASSES},
+            "covered_for_one_event": sum(
+                1 for s in signals.values() if s.floor_applied),
         },
     }
 

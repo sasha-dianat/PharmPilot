@@ -143,10 +143,55 @@ def test_an_erratic_supplier_needs_more_safety_stock_than_a_reliable_one():
 
 def test_a_reorder_point_built_on_an_assumed_lead_time_says_so_and_scores_low():
     s = LT.reorder_signals(avg_daily_demand=Decimal("5"), demand_basis="observed",
-                           lead=LT.declared_default())
+                           demand_stdev=Decimal("1"), lead=LT.declared_default())
     assert s.lead_time_basis == "declared_default"
     assert s.confidence == 0.3
     assert "(declared_default)" in s.explanation
+
+
+def test_an_unmeasured_spread_yields_no_cover_rather_than_an_assumed_one():
+    """This used to become `demand x 0.5` — an invented coefficient of variation
+    presented as a safety stock. For the lumpy items that most need cover it
+    understated the real spread several-fold."""
+    s = LT.reorder_signals(avg_daily_demand=Decimal("5"), demand_basis="observed",
+                           demand_stdev=None, lead=LT.declared_default())
+    assert s.reorder_point is None and s.safety_stock is None
+    assert "derived from an assumed variability" in s.explanation
+
+
+# ── E6: demand that arrives all at once ───────────────────────────────────
+def test_an_intermittent_item_is_covered_for_one_event_not_for_an_average():
+    """The arithmetic is sound and the shelf is still empty on the one day
+    somebody is standing at the counter."""
+    lead = LT.estimate([po(50 - i, 4) for i in range(6)])
+    plain = LT.reorder_signals(avg_daily_demand=Decimal("2"), demand_basis="observed",
+                               demand_stdev=Decimal("1"), lead=lead)
+    floored = LT.reorder_signals(avg_daily_demand=Decimal("2"), demand_basis="observed",
+                                 demand_stdev=Decimal("1"), lead=lead,
+                                 demand_class="lumpy", event_floor=Decimal("40"))
+    assert plain.safety_stock < Decimal("40")
+    assert floored.safety_stock == Decimal("40.000")
+    assert floored.floor_applied is True
+    assert "arrives all at once" in floored.explanation
+
+
+def test_a_smooth_item_is_not_inflated_by_a_floor_it_does_not_need():
+    lead = LT.estimate([po(50 - i, 4) for i in range(6)])
+    s = LT.reorder_signals(avg_daily_demand=Decimal("5"), demand_basis="observed",
+                           demand_stdev=Decimal("2"), lead=lead,
+                           demand_class="smooth", event_floor=None)
+    assert s.floor_applied is False
+
+
+def test_the_floor_only_wins_when_it_is_the_larger_number():
+    """It is a floor, not an override: where the sigma figure already covers an
+    event, raising nothing is correct."""
+    lead = LT.estimate([po(50 - i, 4) for i in range(6)])
+    s = LT.reorder_signals(avg_daily_demand=Decimal("50"), demand_basis="observed",
+                           demand_stdev=Decimal("30"), lead=lead,
+                           demand_class="lumpy", event_floor=Decimal("5"))
+    assert s.floor_applied is False
+    assert s.safety_stock > Decimal("5")
 
 
 def test_the_two_old_constants_are_now_one():
