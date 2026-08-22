@@ -537,6 +537,69 @@ truncate.
 - Next action/owner: inventory workstream on the fixture teardown; surveillance
   owner to schedule phase 3 (calibration and release gate).
 
+### 2026-08-16 — Claude Code — calibration and release gate (plan phase 3/7)
+
+- Workstream: `CL-003` (surveillance & CV)
+- Branch/commits: `feat/inventory-integrity`, `15512a5`..`(this)`
+- Plan: `docs/superpowers/plans/2026-08-16-calibration-and-release-gate.md`
+  (6 tasks, inline)
+- Changed:
+  - Migrations `0048` (stratum column + widened unique key; `shadow` on
+    templates) and `0049` (`shadow_of` + partial index on active rows).
+  - `services/biometric/identity_resolution/strata.py` (new) — split a gallery
+    by occlusion stratum, measure each independently.
+  - `services/biometric/release_gate.py` (new) — per-cell gate, no averaging.
+  - `vector_store.py` — `ModalityIndex._contexts` so the enrolment stratum
+    survives a load; `repository.load_index` selects `capture_context`.
+  - `repository.py` — `load_impostor_stats(..., stratum=)`, `include_shadow` on
+    `load_index` (in the cache key), `shadow_versions()`.
+  - `biometric_admin.py` — `/admin/gallery/calibrate-strata` and
+    `/admin/gallery/release-gate`.
+  - `shared/models/biometric.py` — the three new columns mapped.
+- Verification: 1951 passed / 1 failed. The failure is the known
+  order-dependent `test_integrations_sandbox` case, green 5/5 in isolation.
+  Route-auth green, single migration head at 0049, app builds (366 routes).
+
+FOUR THINGS CAUGHT DURING THE BUILD, none of them predicted by the plan:
+
+1. The unique constraint was named `uq_score_stats_per_model`, not the pattern
+   the other tables use. Verified against the live database before writing the
+   migration; a guessed drop_constraint would have failed at migration time.
+
+2. `ModalityIndex.load` keyed rows on `embedding` (not `vector`) and discarded
+   `capture_context` entirely — no `_contexts` attribute existed — so the
+   occlusion stratum recorded at enrolment was lost on load and splitting a
+   gallery by stratum was impossible. The plan's self-review caught this before
+   execution; it is now an explicit step.
+
+3. Six gallery-admin tests broke with `column "stratum" does not exist`. Cause:
+   tests/conftest.py:12 points DATABASE_URL at pharmpilot_test via setdefault,
+   a SEPARATE database that migration 0048 had not reached. Both databases now
+   migrate together. Note the sharper consequence of setdefault: an ALREADY
+   EXPORTED DATABASE_URL overrides the test database, so the suite silently runs
+   against whatever it points to — which is what made phase 1's suite look like
+   it was hanging.
+
+4. `test_model_column_parity` caught that all three new columns were unmapped on
+   their models, so assignments would be silently discarded and reads would
+   raise. That test earned its place here.
+
+Also corrected one of my own tests: it passed `sample_floor=10` expecting a
+190-pair calibration to yield ImpostorStats. It correctly returned None —
+ImpostorStats enforces its own 1000-pair floor because the tail is what the
+threshold is derived from. Added a test pinning that a permissive local floor
+CANNOT relax the authoritative one.
+
+- Risks/blockers: every stratum reports UNUSABLE until real captures exist at
+  the real counters, and the release gate FAILS CLOSED with no evaluation data.
+  Both are the correct state, not gaps — fusion excludes uncalibrated strata, so
+  the system stays honest about who it cannot yet recognise.
+- Test DB: still 270k rows / 1.3 GB in inventory_exceptions from phase 2; suite
+  runs 7m52s. Not truncated this time — it is the inventory workstream's
+  fixture design and repeatedly clearing it masks the recurrence.
+- Next action/owner: inventory workstream on truncate-based teardown;
+  surveillance owner to schedule phase 4 (RF survey capture).
+
 ## Entry template
 
 ```markdown

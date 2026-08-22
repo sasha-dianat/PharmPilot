@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import (DateTime, Float, ForeignKey, Integer, LargeBinary, Numeric,
+from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, Numeric,
                         String, Text)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -170,6 +170,10 @@ class BiometricTemplate(AuditedBase):
     retired_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     retired_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    # A candidate model's templates are enrolled and measured without entering
+    # the index that decides identifications. Excluded from load_index by
+    # default; opting in is explicit and lands in a separate cache slot.
+    shadow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class BiometricScoreStats(TimestampedBase):
@@ -190,6 +194,15 @@ class BiometricScoreStats(TimestampedBase):
     impostor_mean: Mapped[float] = mapped_column(Float, nullable=False)
     impostor_std: Mapped[float] = mapped_column(Float, nullable=False)
     samples: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Which occlusion subset this was measured on. A single pooled distribution
+    # averages veiled faces in with unoccluded ones and yields a threshold too
+    # LOW for the veiled subset, so the FPIR guarantee fails for exactly the
+    # group it most affects. 'all' is the pooled row that predates strata.
+    stratum: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    # The active model version this row is a candidate to replace. NULL means
+    # this row IS active, which is why the live lookup filters on IS NULL — an
+    # unpromoted model must never set live thresholds.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
     measured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
