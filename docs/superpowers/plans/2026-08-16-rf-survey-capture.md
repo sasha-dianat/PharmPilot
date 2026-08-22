@@ -1,6 +1,6 @@
 # RF Survey Capture Implementation Plan — Phase 4 of 7
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Give the RF engine the two things it needs to actually work — a stored access-point registry and a surveyed radio map — so fingerprinting stops being dead code.
 
@@ -74,7 +74,7 @@
 - Consumes: nothing.
 - Produces: table `rf_access_points(id, pharmacy_id, site, ap_id, x, y, tx_power_dbm, active, created_at, updated_at)` unique on `(pharmacy_id, site, ap_id)`; table `rf_fingerprints(id, pharmacy_id, site, x, y, rssi JSONB, ap_count, surveyed_at, surveyed_by, created_at, updated_at)`; models `RfAccessPoint` and `RfFingerprint` in `shared/models/rf_survey.py`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_rf_store.py`:
 
@@ -137,12 +137,12 @@ def test_the_models_exist_and_are_registered():
     assert "rf_survey" in init
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_store.py -q`
 Expected: FAIL — `FileNotFoundError` on the migration
 
-- [ ] **Step 3: Write the migration**
+- [x] **Step 3: Write the migration**
 
 Create `data/migrations/versions/0050_rf_survey.py`:
 
@@ -233,7 +233,7 @@ def downgrade() -> None:
     op.drop_table("rf_access_points")
 ```
 
-- [ ] **Step 4: Write the models**
+- [x] **Step 4: Write the models**
 
 Create `shared/models/rf_survey.py`:
 
@@ -323,7 +323,7 @@ Register in `shared/models/__init__.py`, next to the other imports:
 from . import rf_survey  # noqa: F401  (RfAccessPoint, RfFingerprint — RF positioning)
 ```
 
-- [ ] **Step 5: Apply to BOTH databases and verify**
+- [x] **Step 5: Apply to BOTH databases and verify**
 
 Phase 3 lost six tests to migrating only the dev database. `conftest.py:12` points at `pharmpilot_test`.
 
@@ -354,7 +354,7 @@ asyncio.run(main())
 PY
 ```
 
-- [ ] **Step 6: Run the tests and commit**
+- [x] **Step 6: Run the tests and commit**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_store.py tests/unit/test_model_column_parity.py -q`
 Expected: PASS — 6 new, and parity green because both models are mapped.
@@ -389,7 +389,7 @@ is wrong in ways that produce confident bad fixes rather than obvious failures."
 - Consumes: `rf_mapping.AccessPoint`, `rf_mapping.Fingerprint`, `rf_mapping.RadioMap`.
 - Produces: `async load_access_points(db, pharmacy_id, site) -> dict[str, AccessPoint]`; `async load_radio_map(db, pharmacy_id, site, *, min_aps=3, force=False) -> RadioMap`; `map_age_days(db, pharmacy_id, site) -> float | None`; `invalidate(pharmacy_id, site=None) -> int`; `STALE_AFTER_DAYS = 180`; `MIN_FINGERPRINT_APS = 3`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/unit/test_rf_store.py`:
 
@@ -466,12 +466,12 @@ def test_invalidating_a_pharmacy_clears_every_site():
     assert S._CACHE == {}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_store.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'services.core.rf_mapping.store'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `services/core/rf_mapping/store.py`:
 
@@ -591,12 +591,12 @@ async def map_age_days(db: AsyncSession, pharmacy_id,
     return age_days(newest)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_store.py -q`
 Expected: PASS — 13 passed
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add services/core/rf_mapping/store.py tests/unit/test_rf_store.py
@@ -629,7 +629,7 @@ than be locked out of positioning. Never surveyed counts as stale."
 - Consumes: `store.load_access_points`, `store.invalidate`, models from Task 1.
 - Produces: `POST /surveillance/rf/access-points` (upsert one AP), `POST /surveillance/rf/survey` (record one fingerprint), `GET /surveillance/rf/map-status` (coverage and staleness).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_rf_survey_api.py`:
 
@@ -723,12 +723,12 @@ def test_the_fix_reports_which_method_produced_it():
     assert "method" in body
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_survey_api.py -q`
 Expected: FAIL — the three endpoints do not exist and `RadioMap([])` is still present
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 **First, the imports.** `surveillance.py` currently imports only `select` from
 sqlalchemy and does not import `json` at all, and the endpoints below need both:
@@ -867,7 +867,7 @@ Finally, rewrite the body of `ingest_rf_batch` to use the stored data:
     fix = locate(samples, aps, radio_map)
 ```
 
-- [ ] **Step 4: Run tests and confirm the app builds**
+- [x] **Step 4: Run tests and confirm the app builds**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_survey_api.py tests/unit/test_surveillance_ingest.py tests/unit/test_route_authentication.py -q`
 Expected: PASS
@@ -875,7 +875,7 @@ Expected: PASS
 Run: `/Users/sashad85/miniforge3/bin/python3 -c "from services.platform.main import create_app; print(len(create_app().routes))"`
 Expected: a route count 3 higher than before
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add services/platform/routers/surveillance.py tests/unit/test_rf_survey_api.py
@@ -908,7 +908,7 @@ was before the survey and the surveyor sees no effect from their work."
 - Consumes: `store.rows_to_fingerprints`, `rf_mapping.locate`, `trilaterate`, `fingerprint_locate`.
 - Produces: nothing.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Append to `tests/unit/test_rf_store.py`:
 
@@ -981,12 +981,12 @@ def test_with_no_survey_the_system_still_positions_by_trilateration():
     assert fix.uncertainty_m >= 5.0     # the honest indoor floor
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `/Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_rf_store.py -q -k "beats or trilateration"`
 Expected: PASS. If fingerprinting does *not* win, do **not** adjust the test to make it pass — print both errors and investigate, because the phase's premise is then wrong.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/unit/test_rf_store.py
@@ -1005,7 +1005,7 @@ honestly has."
 
 ### Task 5: Full-suite verification and ledger
 
-- [ ] **Step 1: Check the test database before blaming code**
+- [x] **Step 1: Check the test database before blaming code**
 
 `inventory_exceptions` stood at 270k rows / 1.3 GB after phase 2 and makes the suite take ~8 minutes. That is expected, not a fault.
 
@@ -1021,7 +1021,7 @@ asyncio.run(main())
 PY
 ```
 
-- [ ] **Step 2: Run the whole unit suite**
+- [x] **Step 2: Run the whole unit suite**
 
 Do **not** export `DATABASE_URL`.
 
@@ -1030,7 +1030,7 @@ Expected: all pass except the known order-dependent
 `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`,
 green in isolation.
 
-- [ ] **Step 3: Confirm auth, parity and a single migration head**
+- [x] **Step 3: Confirm auth, parity and a single migration head**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_route_authentication.py tests/unit/test_model_column_parity.py -q
@@ -1049,7 +1049,7 @@ PY
 
 Expected: both suites green, exactly one head at `0050`.
 
-- [ ] **Step 4: Append the ledger entry and commit**
+- [x] **Step 4: Append the ledger entry and commit**
 
 Append to `docs/ai-context/AI_COLLABORATION.md` using the template at the bottom of that file: branch/commit, files and behaviour changed, checks actually run, remaining risks, next action.
 
