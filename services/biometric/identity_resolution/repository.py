@@ -37,7 +37,9 @@ if TYPE_CHECKING:  # avoids a circular import at runtime
 log = logging.getLogger(__name__)
 
 # (pharmacy_id, modality) -> (index, loaded_at)
-_CACHE: dict[tuple[str, str], tuple[V.ModalityIndex, datetime]] = {}
+# Keyed (pharmacy_id, modality, include_shadow). The third element keeps the
+# voting gallery and a shadow-inclusive one in separate slots.
+_CACHE: dict[tuple[str, str, bool], tuple[V.ModalityIndex, datetime]] = {}
 
 
 def invalidate(pharmacy_id, modality: str | None = None) -> int:
@@ -52,15 +54,27 @@ def invalidate(pharmacy_id, modality: str | None = None) -> int:
 def cache_state() -> list[dict]:
     """What is warm right now — surfaced so the admin panel can show it rather
     than the operator guessing why one query was slower than the next."""
-    return [{"pharmacy_id": k[0], "modality": k[1], "templates": len(idx),
+    return [{"pharmacy_id": k[0], "modality": k[1],
+             "includes_shadow": bool(k[2]) if len(k) > 2 else False,
+             "templates": len(idx),
              "identities": idx.identity_count, "loaded_at": ts.isoformat()}
             for k, (idx, ts) in sorted(_CACHE.items())]
 
 
 async def load_index(db: AsyncSession, pharmacy_id, modality: str, *,
-                     force: bool = False) -> V.ModalityIndex:
-    """Return a searchable index for one modality, from cache when possible."""
-    key = (str(pharmacy_id), modality)
+                     force: bool = False,
+                     include_shadow: bool = False) -> V.ModalityIndex:
+    """Return a searchable index for one modality, from cache when possible.
+
+    Shadow templates are EXCLUDED by default. A candidate model must be able to
+    be enrolled and measured without its templates entering the index that
+    decides identifications, so opting in has to be explicit.
+
+    `include_shadow` is part of the cache key: two different galleries must not
+    share a slot, or a shadow-inclusive load would hand shadow templates to the
+    next caller that decides an identification.
+    """
+    key = (str(pharmacy_id), modality, bool(include_shadow))
     if not force and key in _CACHE:
         return _CACHE[key][0]
 
@@ -74,7 +88,10 @@ async def load_index(db: AsyncSession, pharmacy_id, modality: str, *,
         FROM biometric_templates
         WHERE pharmacy_id = :pid AND modality = :m
           AND retired_at IS NULL AND is_deleted = false
-        ORDER BY created_at"""), {"pid": pharmacy_id, "m": modality})).mappings().all()
+          AND (shadow = false OR :include_shadow)
+        ORDER BY created_at"""),
+        {"pid": pharmacy_id, "m": modality,
+         "include_shadow": bool(include_shadow)})).mappings().all()
 
     loaded = []
     for r in rows:
@@ -244,6 +261,7 @@ async def load_impostor_stats(db: AsyncSession, pharmacy_id, modality: str,
         FROM biometric_score_stats
         WHERE pharmacy_id = :pid AND modality = :m
           AND stratum IN (:s, 'all')
+          AND shadow_of IS NULL
         ORDER BY (stratum = :s) DESC, measured_at DESC
         LIMIT 1"""),
         {"pid": pharmacy_id, "m": modality, "s": stratum})).mappings().first()
@@ -260,3 +278,18 @@ async def load_impostor_stats(db: AsyncSession, pharmacy_id, modality: str,
         # must not silently become a licence to vote.
         log.warning("stored %s/%s calibration rejected: %s", modality, stratum, e)
         return None
+
+
+async def shadow_versions(db: AsyncSession, pharmacy_id,
+                          modality: str) -> list[str]:
+    """Model versions currently shadowing the active one for this modality.
+
+    Listing them is what makes a comparison possible: a candidate is only worth
+    promoting once its measured behaviour can be set beside the incumbent's.
+    """
+    rows = (await db.execute(text("""
+        SELECT DISTINCT model_version FROM biometric_score_stats
+        WHERE pharmacy_id = :pid AND modality = :m AND shadow_of IS NOT NULL
+        ORDER BY model_version"""),
+        {"pid": pharmacy_id, "m": modality})).scalars().all()
+    return [str(r) for r in rows]
