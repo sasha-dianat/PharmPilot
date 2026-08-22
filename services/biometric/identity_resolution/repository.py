@@ -69,7 +69,8 @@ async def load_index(db: AsyncSession, pharmacy_id, modality: str, *,
         raise V.VectorStoreError(f"unknown modality {modality!r}")
 
     rows = (await db.execute(text("""
-        SELECT id AS template_id, identity_id, embedding, dim, quality
+        SELECT id AS template_id, identity_id, embedding, dim, quality,
+               capture_context
         FROM biometric_templates
         WHERE pharmacy_id = :pid AND modality = :m
           AND retired_at IS NULL AND is_deleted = false
@@ -86,7 +87,8 @@ async def load_index(db: AsyncSession, pharmacy_id, modality: str, *,
             continue
         loaded.append({"identity_id": r["identity_id"], "template_id": r["template_id"],
                        "embedding": V.decode_vector(r["embedding"], dim),
-                       "quality": r["quality"]})
+                       "quality": r["quality"],
+                       "capture_context": r["capture_context"]})
 
     idx = V.ModalityIndex(modality=modality, dim=dim)
     idx.load(loaded)
@@ -221,9 +223,15 @@ def measure_impostor_stats(index: V.ModalityIndex,
                        int(genuine.size), True)
 
 
-async def load_impostor_stats(db: AsyncSession, pharmacy_id,
-                              modality: str) -> "ImpostorStats | None":
-    """The stored calibration for a modality, as `ImpostorStats`, or None.
+async def load_impostor_stats(db: AsyncSession, pharmacy_id, modality: str,
+                              stratum: str = "all") -> "ImpostorStats | None":
+    """The stored calibration for a modality and stratum, as `ImpostorStats`.
+
+    Prefers the stratum's own measurement and falls back to the pooled row. The
+    fallback is deliberate and bounded: a pooled figure is reasonable for an
+    unoccluded capture, and a veiled one should be asking for its own stratum —
+    which returns None until that stratum has actually been measured, so fusion
+    excludes it rather than applying a threshold derived from clear faces.
 
     None is meaningful: `services.biometric.fusion` treats an uncalibrated
     modality as one that may not vote, which is the correct default.
@@ -231,20 +239,24 @@ async def load_impostor_stats(db: AsyncSession, pharmacy_id,
     from .thresholds import ImpostorStats
 
     r = (await db.execute(text("""
-        SELECT impostor_mean, impostor_std, samples, model_version, measured_at
+        SELECT impostor_mean, impostor_std, samples, model_version,
+               measured_at, stratum
         FROM biometric_score_stats
         WHERE pharmacy_id = :pid AND modality = :m
-        ORDER BY measured_at DESC LIMIT 1"""),
-        {"pid": pharmacy_id, "m": modality})).mappings().first()
+          AND stratum IN (:s, 'all')
+        ORDER BY (stratum = :s) DESC, measured_at DESC
+        LIMIT 1"""),
+        {"pid": pharmacy_id, "m": modality, "s": stratum})).mappings().first()
     if r is None:
         return None
     try:
         return ImpostorStats(
             mean=float(r["impostor_mean"]), std=float(r["impostor_std"]),
             sample_size=int(r["samples"]), model=r["model_version"],
+            population=r["stratum"],
             measured_at=r["measured_at"].isoformat() if r["measured_at"] else None)
     except ValueError as e:
         # A stored calibration that no longer satisfies the sample-size floor
         # must not silently become a licence to vote.
-        log.warning("stored %s calibration rejected: %s", modality, e)
+        log.warning("stored %s/%s calibration rejected: %s", modality, stratum, e)
         return None

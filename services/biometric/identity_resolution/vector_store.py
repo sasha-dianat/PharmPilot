@@ -64,6 +64,11 @@ class ModalityIndex:
     _identities: list[UUID] = field(default_factory=list)
     _templates: list[UUID] = field(default_factory=list)
     _quality: list[float] = field(default_factory=list)
+    # Retained so calibration can be stratified. Without it the occlusion
+    # stratum recorded at enrolment is lost on load, and one pooled threshold
+    # gets applied to every kind of capture — including the veiled ones it is
+    # least appropriate for.
+    _contexts: list[dict] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self._identities)
@@ -75,7 +80,7 @@ class ModalityIndex:
     def load(self, rows: list[dict]) -> None:
         """Rebuild from durable storage. Rows: {identity_id, template_id,
         embedding, quality}."""
-        vecs, ids, tids, quals = [], [], [], []
+        vecs, ids, tids, quals, ctxs = [], [], [], [], []
         for r in rows:
             v = np.asarray(r["embedding"], dtype=np.float32)
             if v.shape != (self.dim,):
@@ -89,9 +94,11 @@ class ModalityIndex:
             ids.append(r["identity_id"])
             tids.append(r["template_id"])
             quals.append(float(r.get("quality") or 1.0))
+            ctxs.append(dict(r.get("capture_context") or {}))
         self._vectors = (np.vstack(vecs).astype(np.float32) if vecs
                          else np.zeros((0, self.dim), np.float32))
         self._identities, self._templates, self._quality = ids, tids, quals
+        self._contexts = ctxs
 
     def search(self, probe: np.ndarray, top_k: int = 5) -> list[Hit]:
         """Best hit per identity, descending. Empty when nothing is enrolled."""
