@@ -170,8 +170,16 @@ async def ingest_rf_batch(
     samples = [RssiSample(s.ap_id, s.rssi_dbm) for s in body.samples]
     fix = locate(samples, aps, radio_map)
     if fix is None:
-        return {"observation_id": None,
-                "reason": "not enough access points for a fix"}
+        # Two distinct causes, and conflating them sends an installer looking
+        # for missing hardware when the geometry is what failed.
+        from services.core.rf_mapping import filter_samples
+        heard = len([s for s in filter_samples(samples) if s.ap_id in aps])
+        return {"observation_id": None, "aps_heard": heard,
+                "reason": ("not enough access points for a fix"
+                           if heard < 3 else
+                           "the fix fell outside the access-point layout; the "
+                           "path-loss model has diverged, most likely from "
+                           "attenuation a survey would capture")}
 
     obs_id = await record(
         db, pharmacy_id=staff.pharmacy_id, site=body.site,

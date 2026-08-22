@@ -33,6 +33,12 @@ DEFAULT_NOISE_FLOOR_DBM = -92.0
 DEFAULT_PATH_LOSS_EXPONENT = 2.5
 # Trilateration's honest floor, from the multipath literature.
 TRILATERATION_FLOOR_M = 5.0
+# How far outside the access-point layout a trilaterated fix may fall before it
+# is treated as a diverged solution rather than a position, as a fraction of the
+# layout's own diagonal. A device can legitimately be somewhat outside the hull
+# of the APs — an AP in a corner does not mean nothing exists beyond it — but
+# not multiples of the building away.
+BOUNDS_MARGIN_FACTOR = 0.5
 
 
 @dataclass(frozen=True)
@@ -114,14 +120,42 @@ def rssi_to_distance(rssi_dbm: float, tx_power_dbm: float = -40.0,
 
 # ── trilateration ────────────────────────────────────────────────────────
 
+def ap_bounds(aps: dict[str, AccessPoint],
+              margin_factor: float = BOUNDS_MARGIN_FACTOR
+              ) -> tuple[float, float, float, float] | None:
+    """The access-point bounding box, expanded by a fraction of its diagonal.
+
+    The plausible region for a fix, derived from the layout rather than from a
+    floor plan the module does not have. Returns None for fewer than two APs,
+    where there is no extent to speak of.
+    """
+    if len(aps) < 2:
+        return None
+    xs = [a.x for a in aps.values()]
+    ys = [a.y for a in aps.values()]
+    margin = margin_factor * math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    return (min(xs) - margin, min(ys) - margin,
+            max(xs) + margin, max(ys) + margin)
+
+
 def trilaterate(samples: list[RssiSample], aps: dict[str, AccessPoint],
                 path_loss_exponent: float = DEFAULT_PATH_LOSS_EXPONENT,
+                bounds: tuple[float, float, float, float] | None = None,
                 ) -> PositionFix | None:
     """Least-squares multilateration from >= 3 access points.
 
     Linearised by subtracting the reference AP's circle equation from the rest,
     which turns intersecting circles into a linear system solvable in closed
     form — no iteration, no dependency beyond the standard library.
+
+    Returns None when the solution lands outside `bounds` (by default the AP
+    layout plus a margin). Measured: with one AP attenuated 12 dB by shelving,
+    the linear system puts the device tens of metres outside a 20x15 m room and
+    reports an uncertainty that understates the error by 1-3x. That is not
+    degraded accuracy, it is a confidently wrong coordinate, and it would be
+    written to the observation log and plotted on a heatmap indistinguishably
+    from a good one. fingerprint_locate cannot do this — it returns a weighted
+    average of surveyed points, so it is bounded by the survey by construction.
     """
     clean = [s for s in filter_samples(samples) if s.ap_id in aps]
     if len(clean) < 3:
@@ -155,6 +189,12 @@ def trilaterate(samples: list[RssiSample], aps: dict[str, AccessPoint],
     # method's realistic indoor limit so a heatmap cannot imply better.
     residuals = [abs(math.hypot(x - ap.x, y - ap.y) - d) for ap, d in pts]
     uncertainty = max(TRILATERATION_FLOOR_M, statistics.fmean(residuals))
+
+    box = bounds if bounds is not None else ap_bounds(aps)
+    if box is not None and not (box[0] <= x <= box[2] and box[1] <= y <= box[3]):
+        # No fix beats a fix that is somewhere else. The caller can say "we
+        # could not place this device"; it cannot un-plot a bad coordinate.
+        return None
     return PositionFix(x=x, y=y, uncertainty_m=uncertainty,
                        method="trilateration", ap_count=len(pts))
 
@@ -206,13 +246,15 @@ def fingerprint_locate(samples: list[RssiSample], radio_map: RadioMap,
 
 
 def locate(samples: list[RssiSample], aps: dict[str, AccessPoint],
-           radio_map: RadioMap | None = None, k: int = 3) -> PositionFix | None:
+           radio_map: RadioMap | None = None, k: int = 3,
+           bounds: tuple[float, float, float, float] | None = None
+           ) -> PositionFix | None:
     """Fingerprint where a survey exists, trilaterate where it does not."""
     if radio_map is not None and len(radio_map) > 0:
         fix = fingerprint_locate(samples, radio_map, k=k)
         if fix is not None:
             return fix
-    return trilaterate(samples, aps)
+    return trilaterate(samples, aps, bounds=bounds)
 
 
 # ── occupancy ────────────────────────────────────────────────────────────

@@ -126,3 +126,112 @@ def test_invalidating_a_pharmacy_clears_every_site():
     S._CACHE[("p1", "pharmacy")] = (RadioMap([]), None)
     assert S.invalidate("p1") == 2
     assert S._CACHE == {}
+
+
+# ── the whole point of the phase, measured ───────────────────────────────
+
+import math
+
+from services.core.rf_mapping import (AccessPoint, RssiSample, locate,
+                                      trilaterate)
+
+APS = {a.ap_id: a for a in [
+    AccessPoint("ap-nw", 0.0, 0.0, -40.0),
+    AccessPoint("ap-ne", 20.0, 0.0, -40.0),
+    AccessPoint("ap-sw", 0.0, 15.0, -40.0),
+]}
+
+
+def _rssi(ap, x, y, n=2.5, attenuate=0.0):
+    d = max(1.0, math.hypot(x - ap.x, y - ap.y))
+    return ap.tx_power_dbm - 10.0 * n * math.log10(d) - attenuate
+
+
+def _survey_rows(attenuated_ap="ap-sw", loss_db=12.0):
+    """A 5m grid, with one AP attenuated by shelving — the physical distortion
+    a free-space model cannot know about and a survey captures for free."""
+    rows = []
+    for gx in range(0, 21, 5):
+        for gy in range(0, 16, 5):
+            rssi = {ap.ap_id: _rssi(ap, gx, gy,
+                                    attenuate=loss_db if ap.ap_id == attenuated_ap else 0.0)
+                    for ap in APS.values()}
+            rows.append({"x": float(gx), "y": float(gy), "rssi": rssi,
+                         "ap_count": len(rssi)})
+    return rows
+
+
+def test_fingerprinting_beats_trilateration_through_the_store():
+    """The justification for this whole phase, measured end to end rather than
+    asserted. Shelving attenuates one AP; trilateration's free-space assumption
+    cannot know that, and the survey captured it without being told."""
+    from services.core.rf_mapping import RadioMap
+
+    tx, ty = 10.0, 5.0
+    probe = [RssiSample(ap.ap_id,
+                        _rssi(ap, tx, ty, attenuate=12.0 if ap.ap_id == "ap-sw" else 0.0))
+             for ap in APS.values()]
+
+    rmap = RadioMap(S.rows_to_fingerprints(_survey_rows()))
+    assert len(rmap) > 0, "the survey grid produced no usable fingerprints"
+
+    fp_fix = locate(probe, APS, rmap)
+    assert fp_fix.method == "fingerprint"
+    fp_err = math.hypot(fp_fix.x - tx, fp_fix.y - ty)
+    assert fp_err < 3.0, f"fingerprint was {fp_err:.2f}m off a 5m survey grid"
+
+    # Measured, not assumed: under 12 dB of shelving attenuation trilateration
+    # does not merely do worse here, it diverges to y = -49 in a 15m-deep room
+    # and the bounds check refuses the result. Accept either, but never a
+    # trilateration fix that beats the survey.
+    tri_fix = trilaterate(probe, APS)
+    if tri_fix is not None:
+        tri_err = math.hypot(tri_fix.x - tx, tri_fix.y - ty)
+        assert fp_err < tri_err, (
+            f"fingerprint {fp_err:.2f}m vs trilateration {tri_err:.2f}m")
+
+
+def test_with_no_survey_the_system_still_positions_by_trilateration():
+    """Degradation, not failure. A depot with APs but no survey yet must still
+    get a fix — with the larger uncertainty that method honestly carries."""
+    from services.core.rf_mapping import RadioMap
+
+    probe = [RssiSample(ap.ap_id, _rssi(ap, 8.0, 6.0)) for ap in APS.values()]
+    fix = locate(probe, APS, RadioMap([]))
+    assert fix is not None
+    assert fix.method == "trilateration"
+    assert fix.uncertainty_m >= 5.0     # the honest indoor floor
+
+
+def test_a_trilateration_fix_outside_the_building_is_refused():
+    """Measured on this layout: with one AP attenuated 12 dB by shelving the
+    linear system puts the device at y = -49 in a room 15m deep, and reports an
+    uncertainty that understates the error by 1-3x. A coordinate that confident
+    and that wrong is worse than no coordinate — it reaches the observation log
+    and the heatmap indistinguishable from a good one."""
+    from services.core.rf_mapping import ap_bounds
+
+    probe = [RssiSample(ap.ap_id,
+                        _rssi(ap, 10.0, 5.0,
+                               attenuate=12.0 if ap.ap_id == "ap-sw" else 0.0))
+             for ap in APS.values()]
+    assert trilaterate(probe, APS) is None
+
+    box = ap_bounds(APS)
+    assert box[1] < 0.0 < box[3], "the margin must still admit the room itself"
+
+
+def test_a_plausible_but_inaccurate_fix_is_still_returned():
+    """The bounds check rejects divergence, not inaccuracy. Trilateration is
+    honestly 5-15m indoors and must be allowed to be that bad."""
+    probe = [RssiSample(ap.ap_id, _rssi(ap, 8.0, 6.0)) for ap in APS.values()]
+    fix = trilaterate(probe, APS)
+    assert fix is not None and fix.method == "trilateration"
+
+
+def test_bounds_need_two_access_points_to_mean_anything():
+    """One AP has no extent, so there is no plausible region to test against and
+    the check must not invent one."""
+    from services.core.rf_mapping import ap_bounds
+    assert ap_bounds({"a": APS["ap-nw"]}) is None
+    assert ap_bounds({}) is None

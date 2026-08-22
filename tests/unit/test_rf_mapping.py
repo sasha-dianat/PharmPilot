@@ -139,7 +139,16 @@ def test_fingerprinting_beats_trilateration_on_the_same_signals():
 
     fp_fix = fingerprint_locate(probe, rmap, k=3)
     tri_fix = trilaterate(probe, AP_BY_ID, path_loss_exponent=2.5)
+
     fp_err = math.hypot(fp_fix.x - tx, fp_fix.y - ty)
+    assert fp_err < 5.0, f"fingerprint was {fp_err:.1f}m off its own survey"
+
+    # Stronger than "trilateration does worse": under this distortion the linear
+    # system diverges to a point outside the AP layout entirely, and the bounds
+    # check refuses it. Either outcome is a win for fingerprinting; only one of
+    # them is a coordinate, so assert against whichever we got.
+    if tri_fix is None:
+        return
     tri_err = math.hypot(tri_fix.x - tx, tri_fix.y - ty)
     assert fp_err < tri_err
 
