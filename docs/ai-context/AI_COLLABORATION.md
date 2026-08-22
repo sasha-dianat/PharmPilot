@@ -481,6 +481,62 @@ incorrect one rather than silently rewriting history.
 - Next action/owner: inventory workstream to decide on truncate-based teardown
   for the exception fixtures; surveillance owner to schedule phase 2.
 
+### 2026-08-16 — Claude Code — voice modality (plan phase 2/7)
+
+- Workstream: `CL-003` (surveillance & CV)
+- Branch/commits: `feat/inventory-integrity`, `4f4b19f`..`(this)`
+- Plan: `docs/superpowers/plans/2026-08-16-voice-modality.md` (6 tasks, inline)
+- Changed:
+  - `services/audio/voice/features.py` (new) — MFCC + spectral flatness from
+    numpy/scipy only. librosa, soundfile and torchaudio are absent.
+  - `services/audio/voice/encoder.py` (new) — classical cepstral speaker
+    embedding. Explicitly NOT an ECAPA-TDNN: speechbrain and onnxruntime are not
+    installed. `encode()` is the seam a neural model replaces.
+  - `services/audio/voice/text_dependent.py` (new) — verifies the spoken
+    national code. Digits and voice together; neither alone suffices.
+  - `services/audio/voice/readings.py` (new) — diarized segment ->
+    `fusion.ModalityReading`, no special case.
+  - Transcription defaults across 7 files (see below).
+- Interfaces/schema: no migration. `biometric_templates` already admits
+  `modality='voice'` from 0033.
+- Verification: 1918 passed / 1 failed. The failure is the known
+  order-dependent `test_integrations_sandbox` case, green 5/5 in isolation.
+  Route-auth green. App builds.
+
+TWO THINGS THE PLAN GOT WRONG, both caught by tests rather than review:
+
+1. The plan said three places carried the English-only `medium.en` Whisper
+   default. There were SEVEN. The first test listed three files by hand and
+   passed; widening it to scan the whole services tree found a `waiting_area`
+   zone config on `base.en`, `WHISPER_MODEL_COUNTER` in config.py, a hard-coded
+   engine construction in routers/audio.py, and the transcript row recording
+   `"medium.en"` as provenance regardless of the model actually used. A defect
+   CLASS needs a search, not a list. The provenance bug is fixed too — the row
+   now records `transcriber.model_size`.
+
+2. The planned quality function was inert. It scored voiced-frame ratio against
+   a pause-based SNR; measuring a clean tone, a noisy tone and digital silence
+   showed ALL THREE had zero frames below the voiced floor, so voiced_ratio was
+   1.000 for every one and the SNR fell back to its clean default. Silence
+   scored like speech. Rebuilt on absolute peak level (clean speech -19 dBFS vs
+   silence -100 dBFS) and spectral flatness (0.0005 clean, 0.45 noisy, 0.57
+   pure noise, 1.0 silence), with thresholds set from those measurements. The
+   terms multiply so length cannot rescue an empty capture.
+
+TEST DATABASE, RECURRENCE CONFIRMED: after the phase-1 truncate took
+pharmpilot_test from 6.1 GB to 136 kB, TWO suite runs regrew
+inventory_exceptions to 270,564 rows / 1.3 GB. Suite time went 3m27s -> 6m58s.
+This is the predicted consequence of soft-delete teardown without truncation and
+belongs to the inventory workstream; it will keep recurring until the fixtures
+truncate.
+
+- Risks/blockers: voice ships UNCALIBRATED by design — `stats=None`, so the
+  fusion engine excludes it from voting until impostor statistics are measured
+  on real captures at the real counters. That is the correct default, not a gap,
+  and it is phase 3 work.
+- Next action/owner: inventory workstream on the fixture teardown; surveillance
+  owner to schedule phase 3 (calibration and release gate).
+
 ## Entry template
 
 ```markdown
