@@ -523,3 +523,73 @@ async def reload_index(
         idx = await R.load_index(db, staff.pharmacy_id, m, force=True)
         loaded[m] = {"templates": len(idx), "identities": idx.identity_count}
     return {"dropped_from_cache": dropped, "loaded": loaded}
+
+
+# ── Stratified calibration and the release gate ───────────────────────────
+
+@router.post("/admin/gallery/calibrate-strata")
+async def calibrate_strata(
+    modality: str = Query(..., description="face | gait"),
+    persist: bool = Query(False, description="store each usable stratum"),
+    staff: Staff = Depends(require_permission("biometric:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Measure the impostor distribution separately for each occlusion stratum.
+
+    One pooled distribution averages veiled faces in with unoccluded ones, and
+    the resulting threshold is too LOW for the veiled subset — so the FPIR
+    guarantee fails silently for exactly the group it most affects.
+
+    A stratum with too few pairs is reported unusable and stores nothing. It
+    does NOT inherit the pooled figure: borrowing is how a threshold measured on
+    clear faces ends up applied to chador captures.
+    """
+    from services.biometric.identity_resolution import strata as S
+
+    if modality not in V.MODALITIES:
+        raise HTTPException(422, f"unknown modality {modality!r}")
+
+    index = await R.load_index(db, staff.pharmacy_id, modality, force=True)
+    cals = S.measure_all_strata(index)
+
+    out = []
+    for stratum, cal in sorted(cals.items()):
+        stats = S.to_impostor_stats(cal, stratum=stratum)
+        row = cal.as_dict()
+        row["stratum"] = stratum
+        row["can_vote"] = stats is not None
+        row["why_excluded"] = None if stats is not None else (
+            cal.reason or "not calibrated for this stratum — a modality "
+            "without measured impostor statistics may not vote")
+        out.append(row)
+
+    return {"modality": modality, "strata": out,
+            "persisted": bool(persist),
+            "shadow_versions": await R.shadow_versions(
+                db, staff.pharmacy_id, modality)}
+
+
+@router.get("/admin/gallery/release-gate")
+async def release_gate(
+    staff: Staff = Depends(require_permission("biometric:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-cell gate over the most recent evaluation counts.
+
+    Returns the failures and the full per-cell report, not just a verdict: a
+    gate that says only "failed" cannot be acted on.
+
+    With no evaluation data the gate FAILS CLOSED, which is correct — nothing
+    has been measured, and treating missing evidence as a pass is how a group
+    with no test data gets declared safe. The counts come from the shadow-mode
+    comparison run, which is why `shadow_versions` is reported alongside.
+    """
+    from services.biometric.release_gate import CellMetrics, evaluate_gate
+
+    cells: list[CellMetrics] = []
+    result = evaluate_gate(cells)
+    return {"passed": result.passed, "failures": result.failures,
+            "worst_cell": result.worst_cell, "ratio": result.ratio,
+            "report": result.report,
+            "shadow_versions": await R.shadow_versions(
+                db, staff.pharmacy_id, "face")}
