@@ -2472,3 +2472,116 @@ verification scripts pass on `pharmpilot_test` (30/30, 27/27, 28/28, 41/41).
 `pytest tests/unit -p no:randomly` → **1,902 passed, 1 failed**
 (`test_integrations_sandbox`, pre-existing and logged repeatedly above),
 1 xfailed, in 8:08.
+
+---
+
+### 2026-08-22 — Claude (Opus 5) — phase 4: the fingerprinting that had never run
+
+- Workstream: `surveillance` (phase 4 of 7, RF survey capture)
+- Branch: `feat/inventory-integrity`
+- Commits: `de459e6` (schema), `aaca4a6` (store), `a4b47e7` (endpoints),
+  `809c360` (bounds fix)
+- Plan: `docs/superpowers/plans/2026-08-16-rf-survey-capture.md`
+- Closes the next-action recorded at the end of the phase-3 entry above.
+
+**The premise.** `services/core/rf_mapping` has had weighted-kNN fingerprinting
+since phase 1, and it had never executed outside its own unit tests. The live
+endpoint `POST /surveillance/rf/batch` passed `RadioMap([])` — a hard-coded
+empty map — so `locate()` fell through to trilateration on every request. The
+module's own docstring calls trilateration 5-15 m and "close to useless" in a
+depot. The better algorithm was written, merged, tested, and unreachable.
+
+**What changed.**
+
+- Migration `0050` adds `rf_access_points` (unique on `pharmacy_id, site, ap_id`
+  as `uq_rf_ap_per_site`) and `rf_fingerprints` (`rssi` JSONB, `ap_count`,
+  `surveyed_at`, `surveyed_by`). Models in `shared/models/rf_survey.py`.
+- `services/core/rf_mapping/store.py` loads and caches both, keyed by
+  `(pharmacy, site)` — the pharmacy and depot have different floor plans, and
+  sharing a cache slot would hand one site's map to the other and produce fixes
+  that look plausible and are in the wrong building.
+- Three endpoints in `routers/surveillance.py`: `POST /rf/access-points`,
+  `POST /rf/survey`, `GET /rf/map-status`. Both writes invalidate the cache;
+  without that a surveyor walking a grid for an hour sees no effect from it.
+- `/rf/batch` now loads both from the registry. Access points supplied in a
+  request **supplement** the stored layout rather than replacing it, so an edge
+  node can report an AP the registry does not know about without silently
+  overriding a surveyed position.
+- A survey point that heard fewer than three APs is reported back as unusable
+  rather than accepted quietly. Filtered, not down-weighted: such a point cannot
+  constrain a position, and including it drags the inverse-distance weighted
+  average toward wherever it happened to be.
+
+**The defect that measuring found.** Task 4 existed to prove fingerprinting beats
+trilateration end to end rather than in memory. Measuring it instead of asserting
+it turned up something worse than a comparison. With one AP attenuated 12 dB by
+shelving — the ordinary case this phase exists for — the linearised least-squares
+solution does not degrade, it **diverges**, on a 20×15 m layout:
+
+| truth | fix | error | uncertainty it reported |
+|---|---|---|---|
+| (10.0, 5.0) | (10.0, −49.1) | 54.1 m | 33.4 m |
+| (17.0, 2.0) | (17.0, −122.0) | 124.0 m | 99.3 m |
+| (12.0, 12.0) | (12.0, −29.4) | 41.4 m | 13.2 m |
+
+Those coordinates are outside the building, nothing rejected them, and the
+reported uncertainty understated the true error by 1–3×. So the fix reached
+`surveillance_observations` and the occupancy heatmap indistinguishable from a
+good one. The module docstring says false precision is how a positioning system
+ends up cited as evidence it cannot support; this was the mechanism, and it has
+been live since phase 1.
+
+`trilaterate()` now derives a plausible region from the AP bounding box expanded
+by half its diagonal and returns `None` outside it. The margin is deliberately
+generous — the check must reject divergence, not inaccuracy. A fix 6.8 m off
+*inside* the room still returns, because trilateration is honestly that bad and
+is allowed to be. `fingerprint_locate` needs no such guard: it returns a weighted
+average of surveyed points, so it is bounded by the survey by construction.
+
+Measured after the change, 10 points × 20 seeds per noise level:
+
+| added noise | fingerprint | trilateration |
+|---|---|---|
+| 0 dB | 0.65 m | 8/10 refused, 13.1 m when it answers |
+| 4 dB | 4.01 m | 151/200 refused, 11.3 m when it answers |
+| 8 dB | 6.18 m | 144/200 refused, 12.3 m when it answers |
+
+**Checks actually run.** `pytest tests/unit` → **1,976 passed, 1 failed,
+1 xfailed in 12:00**. The one failure is `test_integrations_sandbox.py::
+test_notifications_sandbox_success_shape_no_network_and_masked_logs`, the
+order-dependent case logged repeatedly above; **5 passed in isolation**, and it
+is not mine. `test_route_authentication.py` + `test_model_column_parity.py` →
+14 passed. Migration chain: exactly one head at `0050`. Route count 366 → 369.
+Both endpoint `INSERT` statements were executed against the live schema before
+committing — the upsert collapses two writes to one row and updates the
+position, and JSONB round-trips as a dict of floats, the shape
+`rows_to_fingerprints` reads.
+
+**Remaining risks.**
+
+1. **No radio map exists yet for any site.** Until someone walks a grid, every
+   site is on trilateration, which now refuses more often than it answers under
+   attenuation. That is the correct behaviour and it means depot positioning is
+   effectively unavailable until a survey is done. `GET /rf/map-status` reports
+   this honestly per site (`positioning: fingerprint | trilateration |
+   unavailable`) rather than letting it be discovered from bad heatmaps.
+2. **No survey UI.** Recording a fingerprint is an authenticated POST with a
+   coordinate; the handheld interface for walking a grid is deferred to phase 6
+   with the review UI. Deliberate, and noted in the plan.
+3. **The `BOUNDS_MARGIN_FACTOR = 0.5` margin is a judgement, not a measurement.**
+   It admits the room plus half a diagonal in each direction. It was chosen to
+   reject the divergent cases above while passing every in-room fix; a site with
+   APs clustered in one corner would get a tighter box than its floor plan
+   deserves. Revisit if a real layout is non-convex.
+4. **`pharmacy_test` has regrown to 2.6 GB / 727k rows** in
+   `inventory_exception_rows`, `inventory_exceptions` and
+   `inventory_exception_events` — fixtures soft-delete per test and nothing
+   reaps. The suite now takes 12:00 against 8:08 at 1.3 GB. This is the
+   inventory workstream's fixture design and is left for that owner rather than
+   truncated across the boundary.
+5. **`tests/conftest.py:12` uses `setdefault` for `DATABASE_URL`**, so an
+   already-exported value silently redirects the entire suite at a different
+   database. Cost two hours in phase 3. Still unfixed, still not mine.
+
+**Next action.** Phase 5 of 7: zone rules and reconciliation. Phases 6 (review
+UI, including the survey walker) and 7 (hardening) follow.
