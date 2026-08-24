@@ -58,8 +58,20 @@ async def lifespan(app: FastAPI):
         price_sync_task = asyncio.create_task(daily_loop())
         logger.info("Daily price-sync scheduler started")
 
+    # Nightly inventory sweep (opt-in; files advice, decides nothing). Without
+    # it every engine only raises when somebody opens its tab with the flag set,
+    # so the recommendation ledger — built to measure whether each engine is any
+    # good — has nothing to measure.
+    inventory_sweep_task = None
+    if os.getenv("INVENTORY_SWEEP_ENABLED", "").lower() in ("1", "true", "yes"):
+        from services.core.inventory.sweep import nightly_loop
+        inventory_sweep_task = asyncio.create_task(nightly_loop())
+        logger.info("Nightly inventory sweep scheduled")
+
     yield
 
+    if inventory_sweep_task:
+        inventory_sweep_task.cancel()
     if price_sync_task:
         price_sync_task.cancel()
     logger.info("PharmPilot shutting down")

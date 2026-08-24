@@ -86,7 +86,7 @@ than zero risk (which reads as safe) or total risk (which floods the list).
 | Engine | Question | Blocked on |
 |---|---|---|
 | **E11 Lead-time distribution** — **built 2026-08-17** | How long each supplier really takes, and how much that varies | Nothing. `lead_time.by_supplier` on delivered orders; surfaced at `GET /inventory/suppliers` |
-| **E12 Supplier reliability** — **built 2026-08-17** | Who fills short, who is unpredictable, who substitutes | Nothing for fill/consistency. Substitution stays `not_captured` — no receiving path records one |
+| **E12 Supplier reliability** — **built 2026-08-17, completed 2026-08-19** | Who fills short, who is unpredictable, who is late against its own promise, who substitutes | Nothing. Substitutions are recorded at receiving and `expected_delivery` is written at submit, so the last two questions in this row are answered rather than declared uncapturable |
 | **E13 Shortage early warning** (⑰, rebuild) — **built 2026-08-17** | Which NDCs are about to become unobtainable, **and whether the market or one supplier is the cause** | Nothing. `shortage.py`, at `GET /inventory/shortage-warning`; ⑰ now delegates to it. Cloud (national feeds) still inert |
 | **E14 / ⑳ Negotiation mentor** *(new)* — **built 2026-08-17** | What to ask this distributor for, and what to concede | Nothing for the local tier. `negotiation.py`, at `GET /inventory/negotiation-brief`. Cross-pharmacy benchmark needs a second pharmacy and declares itself inert |
 
@@ -356,3 +356,48 @@ being ignored is named as such rather than counted as vigilance.
   measurable, and the honest degradation will simply keep saying so.
 - The negotiation mentor's cross-pharmacy benchmark needs more than one pharmacy
   on the platform. Until then its cloud tier is inert and it says so.
+
+---
+
+## 6. The three gaps the engines named about themselves
+
+*Closed 2026-08-19.* Each was a hole the code openly declared and nobody had
+filled — the same shape as the `received_at` gap that blocked all of Tier C.
+
+**A promised date.** `purchase_orders.expected_delivery` was read in two places
+and written in none, so "late" could only ever mean *slower than this supplier's
+own habit* — never *later than they said*. A supplier is held to its promise, not
+to its average. `lead_time.punctuality()` measures on-time delivery against the
+date given, deliberately separate from `estimate()`: a supplier can be slow and
+punctual, which is one you can plan around, or quick and unreliable, which is the
+expensive one. An absent promise is excluded rather than counted as kept —
+treating it as kept would have scored every supplier perfect on an empty column.
+
+**Substitutions.** `purchase_order_lines.status` has carried `substituted` since
+the model was written and nothing produced it, so E12 reported its substitution
+count as `not_captured`. Receiving can now record that a delivery replaces an
+ordered line. A substitution is deliberately **not** a fill: the ordered molecule
+did not arrive, and counting the replacement would let a supplier who never once
+sent what was asked for score a perfect record. Whether the substitute is
+clinically acceptable is a pharmacist's judgement and is not made here. The basis
+now distinguishes `observed`, `none_seen` (a supplier with settled lines and no
+substitutions) and `not_captured` (no history at all) — which is the whole point
+of carrying a basis.
+
+**Nothing ran the engines.** Every engine filed advice only when a human opened
+its tab with `raise_advice=true`, so the recommendation ledger — built expressly
+to answer *is each of these engines any good?* — had nothing to measure. A
+detector firing forty times a week was indistinguishable from one that had never
+fired. `sweep.py` runs them overnight for every pharmacy, one transaction per
+tenant so one failure is one row rather than the end of the run, and
+`POST /inventory/sweep` does the caller's pharmacy on demand. It decides nothing:
+applying any proposal still goes through the ordinary approval and ledger paths.
+
+**And the defect that only appeared once they ran together.** `_record`
+superseded every *open* recommendation for the pharmacy whose fingerprint was not
+in the current batch — across all kinds. Invisible while one engine ran at a time,
+because a human opens one tab. The moment the sweep ran three in a row, each
+engine closed the previous one's advice, the next run re-raised it, and the churn
+drove the acceptance rate the ledger exists to measure towards zero. Superseding
+is now scoped to the kind that raised it: only the engine that made a piece of
+advice may close it.

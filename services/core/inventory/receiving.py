@@ -54,9 +54,14 @@ ORDER_STATUSES = ("draft", "submitted", "acknowledged", "partial", "complete",
 # is not and does not.
 CLOSED_SHORT = "backordered"
 
+# The supplier sent a different product instead of the one ordered. Settled, and
+# counted at what actually arrived against the ordered molecule — which is
+# nothing.
+SUBSTITUTED = "substituted"
+
 # Lines that will not change again. Everything else is still in flight, and a
 # line still in flight has not failed to arrive.
-SETTLED = ("complete", "over", CLOSED_SHORT)
+SETTLED = ("complete", "over", CLOSED_SHORT, SUBSTITUTED)
 
 
 class ReceivingError(ValueError):
@@ -97,7 +102,8 @@ def match_line(lines: list[dict], ndc11: str) -> dict | None:
     candidates = [
         l for l in lines
         if str(l.get("ndc11")) == str(ndc11)
-        and str(l.get("status")) not in ("complete", "cancelled", CLOSED_SHORT)
+        and str(l.get("status")) not in ("complete", "cancelled", CLOSED_SHORT,
+                                         SUBSTITUTED)
     ]
     if not candidates:
         return None
@@ -267,3 +273,44 @@ def fill_rate(rows: list[dict], *, supplier: str = "unknown") -> FillRate:
         received=received, rate=rate, basis="observed",
         explanation=(f"{received} of {ordered} units delivered across "
                      f"{len(closed)} lines."))
+
+
+# ── When what arrived is not what was ordered ────────────────────────────
+
+def substitution(line: dict, *, delivered_ndc: str, quantity) -> LineMatch:
+    """The supplier sent something else instead of what was ordered.
+
+    `LINE_STATUSES` has carried `substituted` since the model was written and
+    nothing has ever produced it, which is why E12 reports its substitution
+    count as `not_captured` — a zero there meant unmeasured, not never. This is
+    where it starts being measured.
+
+    A substitution is deliberately **not** a fill. The ordered molecule did not
+    arrive, and counting the replacement towards the fill rate would let a
+    supplier who never once sent what was asked for score a perfect record. It
+    closes the line — nothing more is coming against it — and it is counted as a
+    line the supplier did not fill, because that is what happened.
+
+    Whether the substitute is clinically acceptable is a pharmacist's judgement
+    and is not made here. This records that it happened.
+    """
+    qty = q(quantity)
+    if qty <= 0:
+        raise ReceivingError("substituted quantity must be positive")
+    if str(delivered_ndc) == str(line.get("ndc11")):
+        raise ReceivingError(
+            "that is the product that was ordered, not a substitute — receive it "
+            "as an ordinary delivery")
+
+    ordered = q(line.get("quantity_ordered") or 0)
+    already = q(line.get("quantity_received") or 0)
+    return LineMatch(
+        line_id=str(line.get("id")), ndc11=str(line.get("ndc11")),
+        ordered=ordered, already_received=already, now_receiving=q(0),
+        total_received=already, status="substituted", shape="short",
+        explanation=(
+            f"{qty} of {delivered_ndc} delivered against an order for {ordered} "
+            f"of {line.get('ndc11')}. The line is closed as substituted: what "
+            f"was ordered did not arrive, so it does not count towards the "
+            f"supplier's fill rate. Whether the substitute is acceptable is a "
+            f"pharmacist's decision, not this one."))

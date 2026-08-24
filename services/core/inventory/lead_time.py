@@ -280,3 +280,93 @@ def reorder_signals(*, avg_daily_demand, demand_basis: str,
         lead_time_basis=lead.basis, lead_time_days=lead.days, confidence=conf,
         demand_class=demand_class, event_floor=floor, floor_applied=applied,
         explanation=why)
+
+
+# ── Late against a promise, which is not the same as slow ────────────────
+
+# A delivery this many days past the promised date is late. Not zero: a
+# wholesaler that says Tuesday and arrives Wednesday morning has not broken
+# anything a pharmacy plans around, and a metric that fires on every ordinary
+# delivery is one nobody reads.
+GRACE_DAYS = 1
+
+# Below this many promised orders an on-time rate is a fraction of a small
+# number wearing a percentage sign.
+MIN_PROMISED_FOR_RATE = 4
+
+
+@dataclass(frozen=True)
+class Punctuality:
+    """Whether a supplier keeps the date it gave, as distinct from being quick."""
+    supplier: str | None
+    promised: int              # delivered orders that carried a promised date
+    on_time: int
+    late: int
+    worst_days_late: int | None
+    rate: Decimal | None
+    basis: str                 # observed | insufficient_history | no_promises
+    explanation: str
+
+    def as_dict(self) -> dict:
+        return {"supplier": self.supplier, "promised": self.promised,
+                "on_time": self.on_time, "late": self.late,
+                "worst_days_late": self.worst_days_late,
+                "rate": None if self.rate is None else float(self.rate),
+                "basis": self.basis, "explanation": self.explanation}
+
+
+def punctuality(orders: list[dict], *, supplier: str | None = None) -> Punctuality:
+    """On-time delivery against the date the supplier gave.
+
+    Deliberately separate from `estimate`. Lead time answers "how long does this
+    take", which goes into the reorder point; this answers "does it arrive when
+    they said", which is what you hold them to in a conversation. A supplier can
+    be slow and punctual — that is a supplier you can plan around — or quick and
+    unreliable, which is the expensive one.
+
+    Orders with no promised date are excluded rather than counted as on time.
+    Until recently nothing wrote `expected_delivery` at all, so treating an
+    absent promise as a kept one would have scored every supplier perfect on a
+    column that was empty.
+    """
+    late_by: list[int] = []
+    promised = 0
+    for o in orders:
+        # Computed here rather than through `_days_between`, whose None means
+        # both "arrived early" and "these are not dates" — and scoring an
+        # unparseable row as on-time is how a supplier gets credit for a
+        # corrupt one.
+        due = o.get("expected_delivery")
+        got = o.get("received_at")
+        due = due.date() if isinstance(due, datetime) else due
+        got = got.date() if isinstance(got, datetime) else got
+        if not isinstance(due, date) or not isinstance(got, date):
+            continue
+        promised += 1
+        late_by.append(max(0, got.toordinal() - due.toordinal() - GRACE_DAYS))
+
+    if promised == 0:
+        return Punctuality(
+            supplier=supplier, promised=0, on_time=0, late=0,
+            worst_days_late=None, rate=None, basis="no_promises",
+            explanation=("No delivered order from this supplier carried a "
+                         "promised date, so there is nothing to hold it to. An "
+                         "absent promise is not a kept one."))
+
+    late = sum(1 for d in late_by if d > 0)
+    on_time = promised - late
+    worst = max(late_by) if late_by else 0
+    if promised < MIN_PROMISED_FOR_RATE:
+        return Punctuality(
+            supplier=supplier, promised=promised, on_time=on_time, late=late,
+            worst_days_late=worst, rate=None, basis="insufficient_history",
+            explanation=(f"{promised} order(s) with a promised date — too few for "
+                         f"a rate. {late} arrived late, the worst by {worst} "
+                         f"day(s)."))
+    return Punctuality(
+        supplier=supplier, promised=promised, on_time=on_time, late=late,
+        worst_days_late=worst, rate=q(Decimal(on_time) / Decimal(promised)),
+        basis="observed",
+        explanation=(f"{on_time} of {promised} orders arrived by the date given "
+                     f"(a {GRACE_DAYS}-day grace); the worst was {worst} day(s) "
+                     f"late."))

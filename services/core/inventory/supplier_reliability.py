@@ -98,6 +98,9 @@ class SupplierScore:
     lead_basis: str
     lead_stdev: float | None
     consistency: Decimal | None          # 1 − CV, floored at zero
+    # Keeping the date they gave, which is not the same as being quick.
+    on_time_rate: Decimal | None
+    on_time_basis: str
 
     score: Decimal | None
     basis: str                           # observed | provisional | insufficient_history
@@ -120,6 +123,9 @@ class SupplierScore:
             "lead_days": self.lead_days, "lead_basis": self.lead_basis,
             "lead_stdev": self.lead_stdev,
             "consistency": None if self.consistency is None else float(self.consistency),
+            "on_time_rate": None if self.on_time_rate is None
+                            else float(self.on_time_rate),
+            "on_time_basis": self.on_time_basis,
             "score": None if self.score is None else float(self.score),
             "basis": self.basis, "grade": self.grade,
             "substitutions": self.substitutions,
@@ -190,6 +196,7 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
                    supplier: str) -> SupplierScore:
     """One supplier's record, from its delivered orders and their lines."""
     lead = LT.estimate(orders, supplier=supplier)
+    punc = LT.punctuality(orders, supplier=supplier)
     fill = RCV.fill_rate(lines, supplier=supplier)
     consistency, cv = _consistency(lead)
 
@@ -207,8 +214,12 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
     # failed to arrive, and counting it would nag about every open order.
     outstanding = [l for l in lines if str(l.get("status")) == "partial"]
 
-    subs = len([l for l in lines if str(l.get("status")) == "substituted"])
-    sub_basis = "observed" if subs else "not_captured"
+    subs = len([l for l in lines if str(l.get("status")) == RCV.SUBSTITUTED])
+    # Receiving can record a substitution now, so a zero here means "none seen"
+    # for a supplier that has settled lines — and still means "unmeasured" for
+    # one that has none. The distinction is the whole point of a basis.
+    sub_basis = ("observed" if subs else
+                 "none_seen" if closed else "not_captured")
 
     concerns: list[str] = []
     if short_rate is not None and short_rate > SHORT_LINE_CONCERN:
@@ -222,8 +233,17 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
             f"cost that is carried as safety stock rather than seen")
     if sub_basis == "not_captured":
         concerns.append(
-            "substitutions are not recorded by any receiving path, so zero here "
-            "means unmeasured, not never")
+            "no settled lines from this supplier, so a zero substitution count "
+            "here means unmeasured rather than never")
+    if subs:
+        concerns.append(
+            f"{subs} line(s) closed as a substitution — what was ordered did not "
+            f"arrive, so none of it counts towards the fill rate above")
+    if punc.rate is not None and punc.rate < Decimal("0.9"):
+        concerns.append(
+            f"misses the date it gives: {punc.explanation} A supplier is held to "
+            f"its promise, not to its average, and this is the number to open a "
+            f"conversation with")
     if _stalled(len(outstanding), len(closed)):
         concerns.append(
             f"{len(outstanding)} line(s) delivered short and never closed out — "
@@ -248,7 +268,8 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
             short_line_rate=short_rate, outstanding_lines=len(outstanding),
             lead_days=lead.days,
             lead_basis=lead.basis, lead_stdev=lead.stdev_days,
-            consistency=consistency, score=None, basis="insufficient_history",
+            consistency=consistency, on_time_rate=punc.rate,
+            on_time_basis=punc.basis, score=None, basis="insufficient_history",
             grade=None, substitutions=subs, substitution_basis=sub_basis,
             concerns=concerns,
             products=frozenset(str(l.get("ndc11")) for l in lines if l.get("ndc11")),
@@ -268,7 +289,8 @@ def score_supplier(orders: list[dict], lines: list[dict], *,
         fill_rate=fill.rate, fill_basis=fill.basis, short_lines=len(short),
         short_line_rate=short_rate, outstanding_lines=len(outstanding),
         lead_days=lead.days, lead_basis=lead.basis,
-        lead_stdev=lead.stdev_days, consistency=consistency, score=score,
+        lead_stdev=lead.stdev_days, consistency=consistency,
+        on_time_rate=punc.rate, on_time_basis=punc.basis, score=score,
         basis=basis,
         grade=None if provisional else _grade(score, fill.rate),
         substitutions=subs, substitution_basis=sub_basis, concerns=concerns,

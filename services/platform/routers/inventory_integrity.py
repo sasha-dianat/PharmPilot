@@ -40,6 +40,7 @@ from services.core.inventory import reservation_service as RS
 from services.core.inventory import reservations as RSV
 from services.core.inventory import negotiation as NEG
 from services.core.inventory import shortage as SHORT
+from services.core.inventory import sweep as SWEEP
 from services.core.inventory import supplier_reliability as SUP
 from services.core.inventory import reconciliation as R
 from services.core.inventory import formulary_binding as FB
@@ -1074,13 +1075,25 @@ async def cycle_count_plan(
 
 # ── Recommendations ───────────────────────────────────────────────────────
 
-async def _record(db: AsyncSession, pharmacy_id, proposals: list, *, actor_id=None):
+async def _record(db: AsyncSession, pharmacy_id, proposals: list, *,
+                  actor_id=None, kinds: tuple[str, ...] | None = None):
     """Persist a run's proposals, closing out what it no longer proposes.
 
     Re-raising advice that is already open would inflate the denominator every
     night and make the acceptance rate a measure of how often the job ran. The
     partial unique index enforces it; this skips the insert so a nightly sweep
     is not a stream of caught conflicts.
+
+    `kinds` scopes the supersede pass, and it is not optional in spirit. Only the
+    engine that raised a piece of advice may close it: "I no longer propose this"
+    is a statement about the engine's own output. Superseding was previously
+    scoped to the pharmacy, which was invisible while one engine ran at a time —
+    a human opening one tab — and broke the moment the nightly sweep ran three in
+    a row. Each engine closed the previous one's advice, the next run re-raised
+    it, and the churn drove the acceptance rate the ledger exists to measure
+    towards zero. An empty batch still supersedes within its own kind, because an
+    engine that proposes nothing today *is* saying the condition has gone — which
+    is why the kind has to be passed rather than inferred from the proposals.
     """
     recent = [dict(r) for r in (await db.execute(text("""
         SELECT id, kind, status, fingerprint, created_at, decided_at
@@ -1088,8 +1101,10 @@ async def _record(db: AsyncSession, pharmacy_id, proposals: list, *, actor_id=No
         WHERE pharmacy_id = :pid AND is_deleted = false
           AND (status = 'open' OR decided_at > NOW() - INTERVAL '180 days')"""),
         {"pid": pharmacy_id})).mappings().all()]
+    scope = set(kinds) if kinds else {p.kind for p in proposals}
     existing = [r for r in recent if r["status"] == "open"]
-    open_fps = {r["fingerprint"] for r in existing}
+    mine = [r for r in existing if r["kind"] in scope]
+    open_fps = {r["fingerprint"] for r in mine}
     # Advice a human decided recently is not raised again. Re-asking is how an
     # alert queue teaches people to ignore it, and it re-inflates the
     # denominator the fingerprint exists to protect.
@@ -1116,7 +1131,9 @@ async def _record(db: AsyncSession, pharmacy_id, proposals: list, *, actor_id=No
         written += 1
 
     closed = 0
-    for row in RC.supersede(existing, keep):
+    # `mine`, not `existing`: another engine's open advice is not this one's to
+    # close.
+    for row in RC.supersede(mine, keep):
         await db.execute(text(
             "UPDATE inventory_recommendations SET status = 'superseded', "
             "updated_at = NOW() WHERE id = :i"), {"i": row["id"]})
@@ -1346,7 +1363,8 @@ async def expiry_exposure(
                 severity=l.severity)
             for l in exposure.lots if ER.worth_raising(l)]
         out["recommendations"] = await _record(
-            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+            db, staff.pharmacy_id, proposals, actor_id=staff.id,
+            kinds=("expiry_risk",))
 
     return out
 
@@ -1405,6 +1423,10 @@ async def supplier_scorecard(
     delivered = [o for o in orders if o.get("received_at") is not None]
     table = SUP.rank(delivered, lines)
     lead = LT.by_supplier(delivered)
+    grouped: dict[str, list[dict]] = {}
+    for o in delivered:
+        grouped.setdefault(str(o.get("wholesaler") or "unknown"), []).append(o)
+    punctual = {k: LT.punctuality(v, supplier=k) for k, v in grouped.items()}
 
     # A head-to-head only between the two best *measured* suppliers, and only
     # where their baskets overlap. `comparable` refuses the rest.
@@ -1414,6 +1436,9 @@ async def supplier_scorecard(
 
     out = {
         "suppliers": [{**s.as_dict(),
+                       "punctuality": punctual[s.supplier].as_dict()
+                                      if s.supplier in punctual
+                                      else LT.punctuality([], supplier=s.supplier).as_dict(),
                        "lead_time": lead[s.supplier].as_dict()
                                     if s.supplier in lead
                                     else LT.declared_default(s.supplier).as_dict()}
@@ -1449,7 +1474,8 @@ async def supplier_scorecard(
                 severity="medium" if s.grade == "mixed" else "high")
             for s in table if SUP.worth_raising(s)]
         out["recommendations"] = await _record(
-            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+            db, staff.pharmacy_id, proposals, actor_id=staff.id,
+            kinds=("supplier_reliability",))
 
     return out
 
@@ -1568,7 +1594,8 @@ async def shortage_warning(
                 severity=s.severity)
             for s in report.signals if SHORT.worth_raising(s)]
         out["recommendations"] = await _record(
-            db, staff.pharmacy_id, proposals, actor_id=staff.id)
+            db, staff.pharmacy_id, proposals, actor_id=staff.id,
+            kinds=("shortage_warning",))
 
     return out
 
@@ -1860,3 +1887,38 @@ async def morning_pick_list(
     out["as_of"] = today.isoformat()
     out["cover_days"] = cover_days
     return out
+
+
+class SweepRequest(BaseModel):
+    """Run the engines now rather than waiting for tonight."""
+    source: str = Field("manual", max_length=32)
+
+
+@router.post("/sweep")
+async def run_sweep(
+    body: SweepRequest | None = None,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run every unasked engine for THIS pharmacy and file what it finds.
+
+    The nightly loop covers every tenant; this covers the caller's, for the
+    moment somebody wants the queue populated before tonight — after a big
+    delivery, or the first time the engines are switched on.
+
+    It decides nothing. Each engine files proposals, and applying any of them
+    still goes through the ordinary approval and ledger paths.
+    """
+    filed = await SWEEP.sweep_pharmacy(db, staff.pharmacy_id)
+    totals = {k: sum(int(v.get(k) or 0) for v in filed.values())
+              for k in ("produced", "written", "superseded", "suppressed")}
+    log.info("Manual inventory sweep by %s: %s", str(staff.id)[:8], totals)
+    return {
+        "source": (body.source if body else "manual"),
+        "per_engine": filed, **totals,
+        "explanation": (
+            f"{totals['written']} new recommendation(s). "
+            f"{totals['suppressed']} were withheld because somebody already "
+            f"decided them — re-raising those would inflate the denominator the "
+            f"acceptance rate is measured against."),
+    }

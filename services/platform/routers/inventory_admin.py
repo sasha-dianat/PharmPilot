@@ -466,7 +466,7 @@ async def edit_stock_level(
 
 async def _reconcile_purchase_order(
     db: AsyncSession, *, pharmacy_id, po_id, ndc11: str, units: float,
-    now: datetime, actor_id,
+    now: datetime, actor_id, substitutes_ndc11: str | None = None,
 ) -> dict:
     """Close the loop from this delivery back to the order that asked for it.
 
@@ -494,6 +494,33 @@ async def _reconcile_purchase_order(
               "quantity_ordered": r.quantity_ordered,
               "quantity_received": r.quantity_received,
               "status": r.status, "created_at": r.created_at} for r in rows]
+
+    # A substitution names the molecule it replaces, because the delivered NDC
+    # is by definition not on the order and would otherwise match nothing.
+    if substitutes_ndc11:
+        target = RCV.match_line(lines, substitutes_ndc11)
+        if target is None:
+            raise HTTPException(422,
+                f"no open line on this order is expecting {substitutes_ndc11}, "
+                f"so nothing was substituted for it")
+        match = RCV.substitution(target, delivered_ndc=ndc11, quantity=units)
+        row = by_id[match.line_id]
+        row.status = match.status
+        row.updated_by = actor_id
+        for line in lines:
+            if line["id"] == match.line_id:
+                line["status"] = match.status
+        po.status = RCV.order_status(lines)
+        stamped = RCV.completion(lines, now=now)
+        if stamped is not None and po.received_at is None:
+            po.received_at = stamped
+        po.updated_by = actor_id
+        out = {"purchase_order_id": str(po.id), "matched": True,
+               "substituted_for": substitutes_ndc11,
+               "order_status": po.status,
+               "received_at": iso_utc(po.received_at) if po.received_at else None}
+        out.update(match.as_dict())
+        return out
 
     target = RCV.match_line(lines, ndc11)
     if target is None:
@@ -677,6 +704,13 @@ class ReceiveLot(BaseModel):
     storage_location: Optional[str] = None
     serial_number: Optional[str] = None
     purchase_order_id: Optional[UUID] = None
+    # The molecule this delivery replaces. `purchase_order_lines.status` has
+    # carried `substituted` since the model was written and nothing ever
+    # produced it, so E12 has been reporting its substitution count as
+    # `not_captured` — a zero there meant unmeasured, not never. Naming the
+    # replaced NDC is what starts measuring it, and the substitute is never
+    # counted towards the supplier's fill rate: what was ordered did not arrive.
+    substitutes_ndc11: Optional[str] = None
     reason: str = "goods receipt"
 
 
@@ -851,7 +885,8 @@ async def receive_stock(
     if body.purchase_order_id is not None:
         po_result = await _reconcile_purchase_order(
             db, pharmacy_id=staff.pharmacy_id, po_id=body.purchase_order_id,
-            ndc11=body.ndc11, units=units, now=now, actor_id=staff.id)
+            ndc11=body.ndc11, units=units, now=now, actor_id=staff.id,
+            substitutes_ndc11=body.substitutes_ndc11)
 
     movement = await append_movement(
         db, pharmacy_id=staff.pharmacy_id, ndc11=body.ndc11,

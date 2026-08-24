@@ -256,6 +256,12 @@ class PurchaseOrderCreate(BaseModel):
     wholesaler: str
     lines: list[dict]  # [{ndc11, quantity_ordered, unit_cost}]
     notes: Optional[str] = None
+    # What the wholesaler promised. The column has always existed and nothing
+    # has ever written it, so "late" could only ever mean "slower than this
+    # supplier's own habit" — never "later than they said". A supplier is held
+    # to its promise, not to its average, and the service-level ask in the
+    # negotiation brief has no teeth without one.
+    expected_delivery: Optional[date] = None
 
 
 @router.post("/orders", status_code=201)
@@ -274,6 +280,7 @@ async def create_purchase_order(
         po_number=po_number,
         status="draft",
         notes=body.notes,
+        expected_delivery=body.expected_delivery,
         created_by=staff.id,
     )
     db.add(po)
@@ -310,9 +317,15 @@ async def create_purchase_order(
     return {"po_number": po_number, "po_id": str(po.id), "total_cost": total, "status": "draft"}
 
 
+class PurchaseOrderSubmit(BaseModel):
+    """What the wholesaler promised when the order was placed."""
+    expected_delivery: Optional[date] = None
+
+
 @router.post("/orders/{po_id}/submit")
 async def submit_purchase_order(
     po_id: UUID,
+    body: Optional[PurchaseOrderSubmit] = None,
     staff: Staff = Depends(require_permission("inventory:order")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -333,9 +346,15 @@ async def submit_purchase_order(
 
     po.status = "submitted"
     po.ordered_at = datetime.now(timezone.utc)
+    if body is not None and body.expected_delivery is not None:
+        # A date agreed at submission time supersedes the one on the draft:
+        # the promise that counts is the one made when the order was placed.
+        po.expected_delivery = body.expected_delivery
     # In production: send EDI 850 to wholesaler
     logger.info("PO %s submitted to %s", po.po_number, po.wholesaler)
-    return {"status": "submitted", "po_number": po.po_number}
+    return {"status": "submitted", "po_number": po.po_number,
+            "expected_delivery": (po.expected_delivery.isoformat()
+                                  if po.expected_delivery else None)}
 
 
 import logging

@@ -2585,3 +2585,78 @@ position, and JSONB round-trips as a dict of floats, the shape
 
 **Next action.** Phase 5 of 7: zone rules and reconciliation. Phases 6 (review
 UI, including the survey walker) and 7 (hardening) follow.
+
+### 2026-08-19 — Claude (Opus 5) — the three gaps the engines named about themselves
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- Asked whether the section was finished, the honest answer was no, and the
+  reason was specific rather than vague: three holes the code openly declared
+  and nobody had filled. Same shape as the `received_at` gap that blocked all of
+  Tier C — a column read in several places and written in none. No migration:
+  every column already existed.
+
+**1. A promised date.** `purchase_orders.expected_delivery` was read twice and
+written never, so "late" could only mean *slower than this supplier's own habit*,
+never *later than they said*. `lead_time.punctuality()` measures on-time delivery
+against the date given, deliberately separate from `estimate()`: a supplier can
+be slow and punctual — one you can plan around — or quick and unreliable, which
+is the expensive one. An absent promise is excluded, not counted as kept;
+counting it would have scored every supplier perfect on an empty column. Written
+at `POST /orders` and at submit, where the promise that counts is made.
+  - A subtlety worth recording: I first reused `_days_between`, whose `None`
+    means both "arrived early" and "these are not dates". Scoring an unparseable
+    row as on-time gives a supplier credit for a corrupt one, so the comparison
+    is done locally with an explicit type check.
+
+**2. Substitutions.** `purchase_order_lines.status` has carried `substituted`
+since the model was written and nothing produced it, which is why E12 reported
+`not_captured` — a zero there meant unmeasured, not never. `receiving.substitution()`
+plus `ReceiveLot.substitutes_ndc11` record it. A substitution is deliberately
+**not** a fill: the ordered molecule did not arrive, and counting the replacement
+would let a supplier who never once sent what was asked for score a perfect
+record. The goods are still received onto the shelf; whether the substitute is
+clinically acceptable is a pharmacist's judgement and is not made here. The basis
+now separates `observed` / `none_seen` / `not_captured`, which is the point of
+carrying one.
+
+**3. Nothing ran the engines.** Every engine filed advice only when a human
+opened its tab with `raise_advice=true`, so the recommendation ledger — built to
+answer *is each engine any good?* — had nothing to measure, and a detector firing
+forty times a week was indistinguishable from one that had never fired. That is
+the same failure this whole section started with: machinery built to be measured,
+never measured, assumed to be working. `services/core/inventory/sweep.py` runs
+them overnight for every pharmacy behind `INVENTORY_SWEEP_ENABLED`, following the
+shape of `drug_catalog/scheduler.py`; `POST /inventory/sweep` does the caller's
+pharmacy on demand. One session per tenant, so one pharmacy's failure is one row
+rather than the end of the run — an empty queue must not be mistaken for a clean
+shelf. Recommendations from a sweep carry `created_by = NULL`: nobody was at the
+keyboard and the row should say so.
+
+**The defect that only appeared once they ran together.** `_record` superseded
+every *open* recommendation for the pharmacy whose fingerprint was not in the
+current batch — **across all kinds**. Invisible while one engine ran at a time,
+because a human opens one tab. The moment the sweep ran three in a row, each
+engine closed the previous one's advice, the next run re-raised it, and the churn
+drove the acceptance rate the ledger exists to measure towards zero. Caught by
+the verification asserting a second sweep writes nothing, which it did not.
+Superseding is now scoped to the kind that raised it: only the engine that made a
+piece of advice may close it, and an empty batch still closes its own kind
+because proposing nothing *is* a statement that the condition has gone — which is
+why the kind is passed in rather than inferred from the proposals.
+
+**Verification.** `scripts/verify_substrate_and_sweep.py` — **24/24** on a tenant
+built for it: five promised orders of which two arrive late (on-time rate 0.6,
+worst 2 days), a substitution that closes its line at zero received while the
+goods reach the shelf, and a sweep that files a real shortage, files nothing the
+second time, and never borrows an identity. Plus 12 new unit tests including two
+that pin the cross-kind supersede. The four earlier scripts still pass. `tsc
+--noEmit` clean. `pytest tests/unit -p no:randomly` → **1,984 passed, 1 failed**
+(`test_integrations_sandbox`, pre-existing and logged repeatedly above),
+1 xfailed.
+
+**Still open, and none of it is inventory code.** The pricing cross-tenant
+finding referred in the previous entry; the fabricated `DEMO_SUPPLY` fixture in
+`IntelligenceInventoryPanels.tsx`; the owner decisions on 765 uncoverable units
+and 16 unbound formulary items; and forecast quality for every Tier B engine,
+which stays unvalidated until the pilot dispenses.

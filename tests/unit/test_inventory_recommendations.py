@@ -278,3 +278,28 @@ def test_a_supplier_recommendation_is_a_known_kind():
                     produced_by="supplier_reliability_v1")
     assert RC.fingerprint(p)
     assert RC.cooldown_days("supplier_reliability") == 90
+
+
+# ── one engine must not close another's advice ────────────────────────────
+def test_superseding_is_scoped_to_the_kind_that_raised_it():
+    """`supersede` is handed only the rows belonging to the running engine. It
+    was previously handed every open row for the pharmacy, which was invisible
+    while one engine ran at a time — a human opening one tab — and broke the
+    moment a nightly sweep ran three in a row: each engine closed the previous
+    one's advice, the next run re-raised it, and the churn drove the acceptance
+    rate the ledger exists to measure towards zero."""
+    open_rows = [
+        {"id": "a", "kind": "shortage_warning", "status": "open", "fingerprint": "f1"},
+        {"id": "b", "kind": "supplier_reliability", "status": "open", "fingerprint": "f2"},
+    ]
+    # The supplier engine runs and proposes nothing.
+    mine = [r for r in open_rows if r["kind"] in {"supplier_reliability"}]
+    closed = {r["id"] for r in RC.supersede(mine, set())}
+    assert closed == {"b"}, "it closed the shortage engine's advice"
+
+
+def test_an_engine_that_proposes_nothing_still_closes_its_own():
+    """Proposing nothing is a statement: the condition has gone. That is why the
+    kind has to be passed in rather than inferred from an empty proposal list."""
+    mine = [{"id": "a", "kind": "expiry_risk", "status": "open", "fingerprint": "f1"}]
+    assert [r["id"] for r in RC.supersede(mine, set())] == ["a"]

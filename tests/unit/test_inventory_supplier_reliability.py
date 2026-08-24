@@ -138,13 +138,76 @@ def test_over_delivery_does_not_lift_the_fill_rate_past_one():
 
 
 # ── absence of evidence ───────────────────────────────────────────────────
-def test_zero_substitutions_is_reported_as_unmeasured_not_as_never():
-    """No receiving path records a substitution today, so a zero here says
-    nothing about the supplier."""
+def test_zero_substitutions_from_a_supplier_with_history_means_none_seen():
+    """Receiving can record a substitution now, so a zero against a supplier that
+    has settled lines is an observation rather than a gap. It was `not_captured`
+    for everyone while nothing could produce the status at all."""
     s = SR.score_supplier(orders([5] * 8), lines(8), supplier="acme")
     assert s.substitutions == 0
+    assert s.substitution_basis == "none_seen"
+
+
+def test_zero_substitutions_from_a_supplier_with_no_history_still_means_unmeasured():
+    """The distinction is the whole point of carrying a basis."""
+    s = SR.score_supplier([], [], supplier="stranger")
     assert s.substitution_basis == "not_captured"
-    assert any("unmeasured, not never" in c for c in s.concerns)
+    assert any("unmeasured rather than never" in c for c in s.concerns)
+
+
+def test_a_substituted_line_does_not_count_towards_the_fill_rate():
+    """What was ordered did not arrive. Counting the replacement would let a
+    supplier who never once sent the right molecule score a perfect record."""
+    ls = ([{"wholesaler": "acme", "ndc11": f"N{i}", "status": "substituted",
+            "quantity_ordered": Decimal("100"),
+            "quantity_received": Decimal("0")} for i in range(3)]
+          + lines(5))
+    s = SR.score_supplier(orders([5] * 8), ls, supplier="acme")
+    assert s.substitutions == 3
+    assert s.fill_rate is not None and s.fill_rate < Decimal("0.7")
+    assert any("does not arrive" in c or "did not arrive" in c for c in s.concerns)
+
+
+# ── keeping the date they gave, which is not being quick ──────────────────
+def promised(days_late: list[int], supplier="acme"):
+    """Delivered orders that carried a promised date."""
+    return [{"wholesaler": supplier,
+             "ordered_at": START + timedelta(days=7 * i),
+             "expected_delivery": (START + timedelta(days=7 * i + 5)).date(),
+             "received_at": START + timedelta(days=7 * i + 5 + d)}
+            for i, d in enumerate(days_late)]
+
+
+def test_a_supplier_that_misses_its_own_dates_is_named():
+    s = SR.score_supplier(promised([0, 4, 0, 5, 3, 0]), lines(8), supplier="acme")
+    assert s.on_time_rate is not None and s.on_time_rate < Decimal("0.9")
+    assert s.on_time_basis == "observed"
+    assert any("held to its promise, not to its average" in c for c in s.concerns)
+
+
+def test_a_supplier_that_keeps_them_is_not():
+    s = SR.score_supplier(promised([0, 0, 1, 0, 0, 1]), lines(8), supplier="acme")
+    assert s.on_time_rate == Decimal("1.000")
+    assert not any("misses the date" in c for c in s.concerns)
+
+
+def test_slow_but_punctual_is_not_scored_as_unreliable():
+    """Eleven promised days, delivered on the eleventh day, every time. The
+    reorder point handles the eleven days; there is nothing else to report."""
+    slow = [{"wholesaler": "acme", "ordered_at": START + timedelta(days=14 * i),
+             "expected_delivery": (START + timedelta(days=14 * i + 11)).date(),
+             "received_at": START + timedelta(days=14 * i + 11)} for i in range(6)]
+    s = SR.score_supplier(slow, lines(8), supplier="acme")
+    assert s.on_time_rate == Decimal("1.000")
+    assert s.lead_days == 11
+
+
+def test_no_promised_dates_is_not_a_perfect_record():
+    """Nothing wrote `expected_delivery` until recently. Treating an absent
+    promise as a kept one would have scored every supplier perfect on an empty
+    column."""
+    s = SR.score_supplier(orders([5] * 8), lines(8), supplier="acme")
+    assert s.on_time_rate is None
+    assert s.on_time_basis == "no_promises"
 
 
 def test_a_recorded_substitution_is_counted_as_observed():
