@@ -118,7 +118,7 @@ def create_app() -> FastAPI:
         lab_safety, med_reconciliation, second_brain, drug_intelligence,
         depot_transfer, ai_settings, inventory_movements, procurement,
         inventory_integrity, inventory_admin, inventory_exceptions,
-        inventory_recall, biometric_admin, surveillance,
+        inventory_recall, biometric_admin, surveillance, vision,
         pricing,
     )
 
@@ -130,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(biometric.router,     prefix="/api/v1/biometric",     tags=["biometric"])
     app.include_router(biometric_admin.router, prefix="/api/v1/biometric",   tags=["biometric gallery admin"])
     app.include_router(surveillance.router,   prefix="/api/v1/surveillance", tags=["surveillance"])
+    app.include_router(vision.router,         prefix="/api/v1/vision", tags=["vision"])
     app.include_router(audio.router,         prefix="/api/v1/audio",         tags=["audio"])
     app.include_router(clinical_brain.router,prefix="/api/v1/clinical",      tags=["clinical"])
     app.include_router(knowledge.router,     prefix="/api/v1/knowledge",     tags=["knowledge"])

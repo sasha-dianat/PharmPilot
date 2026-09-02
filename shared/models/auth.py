@@ -38,6 +38,10 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "claims:read", "claims:submit",
         "reports:read", "staff:read", "staff:write",
         "biometric:read", "audio:read",
+        # The owner defines where policy applies. Registering a zone moves the
+        # boundary that rules, retention and access are all attached to, so it
+        # sits with the other owner acts rather than with inventory:write.
+        "vision:read", "vision:write",
     ],
     StaffRole.PHARMACIST: [
         "rx:read", "rx:write", "rx:verify", "rx:dispense",
@@ -49,6 +53,8 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "inventory:read", "inventory:approve", "reports:read",
         "biometric:read", "audio:read",
         "clinical:read", "clinical:write",
+        # Read only: a pharmacist works within the zone map, they do not draw it.
+        "vision:read",
     ],
     StaffRole.PHARMACY_INTERN: [
         "rx:read", "rx:write",
