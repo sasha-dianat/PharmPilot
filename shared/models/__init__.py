@@ -53,6 +53,7 @@ from . import issue_disposition  # noqa: F401  (IssueDisposition — decided lay
 from . import harvest_failure  # noqa: F401  (HarvestFailure — retryable page ids)
 from . import surveillance_log  # noqa: F401  (SurveillanceObservation — fused biometric + RF fix)
 from . import rf_survey  # noqa: F401  (RfAccessPoint, RfFingerprint — RF positioning)
+from . import vision  # noqa: F401  (VisionZone — the zone registry, unit of policy)
 from . import catalog_succession  # noqa: F401  (CatalogSuccession — old IRC → new IRC)
 from . import insurance   # noqa: F401  (InsurancePlan, PatientInsurance, ...)
 from . import inventory   # noqa: F401  (DrugProduct, InventoryLot, StockLevel, PurchaseOrder, ...)
