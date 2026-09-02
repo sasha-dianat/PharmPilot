@@ -34,10 +34,31 @@ def build_observation(*, pharmacy_id: UUID, site: str, action_type: str,
                       observed_at: datetime, fused=None, fix=None,
                       zone_id: str | None = None, camera_id: str | None = None,
                       rf_device_ref: str | None = None, stratum=None,
-                      source: str = "edge") -> dict:
-    """Kwargs for `SurveillanceObservation`. Validates the schema's constraints."""
+                      source: str = "edge",
+                      known_zones: frozenset[str] | None = None) -> dict:
+    """Kwargs for `SurveillanceObservation`. Validates the schema's constraints.
+
+    `known_zones` is the set of registered zone codes for this pharmacy and
+    site, from `services.core.vision.zones.load_zone_codes`. Passing None means
+    the caller could not look the registry up; the zone then travels
+    unvalidated and migration 0052's foreign key has the final say. Refusing
+    every observation in that case would turn a registry outage into a capture
+    outage, which is the worse failure.
+    """
     if site not in VALID_SITES:
         raise ValueError(f"site must be one of {VALID_SITES}, got {site!r}")
+
+    if zone_id is not None:
+        # '' is not "unzoned". It would slip past any membership test guarded
+        # on truthiness and then defeat every `zone_id IS NULL` branch
+        # downstream, so it is refused regardless of whether zones are known.
+        if zone_id != zone_id.strip() or not zone_id:
+            raise ValueError(
+                f"zone_id must be non-empty and unpadded, got {zone_id!r}")
+        if known_zones is not None and zone_id not in known_zones:
+            raise ValueError(
+                f"zone {zone_id!r} is not registered for this pharmacy and "
+                f"site; register it in vision_zone before sending observations")
 
     row: dict = {
         "pharmacy_id": pharmacy_id,
