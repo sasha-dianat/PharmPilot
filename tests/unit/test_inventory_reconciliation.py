@@ -89,40 +89,40 @@ def _mv(i, actor, pct_delta, before=100, controlled=False, mtype="ADJUSTMENT"):
 
 
 def test_a_small_one_off_correction_is_not_suspicious():
-    assert R.check_suspicious_adjustments([_mv(1, "s1", 2)]).count == 0
+    assert R.check_suspicious_adjustments([_mv(1, "s1", 2)], now=NOW).count == 0
 
 
 def test_a_large_write_down_is_flagged():
-    f = R.check_suspicious_adjustments([_mv(1, "s1", 40)])
+    f = R.check_suspicious_adjustments([_mv(1, "s1", 40)], now=NOW)
     assert f.count == 1 and f.samples[0]["pattern"] == "large_write_down"
 
 
 def test_any_controlled_write_down_is_flagged_however_small():
-    f = R.check_suspicious_adjustments([_mv(1, "s1", 1, controlled=True)])
+    f = R.check_suspicious_adjustments([_mv(1, "s1", 1, controlled=True)], now=NOW)
     assert f.count == 1 and f.samples[0]["pattern"] == "controlled_write_down"
 
 
 def test_repeat_write_downs_by_one_person_on_one_item_form_a_pattern():
     ms = [_mv(i, "s1", 3) for i in range(3)]
-    patterns = [s["pattern"] for s in R.check_suspicious_adjustments(ms).samples]
+    patterns = [s["pattern"] for s in R.check_suspicious_adjustments(ms, now=NOW).samples]
     assert "repeat_write_down" in patterns
 
 
 def test_the_same_write_downs_spread_across_people_are_not_a_pattern():
     ms = [_mv(i, f"s{i}", 3) for i in range(3)]
-    assert R.check_suspicious_adjustments(ms).count == 0
+    assert R.check_suspicious_adjustments(ms, now=NOW).count == 0
 
 
 def test_old_movements_fall_outside_the_window():
     old = _mv(1, "s1", 90)
     old["created_at"] = NOW - timedelta(days=90)
-    assert R.check_suspicious_adjustments([old], window_days=30).count == 0
+    assert R.check_suspicious_adjustments([old], window_days=30, now=NOW).count == 0
 
 
 def test_receipts_are_never_suspicious_write_downs():
     m = _mv(1, "s1", 40)
     m["quantity_delta"] = 40          # a gain
-    assert R.check_suspicious_adjustments([m]).count == 0
+    assert R.check_suspicious_adjustments([m], now=NOW).count == 0
 
 
 # ── C8/C9/C10 ─────────────────────────────────────────────────────────────
@@ -335,3 +335,16 @@ def test_unresolved_work_outranks_a_pending_ruling():
 def test_fully_bound_stock_is_silent():
     f = R.check_formulary_binding([{"ndc11": "A", "irc": "123"}])
     assert f.count == 0 and f.severity == "info"
+
+
+def test_the_window_is_measured_from_an_injected_clock_not_the_wall_one():
+    """These three checks passed for a month and then began failing because the
+    calendar moved past their fixture data — which looks exactly like a
+    regression and is not one. A rolling window read off the wall clock makes
+    any test with a fixed date expire silently."""
+    stale = _mv(1, "s1", 40)
+    stale["created_at"] = NOW - timedelta(days=200)
+    assert R.check_suspicious_adjustments([stale], now=NOW).count == 0
+    # The same movement, judged from a clock that sits just after it.
+    assert R.check_suspicious_adjustments(
+        [stale], now=stale["created_at"] + timedelta(days=1)).count == 1

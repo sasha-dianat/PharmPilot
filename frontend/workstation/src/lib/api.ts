@@ -364,6 +364,14 @@ export const inventoryEnginesApi = {
   // average, because a shelf stocked to the average runs out half the time.
   pickList: (cover_days = 1) =>
     apiClient.get('/inventory/pick-list', { params: { cover_days } }),
+  // What is standing on the sales floor this second, and what it would ring up
+  // for. Answerable only since dispensing started decrementing placements — the
+  // shelf used to be write-only-up.
+  shelfPosition: () => apiClient.get('/inventory/shelf-position'),
+  // Expected against counted. Most of its work is refusing to accuse anybody:
+  // a gap no larger than the movement nobody scanned is inconclusive.
+  countShelf: (shelf_id: string, counted: { ndc11: string; units: number }[]) =>
+    apiClient.post('/inventory/shelf-count', { shelf_id, counted }),
 }
 
 // ── Recall cases: the pharmacy's response, not the notice ─────────────────

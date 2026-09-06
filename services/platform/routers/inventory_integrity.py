@@ -39,6 +39,7 @@ from services.core.inventory import lead_time as LT
 from services.core.inventory import reservation_service as RS
 from services.core.inventory import reservations as RSV
 from services.core.inventory import negotiation as NEG
+from services.core.inventory import shelf as SHELF
 from services.core.inventory import shortage as SHORT
 from services.core.inventory import sweep as SWEEP
 from services.core.inventory import supplier_reliability as SUP
@@ -1921,4 +1922,132 @@ async def run_sweep(
             f"{totals['suppressed']} were withheld because somebody already "
             f"decided them — re-raising those would inflate the denominator the "
             f"acceptance rate is measured against."),
+    }
+
+
+# ── What is standing on the sales floor, this second ─────────────────────
+
+@router.get("/shelf-position")
+async def shelf_position(
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Units and retail value on the shelves right now, per shelf and per zone.
+
+    Valued at the shelf price rather than cost, because the question is "what is
+    standing on the floor", which is a retail figure. Lines with no shelf price
+    contribute units and no money, and the count of those is reported — a total
+    that silently omits them reads as smaller than the floor really is.
+
+    This became answerable only when the shelf stopped being write-only: until
+    dispensing decremented placements, the number here would have grown for ever.
+    """
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT sp.id, sp.shelf_id, sp.inventory_lot_id, sp.ndc11, sp.units,
+               sp.placed_at, sh.label, sh.zone, sh.capacity_units,
+               COALESCE(il.sell_price, dp.manual_shelf_price) AS sell_price
+        FROM shelf_placements sp
+        JOIN pharmacy_shelves sh ON sh.id = sp.shelf_id
+        LEFT JOIN inventory_lots il ON il.id = sp.inventory_lot_id
+        LEFT JOIN drug_products dp ON dp.ndc11 = sp.ndc11
+        WHERE sp.pharmacy_id = :pid AND sp.is_deleted = false
+          AND sp.units > 0"""),
+        {"pid": staff.pharmacy_id})).mappings().all()]
+
+    out = SHELF.position(rows, at=datetime.now(timezone.utc)).as_dict()
+    by_zone: dict[str, dict] = {}
+    for s in out["shelves"]:
+        z = by_zone.setdefault(s["zone"] or "unzoned",
+                               {"zone": s["zone"], "units": 0.0, "value": 0.0,
+                                "shelves": 0})
+        z["units"] += s["units"]
+        z["value"] += s["value"] or 0.0
+        z["shelves"] += 1
+    out["zones"] = sorted(by_zone.values(), key=lambda z: -z["value"])
+    return out
+
+
+# ── Expected against counted: the only honest theft signal ───────────────
+
+class ShelfCount(BaseModel):
+    """What a person actually found on one shelf."""
+    shelf_id: UUID
+    counted: list[dict] = Field(..., description="[{ndc11, units}]")
+
+
+@router.post("/shelf-count")
+async def count_shelf(
+    body: ShelfCount,
+    staff: Staff = Depends(require_permission("inventory:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare what the books say a shelf holds against what was counted.
+
+    Most of this endpoint's work is refusing to accuse anybody. Counted *above*
+    expected is a placement nobody recorded, not a loss — stock does not appear
+    by itself. And a gap no larger than the movement that left the shelf without
+    a scan is inconclusive: every dispense against a lot sitting on two shelves
+    guessed which one the hand reached for, and one false accusation ends the
+    credibility of every true one.
+
+    Nothing is written to stock here. A shelf variance is a finding about the
+    sales floor; moving units is still the ledger's job, through a counted
+    variance and its approval.
+    """
+    shelf = (await db.execute(text(
+        "SELECT id, label FROM pharmacy_shelves "
+        "WHERE id = :s AND pharmacy_id = :pid"),
+        {"s": body.shelf_id, "pid": staff.pharmacy_id})).mappings().first()
+    if shelf is None:
+        raise HTTPException(404, "shelf not found at this pharmacy")
+
+    expected = {r["ndc11"]: dict(r) for r in (await db.execute(text("""
+        SELECT sp.ndc11, SUM(sp.units) AS units,
+               MAX(COALESCE(il.sell_price, dp.manual_shelf_price)) AS sell_price
+        FROM shelf_placements sp
+        LEFT JOIN inventory_lots il ON il.id = sp.inventory_lot_id
+        LEFT JOIN drug_products dp ON dp.ndc11 = sp.ndc11
+        WHERE sp.pharmacy_id = :pid AND sp.shelf_id = :s
+          AND sp.is_deleted = false
+        GROUP BY sp.ndc11"""),
+        {"pid": staff.pharmacy_id, "s": body.shelf_id})).mappings().all()}
+
+    # How much of this shelf's movement nobody looked at. Recorded on each
+    # transfer event when it was written, so a reconciliation weeks later can
+    # still tell a measurement from an inference.
+    inferred = {r["ndc11"]: float(r["units"] or 0) for r in (await db.execute(text("""
+        SELECT ndc11, SUM(ABS(quantity_delta)) AS units
+        FROM shelf_transfer_events
+        WHERE pharmacy_id = :pid AND shelf_id = :s
+          AND barcode_verification_result->>'basis' = 'inferred'
+        GROUP BY ndc11"""),
+        {"pid": staff.pharmacy_id, "s": body.shelf_id})).mappings().all()}
+
+    counted = {str(c.get("ndc11")): c.get("units") for c in body.counted}
+    findings = []
+    for ndc in sorted(set(expected) | set(counted)):
+        e = expected.get(ndc) or {}
+        findings.append(SHELF.reconcile(
+            shelf_id=str(body.shelf_id), ndc11=ndc,
+            expected=e.get("units") or 0,
+            counted=counted.get(ndc),
+            inferred_units=inferred.get(ndc, 0),
+            sell_price=e.get("sell_price")).as_dict())
+
+    losses = [f for f in findings if f["verdict"] == "shrinkage"]
+    at_risk = round(sum(f["value_at_risk"] or 0 for f in losses), 2)
+    log.info("Shelf %s counted by %s: %d line(s), %d shrinkage",
+             shelf["label"], str(staff.id)[:8], len(findings), len(losses))
+    return {
+        "shelf_id": str(body.shelf_id), "shelf": shelf["label"],
+        "counted_at": iso_utc(datetime.now(timezone.utc)),
+        "findings": findings,
+        "shrinkage_lines": len(losses), "value_at_risk": at_risk,
+        "inconclusive": sum(1 for f in findings if f["verdict"] == "inconclusive"),
+        "surplus_lines": sum(1 for f in findings if f["verdict"] == "surplus"),
+        "explanation": (
+            f"{len(losses)} line(s) short beyond what the unscanned movement can "
+            f"explain, worth {at_risk}. Nothing here moves stock: a shelf "
+            f"variance is a finding about the floor, and correcting the books "
+            f"still goes through a counted variance and its approval."),
     }

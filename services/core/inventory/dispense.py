@@ -34,6 +34,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import ledger as L
+from . import shelf as SHELF
 
 log = logging.getLogger(__name__)
 
@@ -48,11 +49,12 @@ class DispenseResult:
     def __init__(self, *, ok: bool, fill_id=None, movements: list | None = None,
                  allocated: Decimal = Decimal("0"), shortfall: Decimal = Decimal("0"),
                  lots: list[str] | None = None, skipped: str | None = None,
-                 error: str | None = None):
+                 error: str | None = None, shelf_takes: list | None = None):
         self.ok, self.fill_id = ok, fill_id
         self.movements = movements or []
         self.allocated, self.shortfall = allocated, shortfall
         self.lots = lots or []
+        self.shelf_takes = shelf_takes or []
         self.skipped, self.error = skipped, error
 
     def as_dict(self) -> dict:
@@ -127,6 +129,55 @@ async def already_dispensed(db: AsyncSession, fill_id) -> bool:
         "AND movement_type = 'DISPENSE' LIMIT 1"), {"f": fill_id})).scalar())
 
 
+async def _take_off_shelf(db: AsyncSession, *, pharmacy_id, lot_id, ndc11,
+                          units, actor_id, now, fill_id) -> list[dict]:
+    """Decrement the shelf placements this lot was standing on.
+
+    Deliberately does not raise. A dispense that succeeded must not be undone
+    because the shelf bookkeeping failed — the patient has the medicine either
+    way, and an unrecorded shelf decrement is a reconciliation finding rather
+    than a reason to refuse care. That is the same failure direction the ledger
+    decrement itself takes, and for the same reason.
+    """
+    rows = [dict(r) for r in (await db.execute(text("""
+        SELECT id, shelf_id, inventory_lot_id, ndc11, units, placed_at
+        FROM shelf_placements
+        WHERE pharmacy_id = :pid AND inventory_lot_id = :lot
+          AND is_deleted = false AND units > 0"""),
+        {"pid": pharmacy_id, "lot": lot_id})).mappings().all()]
+    if not rows:
+        return []
+
+    plan = SHELF.allocate(rows, units, lot_id=str(lot_id), ndc11=ndc11)
+    out = []
+    for take in plan.takes:
+        await db.execute(text(
+            "UPDATE shelf_placements SET units = :after, updated_at = NOW() "
+            "WHERE id = :id"),
+            {"after": float(take.after), "id": take.placement_id})
+        await db.execute(text(
+            "UPDATE pharmacy_shelves SET current_units = "
+            "GREATEST(0, current_units - :taken), updated_at = NOW() "
+            "WHERE id = :id"),
+            {"taken": int(take.units), "id": take.shelf_id})
+        await db.execute(text("""
+            INSERT INTO shelf_transfer_events
+              (id, pharmacy_id, inventory_lot_id, shelf_id, ndc11,
+               quantity_delta, performed_by, barcode_verification_result,
+               created_at, updated_at, is_deleted,
+               near_expiry_placement_confirmed)
+            VALUES (gen_random_uuid(), :pid, :lot, :shelf, :ndc, :delta, :by,
+                    CAST(:basis AS jsonb), :now, NOW(), false, false)"""), {
+            "pid": pharmacy_id, "lot": lot_id, "shelf": take.shelf_id,
+            "ndc": ndc11, "delta": -int(take.units), "by": actor_id, "now": now,
+            # Recorded on the event itself, because a reconciliation weeks later
+            # has to know which of these movements anybody actually looked at.
+            "basis": f'{{"basis": "{take.basis}", "source": "dispense", '
+                     f'"fill_id": "{fill_id}"}}'})
+        out.append(take.as_dict())
+    return out
+
+
 async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
                          quantity=None, now: datetime | None = None,
                          as_of: date | None = None) -> DispenseResult:
@@ -165,6 +216,7 @@ async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
                                 reason=f"dispense {rx.rx_number}")
 
         movement_ids = []
+        shelf_takes: list[dict] = []
         irc = None
         for plan in alloc.plans:
             # `quantity_reserved` is not touched here. It used to be decremented
@@ -185,6 +237,18 @@ async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
                 lot_id=plan.lot_id, plan=plan, actor_id=staff_id,
                 prescription_fill_id=fill.id)
             movement_ids.append(m.id)
+
+            # Take the units off the shelf they were standing on. Until this
+            # existed the shelf only ever filled up: `depot_transfer` added
+            # placements and nothing subtracted, so after the first dispense the
+            # morning round saw a permanently full shelf and no count had an
+            # "expected" to compare against. Nobody scans the shelf on the way
+            # out, so the allocation is marked INFERRED and the reconciliation
+            # knows not to call its own guesswork a theft.
+            shelf_takes += await _take_off_shelf(
+                db, pharmacy_id=rx.pharmacy_id, lot_id=plan.lot_id,
+                ndc11=rx.ndc, units=-plan.quantity_delta, actor_id=staff_id,
+                now=now, fill_id=fill.id)
 
         if alloc.allocated > 0:
             await db.execute(text("""
@@ -210,6 +274,7 @@ async def apply_dispense(db: AsyncSession, rx, *, staff_id=None,
                         alloc.requested, rx.ndc)
         return DispenseResult(ok=True, fill_id=fill.id, movements=movement_ids,
                               allocated=alloc.allocated, shortfall=alloc.shortfall,
+                              shelf_takes=shelf_takes,
                               lots=[p.lot_number for p in alloc.plans if p.lot_number])
     except Exception as e:  # noqa: BLE001 — deliberately broad; see docstring
         log.exception("inventory decrement failed for rx %s; the prescription "
@@ -256,6 +321,12 @@ async def reverse_dispense(db: AsyncSession, fill_id, *, staff_id=None,
                 lot_id=plan.lot_id, plan=plan, actor_id=staff_id,
                 prescription_fill_id=fill_id)
             movement_ids.append(m.id)
+            # Deliberately NOT put back on a shelf. The units return to the lot,
+            # which is back-stock; where they are physically re-shelved is a
+            # person's decision and gets recorded when they place them, with a
+            # scan. Inferring a return onto a shelf nobody placed them on would
+            # manufacture stock that is not standing there — precisely the
+            # "surplus" that `shelf.reconcile` treats as a books error.
             total = L.q(total + back)
 
         await db.execute(text(

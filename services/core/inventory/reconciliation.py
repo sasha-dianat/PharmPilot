@@ -256,7 +256,8 @@ def check_expired_on_hand(lots: list[dict], as_of: date | None = None) -> Findin
 def check_suspicious_adjustments(movements: list[dict], *,
                                  window_days: int = 30,
                                  repeat_threshold: int = 3,
-                                 large_pct: float = 25.0) -> Finding:
+                                 large_pct: float = 25.0,
+                                 now: datetime | None = None) -> Finding:
     """Patterns that distinguish an error from a habit.
 
     A single large correction is usually a miscount. The same staff member
@@ -264,7 +265,12 @@ def check_suspicious_adjustments(movements: list[dict], *,
     We report the pattern and the evidence; a human decides what it means —
     never the model, and never a disciplinary output.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+    # `now` is injected for the same reason `as_of` is everywhere else here: a
+    # rolling window read off the wall clock makes any test with a fixed fixture
+    # date expire silently. These three checks passed for a month and then began
+    # failing because the calendar moved past their sample data, which looks
+    # exactly like a regression and is not one.
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=window_days)
     by_actor: dict[tuple, list] = {}
     findings = []
     for m in movements:

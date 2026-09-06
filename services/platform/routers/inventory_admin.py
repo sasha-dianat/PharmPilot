@@ -728,7 +728,14 @@ async def receive_stock(
     past is refused: receiving expired stock into sellable inventory is how
     expired stock ends up dispensed.
     """
-    if body.expiry_date < date.today():
+    # The pharmacy's midnight, not the API process's. `date.today()` here decided
+    # whether a delivery may be accepted using whatever timezone the server
+    # happens to run in — for a third of every day that names a different day
+    # than the shop is living in, which is the defect `clock.py` exists to end.
+    today_local = CLK.pharmacy_today((await db.execute(text(
+        "SELECT timezone FROM pharmacies WHERE id = :p"),
+        {"p": staff.pharmacy_id})).scalar())
+    if body.expiry_date < today_local:
         raise HTTPException(422,
             f"expiry {body.expiry_date.isoformat()} is in the past — quarantine "
             f"the delivery instead of receiving it as sellable stock")
@@ -1067,7 +1074,10 @@ async def request_release(
         raise HTTPException(422,
             "a recalled lot is never released back to sale, whatever bucket it "
             "is sitting in")
-    if lot.expiry_date and lot.expiry_date < date.today():
+    released_on = CLK.pharmacy_today((await db.execute(text(
+        "SELECT timezone FROM pharmacies WHERE id = :p"),
+        {"p": staff.pharmacy_id})).scalar())
+    if lot.expiry_date and lot.expiry_date < released_on:
         raise HTTPException(422,
             f"lot {lot.lot_number} expired on {lot.expiry_date.isoformat()}; "
             f"releasing it would put expired stock back on the shelf")

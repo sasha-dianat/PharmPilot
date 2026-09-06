@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryEnginesApi, apiErrorText } from '../lib/api'
 import { useLang } from '../lib/i18n'
 
-type Tab = 'advice' | 'pick' | 'count' | 'demand' | 'season' | 'value'
+type Tab = 'advice' | 'pick' | 'floor' | 'count' | 'demand' | 'season' | 'value'
          | 'suppliers' | 'shortages'
 
 type Pair = readonly [string, string]
@@ -30,6 +30,7 @@ const TABS: { id: Tab; label: Pair; hint: Pair }[] = [
   { id: 'advice', label: ['Advice', 'توصیه‌ها'], hint: ['What the engines propose, and your decision', 'پیشنهادهای موتورها و تصمیم شما'] },
   { id: 'count', label: ['Cycle counting', 'شمارش دوره‌ای'], hint: ['Where the counting hours go', 'کجا وقت شمارش صرف شود'] },
   { id: 'pick', label: ['Morning round', 'نوبت صبح'], hint: ['What to bring from the depot before opening', 'پیش از بازگشایی چه چیزی از انبار بیاورید'] },
+  { id: 'floor', label: ['Sales floor', 'کف فروش'], hint: ['What is on the shelves right now, and what it is worth', 'هم‌اکنون چه چیزی روی قفسه‌هاست و چقدر می‌ارزد'] },
   { id: 'demand', label: ['Demand signal', 'سیگنال تقاضا'], hint: ['The measured consumption rate', 'نرخ مصرف اندازه‌گیری‌شده'] },
   { id: 'season', label: ['Seasonality', 'فصلی بودن'], hint: ['Real annual patterns, by Jalali month — nothing claimed below two cycles', 'الگوهای واقعی سالانه بر پایهٔ ماه شمسی — زیر دو دوره ادعایی نمی‌شود'] },
   { id: 'shortages', label: ['Shortages', 'کمبودها'], hint: ['What is running out, and whether the market or one supplier is the cause', 'چه چیزی دارد تمام می‌شود و علت بازار است یا یک تأمین‌کننده'] },
@@ -119,6 +120,7 @@ export default function InventoryEngines() {
       {tab === 'count' && <CountTab />}
       {tab === 'demand' && <DemandTab onMsg={setMsg} />}
       {tab === 'pick' && <PickTab />}
+      {tab === 'floor' && <FloorTab />}
       {tab === 'season' && <SeasonTab />}
       {tab === 'shortages' && <ShortageTab />}
       {tab === 'suppliers' && <SupplierTab />}
@@ -1365,6 +1367,113 @@ function SeasonTab() {
                   <p key={i} className="text-[11px] text-slate-500">• {c}</p>))}
               </div>)
           })}
+        </div>
+      </>)}
+    </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   The sales floor — what is standing there, and what it is worth
+
+   Answerable only since dispensing began decrementing placements. The shelf
+   used to be write-only-up: `depot_transfer` added and nothing subtracted, so
+   this number would have grown for ever and read as a healthy floor while the
+   shelves emptied.
+
+   Refreshed on a short interval rather than on demand, because "at any second"
+   is the question this answers.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface FloorShelf {
+  shelf_id: string; label: string | null; zone: string | null
+  units: number; lines: number; value: number | null
+  unpriced_lines: number; capacity_units: number | null
+  utilisation: number | null
+}
+interface FloorData {
+  at: string; shelves: FloorShelf[]; units: number; value: number
+  unpriced_lines: number; explanation: string
+  zones: { zone: string | null; units: number; value: number; shelves: number }[]
+}
+
+function FloorTab() {
+  const { t, n: fa, money } = useLang()
+  const { data, isLoading, error, dataUpdatedAt } = useQuery<FloorData>({
+    queryKey: ['inv-floor'],
+    queryFn: () => inventoryEnginesApi.shelfPosition().then(r => r.data),
+    refetchInterval: 15_000,
+  })
+
+  return (
+    <div className="space-y-4">
+      {isLoading && <p className="text-sm text-slate-400">{t('Counting…', 'در حال شمارش…')}</p>}
+      {error && <p className="text-sm text-red-400">{apiErrorText(error)}</p>}
+
+      {data && (<>
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4
+                        flex flex-wrap items-center gap-x-8 gap-y-3">
+          <Metric label={t('On the floor', 'روی کف')} value={fa(data.units)} />
+          <Metric label={t('Retail value', 'ارزش خرده‌فروشی')} value={money(data.value)} />
+          <Metric label={t('Shelves', 'قفسه‌ها')} value={fa(data.shelves.length)} />
+          <span className="text-[11px] text-slate-500">
+            {t(`as of ${new Date(dataUpdatedAt).toLocaleTimeString()}`,
+               `تا ساعت ${new Date(dataUpdatedAt).toLocaleTimeString('fa-IR')}`)}
+          </span>
+        </div>
+        <p className="text-[11px] text-slate-500">{data.explanation}</p>
+        {data.unpriced_lines > 0 && (
+          <p className="text-[11px] text-amber-300/90">
+            {t('Lines with no shelf price contribute units and no money, so this value is a floor rather than a total.',
+               'ردیف‌های بدون قیمت قفسه، تعداد دارند اما مبلغ ندارند؛ پس این عدد کف است، نه مجموع.')}
+          </p>)}
+
+        {data.zones.length > 1 && (
+          <div className="flex flex-wrap gap-2">
+            {data.zones.map(z => (
+              <span key={z.zone ?? 'none'}
+                className="text-[11px] px-2 py-1 rounded-full border bg-slate-900
+                           border-slate-700 text-slate-300">
+                {z.zone ?? t('unzoned', 'بدون ناحیه')}
+                <span className="text-slate-500"> · {fa(z.units)} · {money(z.value)}</span>
+              </span>))}
+          </div>)}
+
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12px]">
+              <thead className="text-slate-500 text-[11px]">
+                <tr className="border-b border-slate-700">
+                  <th className="text-start font-normal py-1.5">{t('Shelf', 'قفسه')}</th>
+                  <th className="text-start font-normal">{t('Zone', 'ناحیه')}</th>
+                  <th className="text-start font-normal">{t('Units', 'تعداد')}</th>
+                  <th className="text-start font-normal">{t('Lines', 'ردیف‌ها')}</th>
+                  <th className="text-start font-normal">{t('Value', 'ارزش')}</th>
+                  <th className="text-start font-normal">{t('Full', 'اشغال')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.shelves.map(s => (
+                  <tr key={s.shelf_id} className="border-b border-slate-800/60">
+                    <td className="py-1.5 font-mono text-slate-300">{s.label ?? '—'}</td>
+                    <td className="text-slate-400">{s.zone ?? '—'}</td>
+                    <td className="tabular-nums">{fa(s.units)}</td>
+                    <td className="tabular-nums text-slate-400">
+                      {fa(s.lines)}
+                      {s.unpriced_lines > 0 && (
+                        <span className="text-amber-300 ms-1"
+                          title={t(`${fa(s.unpriced_lines)} with no shelf price`,
+                                   `${fa(s.unpriced_lines)} بدون قیمت قفسه`)}>*</span>)}
+                    </td>
+                    <td className="tabular-nums font-semibold">
+                      {s.value === null ? '—' : money(s.value)}</td>
+                    <td className="tabular-nums text-slate-400">
+                      {s.utilisation === null ? '—'
+                        : `${fa(Math.round(s.utilisation * 100))}٪`}</td>
+                  </tr>))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </>)}
     </div>

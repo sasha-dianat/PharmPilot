@@ -2799,3 +2799,103 @@ an unconditional `stash pop` is not a safe undo for a conditional `stash`.
 **Next action.** Phase 5b, gated on the owner deciding how bays get registered.
 Phases 6 (review UI, survey walker, point-in-polygon) and 7 (retention
 enforcement, drift monitoring, delivery channels) follow.
+
+### 2026-09-06 — Claude (Opus 5) — the shelf, which only ever filled up
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- Asked, before starting the pilot simulation, whether a database backs the
+  shelves — for the daily round, a live count, live revenue and theft
+  prevention. The schema is there and well designed: `pharmacy_shelves`,
+  `shelf_placements`, `shelf_transfer_events` (barcode + AI verification +
+  attestation), `replenishment_sessions`, `surveillance_events`
+  (`UNSCANNED_PICK`, `AFTER_HOURS`, `WRONG_BIN`), `shift_handover_reports`. All
+  six hold zero rows in production.
+- **The defect.** The shelf count only ever went *up*. `depot_transfer` created
+  a placement and added to `current_units`; **nothing anywhere subtracted** —
+  verified by grepping every decrement path. A dispense reduced
+  `inventory_lots.quantity_on_hand` and left the shelf believing it still held
+  everything ever brought to it. Three of the four capabilities asked about were
+  therefore impossible: the morning round saw a permanently full shelf, no live
+  floor figure existed at all, and theft detection is *expected against counted*
+  with a fictional expected.
+- **A correction I owe.** I built E10 and verified it 24/24, but every run used a
+  fresh tenant where `on_shelf` was 0. I never exercised a second day, so the
+  tests could not see that the input goes stale after the first dispense. The
+  engine was right; what it read was not.
+
+**The fix, in three parts.**
+
+`services/core/inventory/shelf.py` — `allocate`, `position`, `reconcile`.
+Dispensing now takes units off the placements the lot was standing on, oldest
+placement first, writing a negative `shelf_transfer_event`. The shelf became a
+ledger rather than a running total.
+
+**The distinction the whole design turns on.** A depot→shelf placement is
+**observed** — somebody scanned it and attested. A dispense-driven decrement is
+**inferred**: nobody scans the shelf on the way out, and which shelf the hand
+reached for is genuinely unknowable when a lot sits on two. Both move the
+number; only one is a measurement. The basis is written onto each transfer event
+so a reconciliation weeks later can still tell them apart.
+
+That matters because `reconcile` is the theft detector and most of its work is
+refusing to be one:
+  - counted **above** expected is a placement nobody recorded, not a loss —
+    stock does not appear by itself, and treating it as a finding against a
+    person would be absurd;
+  - a gap **no larger than the unscanned movement** is inconclusive: the missing
+    units may be standing on the next shelf along, and one false accusation ends
+    the credibility of every true one;
+  - below two units it is a miscount — a system that opens a case over one tablet
+    gets switched off.
+Counting a shelf writes nothing to stock. Correcting the books still goes through
+a counted variance and its approval.
+
+`GET /inventory/shelf-position` answers what is on the floor this second, valued
+at the shelf price, per shelf and per zone, with unpriced lines counted and
+declared. `POST /inventory/shelf-count` is the reconciliation. A **Sales floor**
+tab refreshes on a 15-second interval, because "at any second" is the question.
+
+**Two defects found while doing it, neither mine.**
+1. **Eleven day-boundary decisions in request paths used `date.today()`** — the
+   process's timezone, which is exactly what `clock.py` was written to end. The
+   sharpest decided whether a delivery may be *received*: at 20:00 in New York a
+   server in Tehran calls it tomorrow. Fixed the two decision points that gate
+   stock (receiving, and releasing a lot back to sale) to the pharmacy's own
+   midnight. The remaining nine are display fields and cutoffs, listed here as
+   known and lower-risk rather than silently left.
+2. **Three reconciliation tests were rotting, not regressing.** Their fixture
+   pins 2026-08-02 and `check_suspicious_adjustments` used a rolling 30-day
+   window read off the wall clock. Today is 2026-09-06, so the sample data aged
+   out of the window and three passing tests began failing with no code change —
+   which looks exactly like a regression. The window now takes an injected `now`,
+   the tests pin it, and a new test pins the seam itself. Same clock-seam problem
+   as (1), one layer down.
+
+**And one I introduced and caught.** My edit matched `movement_ids.append` in
+both `apply_dispense` and `reverse_dispense`, so the shelf decrement landed in
+the reversal too. Removed deliberately rather than fixed: a reversal returns
+units to the **lot**, which is back-stock. Where they are physically re-shelved
+is a person's decision, recorded when they place them, with a scan. Inferring a
+return onto a shelf nobody placed them on would manufacture stock that is not
+standing there — precisely the "surplus" `reconcile` treats as a books error.
+
+**Verification.** `scripts/verify_shelf_position.py` — **24/24**, driving two
+consecutive days through the real endpoints: the floor opens at 100 units /
+2,500, falls to 70 / 1,750 after a dispense of 30, the cached shelf count agrees,
+the transfer ledger records it, E10 then reads the drawn-down shelf rather than
+the opening figure, and a lot split across two shelves empties the older
+placement first. The count returns `agrees` / `surplus` / `inconclusive` /
+`shrinkage` on the same shelf as the counted figure changes, and never moves
+stock. 23 new unit tests. `scripts/inv_simulate.py --seeds 4` → 0 findings, so
+the ledger arithmetic is unchanged. The five earlier verification scripts still
+pass. `tsc --noEmit` clean. `pytest tests/unit -p no:randomly` → **2,044
+passed, 2 failed**: `test_integrations_sandbox` (pre-existing, logged repeatedly
+above) and `test_enrichment_providers::test_ping_sends_no_tools`, which pings a
+live LLM provider — every provider is unreachable from this machine, so it is
+environmental rather than a regression. Neither touches inventory.
+
+**Still not built:** nothing decrements a shelf for an **OTC/POS sale** — only
+prescriptions go through `apply_dispense`. Until the POS path calls the same
+seam, the floor figure is right for the dispensary and short for the front shop.
+That is the next thing to close and it belongs with the POS work.
