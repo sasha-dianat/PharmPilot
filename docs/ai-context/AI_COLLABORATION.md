@@ -2660,3 +2660,142 @@ finding referred in the previous entry; the fabricated `DEMO_SUPPLY` fixture in
 `IntelligenceInventoryPanels.tsx`; the owner decisions on 765 uncoverable units
 and 16 unbound formulary items; and forecast quality for every Tier B engine,
 which stays unvalidated until the pilot dispenses.
+
+---
+
+### 2026-08-24 — Claude (Opus 5) — phase 5 split in two; 5a: the zone becomes a key
+
+- Workstream: `surveillance` (phase 5 of 7, zone rules and reconciliation)
+- Branch: `feat/inventory-integrity`
+- Plan: `docs/superpowers/plans/2026-08-24-zone-rules-and-reconciliation.md` (`5cf5907`)
+- Commits: `9f4537f` registry · `dedd60d` the FK · `137da87` vocabularies ·
+  `70b184f` router · `cbac94b` seed
+
+**Phase 5 is two deliverables, and measuring its own premise is what showed it.**
+Six ground-truth surveys, three competing designs and three adversarial critics
+converged on the same split.
+
+`inventory_movements.created_at` is the API **write** instant, not the physical
+one. Across the 31 movements joined to their fills the lag runs **52.6 to 79.6
+days, mean 65.4**, and the design doc's ±5-minute reconciliation window returns
+**zero rows**. It cannot be repaired from this side:
+`trg_inventory_movements_append_only` rejects a backfill UPDATE, and adding an
+event-time column to the hash payload would invalidate all 31 verifying rows.
+Every join target is empty too — `pharmacy_shelves`, `shelf_placements`,
+`shelf_transfer_events`, `surveillance_observations` and
+`replenishment_sessions` all at 0 rows — and `pharmacy_shelves` has no write
+path at all, its only INSERT in the tree being a test fixture. So the design
+doc's exit criterion for this work, "WH-02 report precision ≥ 0.60", is
+**unmeasurable on this installation**. 5b is specified as outlines rather than
+executable steps for exactly that reason, and gets its own plan when its gate
+opens.
+
+**Rule disposition: 3 of 29 buildable.** WH-02, WH-03 and SY-04. SY-05 is phase
+7. The other 25 are blocked on a primitive or on hardware — no pose feed, no
+dwell interval (`surveillance_observations` is point-in-time), no queue model,
+no access-control stream, no motion feed, no schedule substrate, no bay-state
+classifier, and for the environmental rules no sensors: the **only** temperature
+column in the entire schema is `shelf_transfer_events.temperature_logged_c`, one
+manual spot reading, and there are zero humidity, smoke or water columns
+anywhere. Every code has a written disposition in the plan; none was dropped.
+
+**Two programme-level findings, recorded rather than fixed.** PH-09's design-doc
+note says "Existing pathway" and that is false: `DuressProtocolEngine` is
+constructed with no kafka producer at `security_events.py:140`, so
+`_alert_pharmacist_ui`'s entire body is skipped by `if self.kafka:` and it
+records neither success nor failure. And **no phase in the seven-phase programme
+owns building the camera registry**, which orphans SY-01 and SY-02.
+
+**What 5a shipped.**
+
+- `vision_zone` (migration `0051`): the registry, keyed on the composite
+  `(pharmacy_id, site, code)` rather than its uuid PK, because the column that
+  must reference it is `varchar(40)` and a uuid cannot.
+- Migration `0052`: `fk_surv_obs_zone` + `ck_surv_obs_zone_shape` on
+  `surveillance_observations`. **Free exactly once** — that table had 0 rows —
+  and never free again. No `ON UPDATE CASCADE`: measured that it silently
+  rewrites the zone of historical observations on a rename.
+- All **nine** zone vocabularies dispositioned and pinned by a test. The audio
+  pipeline's dead `ZONE_CONFIGS` dict is deleted (its `AudioZoneConfig`
+  dataclass is not dead — it is a live constructor parameter type — and the
+  phase-2 `.en`-is-English-only finding it carried is folded into that
+  dataclass's docstring rather than lost with the dict).
+- `GET`/`POST /api/v1/vision/zones`, two permissions only, and the cross-tenant
+  test that did not exist for any new route.
+- An idempotent seed: 17 zones, every policy column NULL.
+
+**Provenance held throughout.** `retention_days` and `armed_schedule` are NULL
+and stay NULL. Nothing purges (no partitioning, no pg_cron, no purge job) and no
+schedule evaluator exists, so a value in either would be a number nobody
+measured on a compliance-facing column. `GET /zones` returns
+`retention_basis`/`schedule_basis` explicitly, because a NULL that renders as 0
+is how an unenforced policy comes to look enforced.
+
+**Decisions made explicitly, not by accident.** `public` schema over a dedicated
+one — both parity guards hardcode `schema='public'`, so a separate schema would
+silently remove the only column-parity check the repo has. **Consequence stated
+plainly: design-doc invariant I-2 (the vision role holds zero write grants on
+clinical tables) is NOT implemented**, and append-only rests on a trigger the
+app role can `DISABLE` — verified live. The docstring at
+`shared/models/inventory.py:262-263` claiming migration 0030 revoked these is
+**false** and must not be cited.
+
+**Checks actually run.** `pytest tests/unit` → **2,017 passed, 5 failed, 1
+xfailed in 10:26**. Four of the five are **not mine**, verified by running the
+same files at `7353f8d` (phase-4 end, before any phase-5 code): 3 failed there,
+3 fail at HEAD — my commits introduced none. They are
+`test_inventory_reconciliation.py` ×3 (write-down flagging) and
+`test_enrichment_providers.py::test_ping_sends_no_tools`; the fifth is the
+long-logged order-dependent `test_integrations_sandbox`. The three
+reconciliation failures appeared with `71a7917`, an inventory-workstream commit
+on this branch, and belong to that owner. My own surfaces: 51 passed across the
+five vision suites plus route-auth and model-column parity. Single migration
+head at `0052`; both `pharmpilot` and `pharmpilot_test` stamped there. Route
+count 370 → 372.
+
+**Cross-workstream touch, declared.** `ROLE_PERMISSIONS` in
+`shared/models/auth.py` is listed in CL-003's owned scope (line 75) and CL-003
+is READY_FOR_REVIEW on this branch. Two additive permission strings were added.
+
+**Referred, not fixed — inventory workstream (CL-003).**
+`exceptions.diff()` (`services/core/inventory/exceptions.py:313-317`)
+auto-resolves every active fingerprint the current run did not produce. With one
+producer that is correct. With two producers writing one register, each silently
+closes the other's findings every run, with `resolved_by='system'` and the
+reason "the check no longer fires" — and the symptom is an empty queue, which is
+indistinguishable from a clean shop. A `scope: set[str]` parameter naming the
+check codes a run is authoritative for would fix it. Phase 5 avoided the problem
+by not writing into that table.
+Related, same area: the recurrence path at
+`routers/inventory_exceptions.py:106-127` calls `_record_event` in the
+`delta.opened` branch **only, never on recurrence**, so the event log
+under-counts badly — `pharmpilot_test` holds 381,955 exceptions against 381,955
+"opened" events while 163,684 of those have `occurrences >= 2`. Any alert budget
+counted from that log is structurally stuck at 1.
+
+**Remaining risks.**
+
+1. **`pharmpilot_test` is now 3.27 GB / 964,621 rows** in
+   `inventory_exception_rows` (up from 2.6 GB earlier the same day). Fixtures
+   soft-delete per test and nothing reaps. Still the inventory workstream's
+   fixture design, still left for that owner.
+2. **`/api/v1/inventory/sweep` appears and disappears depending on checkout
+   state** — mounted conditionally behind an opt-in flag at `main.py:61-67`,
+   committed in `71a7917`. It accounts for the 369→370 route drift between the
+   phase-4 ledger and this work.
+3. **`tests/conftest.py:12` still uses `setdefault` for `DATABASE_URL`.**
+   Unfixed, not mine, and still able to redirect the whole suite silently.
+4. **Zones are registered but no polygon is set.** `polygon` is NULL for all 17
+   until a coverage survey measures one; point-in-polygon routing is phase 6.
+
+**Process note against myself.** During a route-count investigation I paired
+`git stash -u` with `git stash pop` while the tree was clean. `stash` saved
+nothing, so `pop` applied a **pre-existing parked frontend stash**
+(`mc-dark-redesign-p0`, from `feat/frontend-mission-control`) onto this branch
+and conflicted. No work was lost — the stash entry is retained and verified
+intact at 3 files / 378 insertions, and the tree was restored to `cbac94b` — but
+an unconditional `stash pop` is not a safe undo for a conditional `stash`.
+
+**Next action.** Phase 5b, gated on the owner deciding how bays get registered.
+Phases 6 (review UI, survey walker, point-in-polygon) and 7 (retention
+enforcement, drift monitoring, delivery channels) follow.
