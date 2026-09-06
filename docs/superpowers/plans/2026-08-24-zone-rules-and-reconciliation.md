@@ -1,6 +1,6 @@
 # Zone Rules and Reconciliation — Phase 5 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Turn the zone from a free-text string into a key the database enforces, then build the pick-reconciliation and rule-lifecycle machinery on top of it — with every rule shipping log-only and no output ever constituting an accusation.
 
@@ -136,7 +136,7 @@ Six tasks. Every one is verifiable against data that exists today.
 **Interfaces:**
 - Produces: `VisionZone` model; table `vision_zone` with business key `(pharmacy_id, site, code)`; `ZONE_CLASSES`, `SITES` tuples importable from `shared.models.vision`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_vision_zone.py`:
 
@@ -217,7 +217,7 @@ def test_the_model_is_registered():
     assert "vision" in init
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_zone.py -q -p no:randomly
@@ -225,7 +225,7 @@ def test_the_model_is_registered():
 
 Expected: FAIL — `FileNotFoundError` on the migration path.
 
-- [ ] **Step 3: Write the model**
+- [x] **Step 3: Write the model**
 
 Create `shared/models/vision.py`:
 
@@ -336,11 +336,11 @@ class VisionZone(AuditedBase):
     )
 ```
 
-- [ ] **Step 4: Register the model**
+- [x] **Step 4: Register the model**
 
 In `shared/models/__init__.py`, add `vision` alongside the other imports (match the file's existing style exactly — read it first).
 
-- [ ] **Step 5: Write migration 0051**
+- [x] **Step 5: Write migration 0051**
 
 Create `data/migrations/versions/0051_vision_zone.py`:
 
@@ -430,7 +430,7 @@ def downgrade() -> None:
     op.drop_table("vision_zone")
 ```
 
-- [ ] **Step 6: Run the test**
+- [x] **Step 6: Run the test**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_zone.py -q -p no:randomly
@@ -438,7 +438,7 @@ def downgrade() -> None:
 
 Expected: PASS.
 
-- [ ] **Step 7: Apply to BOTH databases**
+- [x] **Step 7: Apply to BOTH databases**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && for DB in pharmpilot pharmpilot_test; do DATABASE_URL="postgresql+asyncpg://pharmpilot:pharmpilot@127.0.0.1:5433/$DB" /Users/sashad85/miniforge3/bin/python3 -m alembic upgrade head; done
@@ -446,7 +446,7 @@ cd /Users/sashad85/PharmPilot-Claude && for DB in pharmpilot pharmpilot_test; do
 
 Expected: `Running upgrade 0050 -> 0051` twice.
 
-- [ ] **Step 8: Verify the constraints actually reject, against the live schema**
+- [x] **Step 8: Verify the constraints actually reject, against the live schema**
 
 A static grep proves nothing about SQL. Run this and confirm every line reads as annotated:
 
@@ -487,7 +487,7 @@ PY
 
 Expected: seven lines, every one `OK`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add shared/models/vision.py shared/models/__init__.py data/migrations/versions/0051_vision_zone.py tests/unit/test_vision_zone.py && git commit -m "feat(vision): the zone registry"
@@ -508,7 +508,7 @@ cd /Users/sashad85/PharmPilot-Claude && git add shared/models/vision.py shared/m
 
 **This is the now-or-never task.** `surveillance_observations` has 0 rows today. The FK is free now and never again.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_zone_enforcement.py`:
 
@@ -599,7 +599,7 @@ def test_an_unchecked_recorder_still_works_when_zones_are_unknown():
     assert row["zone_id"] == "Z-ANYTHING"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_zone_enforcement.py -q -p no:randomly
@@ -607,7 +607,7 @@ def test_an_unchecked_recorder_still_works_when_zones_are_unknown():
 
 Expected: FAIL — migration file missing, and `build_observation` has no `known_zones` parameter.
 
-- [ ] **Step 3: Write migration 0052**
+- [x] **Step 3: Write migration 0052**
 
 Create `data/migrations/versions/0052_zone_fk.py`:
 
@@ -660,7 +660,7 @@ def downgrade() -> None:
                        type_="check")
 ```
 
-- [ ] **Step 4: Teach the recorder to refuse**
+- [x] **Step 4: Teach the recorder to refuse**
 
 In `services/core/surveillance/recorder.py`, add the `known_zones` parameter to `build_observation` and validate. Read the file first and match its existing style; the validation block is:
 
@@ -676,7 +676,7 @@ In `services/core/surveillance/recorder.py`, add the `known_zones` parameter to 
                 f"register it in vision_zone before sending observations")
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_zone_enforcement.py tests/unit/test_surveillance_recorder.py -q -p no:randomly
@@ -684,7 +684,7 @@ In `services/core/surveillance/recorder.py`, add the `known_zones` parameter to 
 
 Expected: PASS, including the pre-existing recorder suite — `known_zones` must default to `None` so every existing caller is unchanged.
 
-- [ ] **Step 6: Apply to both databases and verify live**
+- [x] **Step 6: Apply to both databases and verify live**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && for DB in pharmpilot pharmpilot_test; do DATABASE_URL="postgresql+asyncpg://pharmpilot:pharmpilot@127.0.0.1:5433/$DB" /Users/sashad85/miniforge3/bin/python3 -m alembic upgrade head; done
@@ -728,7 +728,7 @@ PY
 
 Expected: four lines, every one `OK`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add data/migrations/versions/0052_zone_fk.py services/core/surveillance/recorder.py tests/unit/test_zone_enforcement.py && git commit -m "feat(vision): a zone id that names something"
@@ -749,7 +749,7 @@ cd /Users/sashad85/PharmPilot-Claude && git add data/migrations/versions/0052_zo
 
 **Why this task exists.** A census found **nine** zone vocabularies in code plus a tenth in the design doc. A plan that says "reconcile the three zone vocabularies" leaves silent spelling forks. Each must be dispositioned: subsume, alias, delete, or leave alone — and the disposition must be pinned by a test, or the next vocabulary arrives unnoticed.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_zone_vocabularies.py`:
 
@@ -826,7 +826,7 @@ def test_the_cache_is_keyed_by_pharmacy_and_site():
     assert ("p1", "pharmacy") in Z._CACHE
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_zone_vocabularies.py -q -p no:randomly
@@ -834,7 +834,7 @@ def test_the_cache_is_keyed_by_pharmacy_and_site():
 
 Expected: FAIL — `ModuleNotFoundError: services.core.vision`.
 
-- [ ] **Step 3: Write the module**
+- [x] **Step 3: Write the module**
 
 Create `services/core/vision/__init__.py` (empty) and `services/core/vision/zones.py`:
 
@@ -916,7 +916,7 @@ async def load_zone_codes(db: AsyncSession, pharmacy_id, site: str, *,
     return codes
 ```
 
-- [ ] **Step 4: Delete the dead vocabulary**
+- [x] **Step 4: Delete the dead vocabulary**
 
 Remove the `ZONE_CONFIGS` dict from `services/audio/transcription/pipeline.py` (lines ~32-65) and the `ZoneConfig` dataclass if it has no other user. Confirm zero blast radius first:
 
@@ -926,7 +926,7 @@ cd /Users/sashad85/PharmPilot-Claude && grep -rn "ZONE_CONFIGS\|ZoneConfig" --in
 
 Expected before deleting: only the definition itself.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_zone_vocabularies.py tests/unit/test_behavioral_analysis.py -q -p no:randomly
@@ -934,7 +934,7 @@ Expected before deleting: only the definition itself.
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add services/core/vision/ services/audio/transcription/pipeline.py tests/unit/test_zone_vocabularies.py && git commit -m "feat(vision): dispose of all nine zone vocabularies"
@@ -957,7 +957,7 @@ cd /Users/sashad85/PharmPilot-Claude && git add services/core/vision/ services/a
 
 Declare **only** `vision:read` and `vision:write`. Do **not** declare `vision:clip`, `vision:clip:elevated`, `vision:export`, `vision:audit` or `vision:ingest` — `audio:read` is already a dead permission granted to two roles and used by zero routes, and a declared-but-unused permission is the same rot.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_vision_routes.py`:
 
@@ -1029,7 +1029,7 @@ def test_the_router_is_mounted():
     assert "vision" in src
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_routes.py -q -p no:randomly
@@ -1037,7 +1037,7 @@ def test_the_router_is_mounted():
 
 Expected: FAIL — router file missing.
 
-- [ ] **Step 3: Write the router**
+- [x] **Step 3: Write the router**
 
 Create `services/platform/routers/vision.py`:
 
@@ -1130,13 +1130,13 @@ async def create_zone(
     return {"id": str(zone.id), "code": zone.code, "site": zone.site}
 ```
 
-- [ ] **Step 4: Mount it and declare the permissions**
+- [x] **Step 4: Mount it and declare the permissions**
 
 In `services/platform/main.py`, mount the router at `/api/v1/vision` following the pattern of the surrounding routers (read the file and match it exactly).
 
 In `shared/models/auth.py`, add `"vision:read"` and `"vision:write"` to the roles that should hold them — read `ROLE_PERMISSIONS` first and follow its existing shape. `vision:read` belongs with the roles that already hold `inventory:read`; `vision:write` with those holding `inventory:approve`.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_routes.py tests/unit/test_route_authentication.py -q -p no:randomly
@@ -1144,7 +1144,7 @@ In `shared/models/auth.py`, add `"vision:read"` and `"vision:write"` to the role
 
 Expected: PASS.
 
-- [ ] **Step 6: Verify the app builds and the routes appear**
+- [x] **Step 6: Verify the app builds and the routes appear**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && /Users/sashad85/miniforge3/bin/python3 -c "
@@ -1156,7 +1156,7 @@ for r in sorted(p for p in (getattr(x, 'path', '') for x in app.routes) if '/vis
 
 Expected: route count 2 higher than before (369 → 371), and both `/api/v1/vision/zones` entries listed.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add services/platform/routers/vision.py services/platform/main.py shared/models/auth.py tests/unit/test_vision_routes.py && git commit -m "feat(vision): the zone router, two permissions, and the tenancy test that did not exist"
@@ -1176,7 +1176,7 @@ cd /Users/sashad85/PharmPilot-Claude && git add services/platform/routers/vision
 
 **Why this task exists.** A pharmacy created after phase 5 silently gets zero zones, so every observation it sends is refused or unzoned. The failure mode is **silence**, which is indistinguishable from a clean shop. The seed must be callable per-pharmacy and must be tested against a second pharmacy, not just the one that exists.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_vision_zone_seed_e2e.py`:
 
@@ -1289,7 +1289,7 @@ async def test_no_seeded_zone_carries_an_unmeasured_policy(db):
         assert z.get("armed_schedule") is None, z["code"]
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_zone_seed_e2e.py -q -p no:randomly
@@ -1297,7 +1297,7 @@ async def test_no_seeded_zone_carries_an_unmeasured_policy(db):
 
 Expected: FAIL — `ModuleNotFoundError: scripts.seed_vision_zones`.
 
-- [ ] **Step 3: Write the seed**
+- [x] **Step 3: Write the seed**
 
 Create `scripts/seed_vision_zones.py`:
 
@@ -1359,7 +1359,7 @@ async def seed_zones(db: AsyncSession, pharmacy_id) -> int:
     return n
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 ```bash
 /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_vision_zone_seed_e2e.py -q -p no:randomly
@@ -1367,7 +1367,7 @@ async def seed_zones(db: AsyncSession, pharmacy_id) -> int:
 
 Expected: PASS.
 
-- [ ] **Step 5: Seed the live pharmacy**
+- [x] **Step 5: Seed the live pharmacy**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && /Users/sashad85/miniforge3/bin/python3 - <<'PY'
@@ -1392,7 +1392,7 @@ PY
 
 Expected: 17 zones listed.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add scripts/seed_vision_zones.py tests/unit/test_vision_zone_seed_e2e.py && git commit -m "feat(vision): seed the design-doc zones, idempotently"
@@ -1402,7 +1402,7 @@ cd /Users/sashad85/PharmPilot-Claude && git add scripts/seed_vision_zones.py tes
 
 ### Task 5a-6: Full-suite verification, the defect report, and the ledger
 
-- [ ] **Step 1: Check the test database before blaming code**
+- [x] **Step 1: Check the test database before blaming code**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && /Users/sashad85/miniforge3/bin/python3 -c "
@@ -1421,7 +1421,7 @@ asyncio.run(m())"
 
 Expected: ~2.6 GB, `inventory_exception_rows` in the hundreds of thousands. **This is the inventory workstream's fixture design, not a fault of this phase**, and it is why the suite takes ~12 minutes rather than ~8.
 
-- [ ] **Step 2: Run the whole unit suite**
+- [x] **Step 2: Run the whole unit suite**
 
 Do **not** export `DATABASE_URL`.
 
@@ -1431,7 +1431,7 @@ cd /Users/sashad85/PharmPilot-Claude && /Users/sashad85/miniforge3/bin/python3 -
 
 Expected: all pass except `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`, which is green in isolation and pre-existing.
 
-- [ ] **Step 3: Confirm parity, auth and a single head**
+- [x] **Step 3: Confirm parity, auth and a single head**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && /Users/sashad85/miniforge3/bin/python3 -m pytest tests/unit/test_route_authentication.py tests/unit/test_model_column_parity.py -q -p no:randomly
@@ -1453,7 +1453,7 @@ PY
 
 Expected: both green, exactly one head at `0052`.
 
-- [ ] **Step 4: Verify the model registered — by hand**
+- [x] **Step 4: Verify the model registered — by hand**
 
 The suite will not catch a forgotten model. Confirm it directly:
 
@@ -1468,7 +1468,7 @@ print('total tables in metadata:', len(t))"
 
 Expected: `True`.
 
-- [ ] **Step 5: File the `diff()` defect for the inventory owner**
+- [x] **Step 5: File the `diff()` defect for the inventory owner**
 
 This plan does not write into `inventory_exceptions`, so this bug is not ours to trip — but it is real, latent, and would bite the first person who adds a second producer. Append to `docs/ai-context/AI_COLLABORATION.md` under the ledger entry, as a referred defect:
 
@@ -1491,11 +1491,11 @@ This plan does not write into `inventory_exceptions`, so this bug is not ours to
 > exceptions and 381,955 `opened` events, while 163,684 of those exceptions
 > have `occurrences >= 2`.
 
-- [ ] **Step 6: Append the ledger entry**
+- [x] **Step 6: Append the ledger entry**
 
 Follow the format of the most recent entries in `docs/ai-context/AI_COLLABORATION.md`. It must record: branch and commits; that phase 5 was **split into 5a and 5b** and why (with the measured 52.6–79.6 day movement write-lag and the five empty input tables); the rule disposition summary (3 of 29 buildable); the four explicit decisions above; that `ROLE_PERMISSIONS` in `shared/models/auth.py` was touched across the CL-003 boundary; that invariant I-2 is unimplemented and append-only rests on a trigger the app role can disable; checks actually run; and next action.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /Users/sashad85/PharmPilot-Claude && git add docs/ai-context/AI_COLLABORATION.md && git commit -m "docs: ledger entry for phase 5a, zone registry"
