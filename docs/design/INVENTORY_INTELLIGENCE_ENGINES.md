@@ -401,3 +401,42 @@ engine closed the previous one's advice, the next run re-raised it, and the chur
 drove the acceptance rate the ledger exists to measure towards zero. Superseding
 is now scoped to the kind that raised it: only the engine that made a piece of
 advice may close it.
+
+---
+
+## 7. The whole-platform pilot — Phase 0 done
+
+*2026-09-06.* The inventory section is complete; the next work is a simulation of
+the whole pharmacy, prescription to payment. Phase 0 was the spine: the
+architecture the inventory simulator proved, with the inventory assumptions taken
+out, so pricing, adjudication, payment, workflow and the shelf can each be added
+as a citizen rather than a fork.
+
+`tests/simulation/spine/` — `clock.py`, `facts.py`, `domain.py`, `harness.py`;
+`tests/simulation/domains/inventory.py` adapts the existing oracle.
+
+**The one design decision.** In a whole-pharmacy run a single business action
+fans out: a dispense moves stock, empties a shelf, prices a line and creates a
+payable. If each domain listened to the application directly, four listeners
+would re-derive "what just happened" from four different queries and disagree
+about it. So the driver performs the real action, describes it **once** as a
+`Fact`, and every domain that cares observes the same description. The failures
+worth finding are between domains — stock says the units left, money says nothing
+was owed — and they are only findable if the account of events does not fork.
+
+**What the simulated clock cannot do, stated up front.** It cannot freeze the
+application's clock: `services/` reads the wall clock in 57 places in the
+inventory area alone and neither `freezegun` nor `time_machine` is installed. It
+governs what the harness writes and asserts, so it can prove everything computed
+from dated rows — demand shape, seasonality, lead time, expiry, supplier history
+— and cannot prove behaviour branching on the process's own "now". That is
+exactly the class of defect this project has been bitten by twice. The seam that
+would close it exists: `clock.py` derives the pharmacy's own today, and today six
+call sites use it against seventeen that bypass it.
+
+The existing simulator was **wrapped, not rewritten**. It has found a quantity
+ceiling that wedged a SKU, reserved stock removable from under a promise, an
+unreachable bucket-release branch and an ABC classifier that called the most
+valuable item C. Rewriting it to fit a new interface would risk all of that to
+gain nothing, so the acceptance test is that the existing sweep still passes
+untouched — and it does, 0 findings.

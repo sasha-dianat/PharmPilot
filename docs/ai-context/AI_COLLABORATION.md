@@ -2899,3 +2899,91 @@ environmental rather than a regression. Neither touches inventory.
 prescriptions go through `apply_dispense`. Until the POS path calls the same
 seam, the floor figure is right for the dispensary and short for the front shop.
 That is the next thing to close and it belongs with the POS work.
+
+### 2026-09-06 — Claude (Opus 5) — correction: there is no OTC sale path to fix
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- **Correcting the entry above.** It closed by saying "nothing decrements a shelf
+  for an OTC sale — until the POS path calls the same seam, the floor figure is
+  right for the dispensary and short for the front shop." That implies an OTC
+  path exists and fails to decrement. It does not exist.
+- `services/platform/routers/pos.py` is **prescription copay collection at the
+  dispensing window**: `CollectPaymentRequest` is keyed on `rx_id`, and the
+  tender types are cash/card/mobile/waiver/split against a prescription that has
+  already been dispensed — and therefore already decremented through
+  `apply_dispense`. There is no basket, no non-prescription line, and no endpoint
+  anywhere that sells an over-the-counter item. `is_otc` appears only in
+  `pricing.py`, as a catalogue attribute.
+- So the shelf figure is **not** currently short. Nothing is being missed today;
+  the capability is absent rather than broken. Selling OTC is a feature decision
+  for the owner and a build, not a seam to close — it belongs in the pilot plan's
+  Phase 3 (shelf/depot + OTC/POS) or a separate feature, not as a prerequisite.
+- The distinction matters for what happens next: I was about to treat this as a
+  small gap-closure ahead of the simulation harness. It is not small, and the
+  simulation does not depend on it.
+
+### 2026-09-06 — Claude (Opus 5) — Phase 0: a spine that can check several domains at once
+
+- Workstream: `inventory-integrity` (CL-003 scope)
+- Branch: `feat/inventory-integrity`
+- First phase of the whole-platform pilot. Deliberately narrow: build the spine
+  only as far as Phase 1 (the money oracle) needs, and prove it by hosting the
+  existing ledger simulation without regression.
+- `tests/simulation/spine/{clock,facts,domain,harness}.py` plus
+  `tests/simulation/domains/inventory.py`.
+
+**The design decision that matters.** One business action fans out across
+domains — a dispense moves stock, empties a shelf, prices a line, creates a
+payable. If each domain listened to the application directly, four listeners
+would each re-derive "what just happened" from four different queries and come to
+disagree about it. So the driver performs the real action, describes it **once**
+as a `Fact`, and every domain observes the same description. The failures a
+whole-pharmacy pilot exists to find are precisely the between-domain ones, and
+they are only findable if the account of events does not fork.
+
+Checking runs every domain in one pass and reports all findings rather than
+stopping at the first — a run that halts on one has hidden the other three — and
+one domain raising during its check does not stop the others. Each domain's
+`violations()` runs first: if the oracle broke its own rules the *simulation* is
+at fault, and reporting that as a platform defect would be worse than useless.
+
+**The clock's limit, stated in the module rather than discovered later.** It
+cannot freeze the application's clock: `services/` reads the wall clock in 57
+places in the inventory area alone, and neither `freezegun` nor `time_machine` is
+installed. It governs what the harness writes and asserts. So a simulated year
+can prove everything computed from dated rows — demand shape, seasonality, lead
+time, expiry, supplier history — and cannot prove behaviour that branches on the
+process's own "now", which is the exact class of defect that produced the
+timezone bug in the routers and the rotting reconciliation tests. The seam that
+would close it already exists (`clock.py`); six call sites use it, seventeen
+bypass it.
+
+**Wrapped, not rewritten.** The existing oracle and invariants have found a
+quantity ceiling that wedged a SKU, reserved stock removable from under a
+promise, an unreachable bucket-release branch, and an ABC classifier that called
+the most valuable item C. Rewriting them to fit a new interface would risk all of
+that to gain nothing, so `InventoryDomain` adapts and the existing sweep is the
+acceptance test.
+
+**Two defects in my own first draft, both caught by running it.**
+1. The dispense loop tested `out.ok and not out.skipped`, and `Outcome` has no
+   `.skipped` — so it short-circuited on every row, the money domain heard
+   nothing, and the run still passed its other four checks. **A fan-out that
+   silently carries no facts is exactly what this script exists to catch**, and
+   it nearly passed while carrying none.
+2. The tenant helper I reused creates a pharmacy with no patients, so every
+   simulated prescription failed on a NULL `patient_id` and every dispense was
+   refused. Visible only once the first defect stopped hiding it.
+
+**Verification.** `scripts/verify_spine.py` → **9/9**: two domains registered and
+checked every round, 33 facts across 6 simulated days, the ledger invariants
+holding throughout, an injected cross-domain disagreement reported with both
+numbers while inventory still agrees, and an oracle that broke its own rule
+reported against the simulation rather than the platform. 15 new unit tests.
+`scripts/inv_simulate.py --seeds 4` → 0 findings, so the existing simulator is
+untouched. 780 inventory/simulation unit tests pass.
+
+**Next: Phase 1, the money oracle** — an independent re-derivation of insurer
+share, مابه‌التفاوت, حق فنی and VAT, with a conservation invariant. It is gated on
+the tariffs, which are still **UNVERIFIED**, and that gate should be closed
+before the oracle is written rather than after.
