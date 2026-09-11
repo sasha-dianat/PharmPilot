@@ -2987,3 +2987,99 @@ untouched. 780 inventory/simulation unit tests pass.
 share, مابه‌التفاوت, حق فنی and VAT, with a conservation invariant. It is gated on
 the tariffs, which are still **UNVERIFIED**, and that gate should be closed
 before the oracle is written rather than after.
+
+---
+
+## 2026-09-11 — CL-003 — Pilot Phase 1: the money oracle
+
+**Branch/commit.** `feat/inventory-integrity` @ `580807b`.
+
+**The gate was already open — this supersedes the closing note of the Phase 0
+entry above.** That entry ended by saying Phase 1 was gated on tariffs that were
+"still UNVERIFIED". They are not: `d68acfb` (*fix(pricing): the tariffs,
+researched against the regulator and the court*, 2026-08-22) closed it. Every
+figure in `services/core/pricing_ir/config.py` now carries its own basis in
+place — CONFIRMED, CORRECTED or NOT MODELLED — and the commit fixed two real
+money defects: حق فنی was being split with insurers that pay none of it
+(patient charged 218,100, an insurer billed 508,900 per prescription), and the
+armed-forces outpatient drug franchise was 30% where ساخد had cut it to 15%.
+Writing the oracle before that would have produced a second implementation of
+the same guess.
+
+**Files.** `tests/simulation/domains/money.py` (new), `tests/unit/
+test_simulation_money.py` (new, 26 tests), `scripts/verify_money_oracle.py`
+(new), `scripts/verify_spine.py` (the Phase 0 `MoneyStub` replaced by the real
+domain, retaining its ledger-count rule as `LedgerWitness`).
+
+**Three separations, each one a temptation resisted.**
+1. *Tariffs are restated, not imported.* Reading `config.PLANS` would make a
+   wrong tariff invisible — both sides wrong together, run passes. So the
+   franchises are entered in the oracle from the regulation. The cost is that a
+   lawful tariff change breaks the oracle, and `tariff_drift()` exists to make
+   that break **say so**: "the tariff moved, confirm and update the oracle" is a
+   different sentence from "the engine computed the wrong number", and they go to
+   different people.
+2. *Invariants asserted, formulas not copied.* The engine derives مابه‌التفاوت as
+   `gross − covered_base` rather than rounding `(consumer − ref)×qty`, because
+   round(a)+round(b) ≠ round(a+b) breaks the line by a Rial — or by a thousand at
+   the coarse unit the config invites. An oracle recomputing it naively would
+   "disagree" on exactly the lines the engine already got right.
+3. *The rounding unit is a constructor parameter.* It is a deployment setting,
+   not a tariff.
+
+**The decile trap, avoided on both sides.** The 1405 cabinet resolution replaced
+the flat outpatient franchise with a decile band (1-3 → 25%, 4-6 → 30%, 7-10 →
+40%) «به استثنای داروها». Drugs are carved out. An oracle that applied that table
+would have disagreed with a correct engine on nearly every row and read as a
+platform defect.
+
+**My own first draft was wrong, and the run said so.** It reported 2,908
+conservation breaks across 11,925 lines. Every one was the oracle's fault:
+`covered_base + differential == gross` is a statement about **covered** lines,
+and applying it to cosmetics and non-formulary drugs — where there is no insurer
+base to differ from, so both terms are legitimately zero against a non-zero
+gross — indicted the engine for my error. Fixed in the domain and in the
+verification script.
+
+**Checks actually run.**
+- `scripts/verify_money_oracle.py` → **PASS**. 12,000 randomised prescriptions /
+  35,800 lines, at both the 1-Rial and 1,000-Rial rounding units, with sub-Rial
+  prices, fractional quantities and references above *and* below the consumer
+  price: **zero disagreements** between the engine and the regulation, and the
+  engine's own lines conserve throughout.
+- `scripts/verify_spine.py` → **15/15**. Three domains, 132 facts over 6
+  simulated days, 0 invariant violations; each dispense priced through the real
+  engine before the units move.
+- `tests/unit/test_simulation_money.py` → 26 passed. Spine + money + pricing → 65
+  passed. Full unit suite → **2,086 passed, 1 xfailed, 1 failed** —
+  `test_integrations_sandbox.py::test_notifications_sandbox_success_shape…`,
+  the known order-dependent one, verified green in isolation.
+
+**Remaining risks — three, and the second is the largest finding of this phase.**
+1. *Agreement on patient categories proves nothing.* `config.py` declares
+   کمیته امداد / روستایی / بیماران خاص / دهک ۱-۳ / under-7s as NOT MODELLED, and
+   the oracle omits them too. Engine and oracle therefore agree while both
+   over-charge every one of those patients. This is a **shared blind spot, not a
+   verified behaviour**, and no amount of differential testing will find it.
+2. *There is no Iranian money ledger.* `prescription_fills` has **zero** money
+   columns. The only money table is `claim_transactions`, which is NCPDP D.0
+   shaped — BIN, PCN, member_id, DAW, reject codes, COB — with amounts typed
+   `Numeric(12,2)` and `Mapped[float]`: dollars-and-cents for a currency the
+   engine computes in whole Rial with `Decimal`, against Bible invariant 6. So
+   the platform computes a quote and has nowhere Iranian-shaped to record what
+   was actually charged. The money domain's `check()` therefore compares against
+   the account of events rather than a table, because there is no table to
+   compare against. **Referred to the pricing/workflow owner — this is a schema
+   decision, not a CL-003 change.**
+3. *The shelf is not exercised by the simulated world.* `verify_spine.py` prints
+   "stock records disagree with the shelf" during setup because the driver
+   receives into lots and never places anything on a shelf, so `shelf.py` —
+   newly the pharmacy's second ledger — is untouched by the pilot so far.
+
+**Next action.** Phase 2: extend the roster so the run covers the platform rather
+than two domains of it. Priority order by what a wrong answer costs — the
+workflow/audit domain (RxStateMachine hash chain, acknowledgement gates,
+separation of duties), then the shelf domain (closing risk 3), then the clinical
+domain (DUR hard stops, interaction acknowledgement), then the advisory/ML
+engines, which need a different kind of check: they advise rather than decide, so
+the assertion is calibration and provenance, not equality.
