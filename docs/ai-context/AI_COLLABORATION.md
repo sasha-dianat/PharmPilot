@@ -3083,3 +3083,91 @@ separation of duties), then the shelf domain (closing risk 3), then the clinical
 domain (DUR hard stops, interaction acknowledgement), then the advisory/ML
 engines, which need a different kind of check: they advise rather than decide, so
 the assertion is calibration and provenance, not equality.
+
+---
+
+## 2026-09-11 — CL-003 — Pilot Phase 2: the workflow and audit oracle
+
+**Branch/commit.** `feat/inventory-integrity` @ `758aa96`.
+
+**Files.** `tests/simulation/domains/workflow.py` (new), `tests/unit/
+test_simulation_workflow.py` (new, 29 tests), `scripts/verify_workflow_audit.py`
+(new), `tests/simulation/spine/facts.py` (one kind added: `transitioned`, because
+this phase actually emits it).
+
+**What is re-derived.** Both halves of the workflow contract: the legal
+transition graph, transcribed from the lifecycle the Project Bible documents,
+and the SHA-256 digest over `rx_state_events`, recomputed from its definition.
+Neither is imported from `state_machine.py` — the money oracle's reason applies
+unchanged, that a shared table makes a wrong edge invisible to both sides at
+once. `graph_drift()` keeps "the lifecycle moved" a separate sentence from "the
+application took an illegal step". **Drift today is empty**: the independently
+transcribed graph matches `TRANSITIONS` exactly, which is a real result about the
+implementation rather than a formality.
+
+**The finding this phase exists for: the hash chain cannot be verified by
+anyone.** `transition()` hashes `datetime.now(timezone.utc)`; `created_at` is
+`server_default=func.now()`. Different clocks, and **the hashed instant is
+written to no column**. Driving the real machine through a real lifecycle, all 8
+links fail when recomputed from `created_at` and all 8 verify against the
+captured Python instant (median drift 2.4 ms). That capture is the whole method:
+from the table alone, "these rows were tampered with" and "this digest was never
+recomputable" are indistinguishable, and a verifier that could not separate them
+would report a design gap as an intrusion. `rx_state_events` stores no
+`previous_hash` either, so **both** inputs a verifier needs are absent. The
+tamper evidence is unfalsifiable in practice.
+
+**Three further findings, demonstrated rather than cited.**
+1. *Ambiguous chain order.* Two transitions in one transaction carry
+   byte-identical `created_at`, because Postgres `now()` is transaction-start
+   time, while the writer selects its predecessor with `ORDER BY created_at DESC
+   LIMIT 1`. Which event the second chains to is the planner's choice.
+2. *The digest does not cover what an auditor reads.* It spans neither `reason`
+   nor `event_metadata` nor `triggered_by_type`. An override's stated
+   justification was edited in the database and every link still verified. The
+   chain is tamper-evident about the *shape* of a transition and silent about its
+   stated justification.
+3. *`transferred_out` is unreachable.* A declared terminal status with no
+   incoming edge anywhere in the graph. Either transfer-out is a real pharmacy
+   operation missing its edge or the status is dead vocabulary; the graph cannot
+   say which, only that one is true.
+
+**What the chain does still prove, stated precisely.** A rewritten status or
+actor id is caught. Replacing a stored hash breaks exactly two links — itself and
+the successor whose digest embedded the original value — and that two-link
+signature distinguishes a rewritten hash from an edited field, which breaks one.
+Saying "the chain is worthless" would be as wrong as the claim it corrects.
+
+**Also confirmed live, previously only cited.** A direct `UPDATE prescriptions
+SET status` (what `pos.py` and `AutoPAAgent` do) is detected by comparing the
+status against the last recorded event. `transition()` takes no pharmacy and
+checks none: a prescription belonging to another tenant was advanced by a caller
+holding no claim to it.
+
+**My own first draft was wrong twice, both caught by running it.** A tamper test
+asserted one broken link where replacing a stored hash necessarily breaks two;
+and `demonstrate_reason_is_unprotected()` hashed identical arguments twice and
+returned True — a tautology, in an audit demonstration, in a codebase whose gap
+register already lists tautological checks as a known sin. Replaced with
+`unprotected_edit()`, which takes two records that genuinely differ.
+
+**Checks actually run.** 29 new unit tests; 80 across workflow/money/spine/
+rx-state-machine; full unit suite **2,115 passed, 1 xfailed, 1 failed** — the
+known order-dependent `test_integrations_sandbox` one, verified green in
+isolation. `scripts/verify_workflow_audit.py` → **PASS, 0 checks failed, 5
+findings demonstrated**. `verify_spine.py` and `verify_money_oracle.py` still
+PASS.
+
+**Remaining risks.** Findings 1–3 and the unverifiable chain are **referred to
+the Rx-workflow owner** — they are schema and write-path changes (`previous_hash`
+column, persisting the hashed instant, widening the digest, an ordering key),
+not CL-003's to make. Until they land, no audit claim about
+`rx_state_events` should be made to a regulator or a customer: the chain detects
+a changed status and cannot be recomputed by the person being asked to trust it.
+`verify_workflow_audit.py` separates checks that must hold from findings it
+demonstrates, so it stays green as a gate while the findings remain open;
+printing known referred gaps as failures is how a suite stops being read.
+
+**Next action.** Phase 3: the shelf domain — closing the gap noted at the end of
+Phase 1, that the simulated world receives into lots and never places anything on
+a shelf, so `shelf.py` is still untouched by the pilot.
