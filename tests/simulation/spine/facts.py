@@ -28,7 +28,7 @@ from typing import Any
 # this project has removed twice.
 STOCK = ("received", "dispensed", "written_off", "counted", "transferred",
          "reserved", "released", "placed_on_shelf", "taken_off_shelf")
-WORKFLOW = ("prescription_entered", "verified", "handed_over")
+WORKFLOW = ("prescription_entered", "verified", "handed_over", "transitioned")
 MONEY = ("priced", "adjudicated", "paid")
 KINDS = STOCK + WORKFLOW + MONEY
 
