@@ -2,7 +2,8 @@ from datetime import date, datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (Boolean, Date, DateTime, ForeignKey, Integer, Numeric,
+                        SmallInteger, String, Text, UniqueConstraint)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -207,7 +208,44 @@ class RxStateEvent(AuditedBase):
     event_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 for tamper evidence
 
+    # ── what makes the hash above verifiable by someone other than the writer ──
+    # (migration 0053). Until it landed, the chain could not be recomputed from
+    # this table by anyone: the writer hashed `datetime.now(timezone.utc)` and
+    # the row took `created_at` from `server_default=func.now()`, a different
+    # clock, so every link failed on replay. Both inputs the digest consumes —
+    # the instant and the predecessor's hash — were discarded after use.
+    #
+    # `hashed_at` is the instant that actually went into the digest. It is kept
+    # separate from `created_at` rather than overwriting it, so the two remain
+    # independently readable and their drift stays visible.
+    hashed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The predecessor's `event_hash`, stored rather than recomputed. NULL means
+    # "first event for this prescription", which is a statement, not a gap.
+    previous_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Monotonic per prescription, starting at 1. `created_at` cannot order the
+    # chain: Postgres now() is transaction-start time, so two transitions
+    # committed together carry byte-identical timestamps and the predecessor
+    # became whichever row the planner returned. A unique constraint on
+    # (prescription_id, sequence_number) makes a concurrent double-write fail
+    # loudly instead of silently producing two events at the same position.
+    sequence_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Which digest definition this row's `event_hash` was built under. Rows
+    # written before 0053 are version 1 and stay verifiable under the narrow
+    # six-field digest; version 2 spans the fields an auditor actually reads.
+    # Rehashing the old rows would have destroyed the evidence it protects — a
+    # row already altered would have been re-blessed as valid.
+    digest_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default="1"
+    )
+
     prescription: Mapped["Prescription"] = relationship(back_populates="state_events")
+
+    __table_args__ = (
+        UniqueConstraint("prescription_id", "sequence_number",
+                         name="uq_rx_state_events_seq"),
+    )
 
 
 class LabelEvent(AuditedBase):

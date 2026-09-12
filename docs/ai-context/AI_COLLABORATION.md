@@ -6,7 +6,7 @@ Repository: `sasha-dianat/PharmPilot`
 
 Coordination owner: project owner
 
-Last updated: 2026-07-26
+Last updated: 2026-09-12
 
 ## Purpose
 
@@ -73,6 +73,7 @@ At the end of every session:
 | CX-001 | Codex | READY_FOR_REVIEW | `agent/ai-collaboration-protocol` (stacked on CL-001) | `AGENTS.md`, `CLAUDE.md`, and `docs/ai-context/AI_COLLABORATION.md` only | Review and merge the coordination protocol into `feat/darunameh-crawler` |
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
 | CL-003 | Claude Code | READY_FOR_REVIEW | `feat/inventory-integrity` | `services/core/inventory/{ledger,reconciliation,formulary_binding}.py`, `routers/inventory_integrity.py`, `routers/inventory.py`, `shared/models/inventory.py`, `shared/models/auth.py` (permission table), migration `0030`, `InventoryIntegrity.tsx` + nav/api wiring, `docs/design/INVENTORY_SYSTEM.md`, three new test modules | Independent review of the maker-checker rules, the migration on a disposable DB, and the P2 dispense-hook design before it is built |
+| CL-004 | Claude Code | READY_FOR_REVIEW | `claude/determined-mccarthy-1476a8` (off `feat/inventory-integrity` @ `ee8dc0e`), uncommitted | The Rx audit chain: `services/core/pharmacy_workflow/state_machine.py` (digest + event write path only), `shared/models/prescription.py` (`RxStateEvent` columns), migration `0053`, `tests/simulation/domains/workflow.py`, `tests/unit/test_simulation_workflow.py`, `tests/unit/test_rx_state_machine.py`, `scripts/verify_workflow_audit.py` | Independent review of the digest-version cut-over, the migration on a disposable DB, and the concurrency claim on `sequence_number` |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
@@ -3171,3 +3172,140 @@ printing known referred gaps as failures is how a suite stops being read.
 **Next action.** Phase 3: the shelf domain — closing the gap noted at the end of
 Phase 1, that the simulated world receives into lots and never places anything on
 a shelf, so `shelf.py` is still untouched by the pilot.
+
+---
+
+## 2026-09-12 — CL-004 — The Rx audit chain becomes verifiable by someone else
+
+- Workstream: `CL-004` (new). Opened because CL-003 explicitly **referred these
+  findings out** — "they are schema and write-path changes … not CL-003's to
+  make" — and no workstream owned `state_machine.py` or the `rx_state_events`
+  schema. Registered in the table above before editing.
+- Branch/commit: `claude/determined-mccarthy-1476a8`, branched off
+  `feat/inventory-integrity` @ `ee8dc0e`. **Uncommitted working tree** at time of
+  writing; 6 files modified, 1 added (the migration).
+- **Base correction worth recording.** The task arrived pointed at a worktree on
+  `master`, where none of Phase 2 exists: no `scripts/verify_workflow_audit.py`,
+  no `tests/simulation/` at all, ledger ending 2026-07-26, Alembic head `0029`
+  against this branch's `0052`, ~900 unit tests against 2,115. `master` is 115
+  commits behind `feat/inventory-integrity`. Implementing there would have
+  numbered this migration `0030`, colliding with the existing `0030`–`0052`
+  chain and creating the multiple-head state the contract forbids. Fast-forwarded
+  the branch onto `feat/inventory-integrity` (no unique commits, lossless)
+  before any edit. **Anyone handed "fix the audit chain" should check the base
+  first; the write-up lives on a branch, not on master.**
+
+### What changed
+
+All four defects Phase 2 demonstrated are closed. `transition()`'s digest and
+event write path only — the pharmacy predicate and the direct status writes in
+`pos.py` / `backoffice_agents.py` remain open under their own owner, untouched.
+
+- **Migration `0053`**, head `0052` → `0053`, single linear chain preserved.
+  Four columns on `rx_state_events`: `hashed_at` (the instant that actually went
+  into the digest), `previous_hash`, `sequence_number`, `digest_version`.
+  Plus `uq_rx_state_events_seq` UNIQUE (prescription_id, sequence_number) and
+  `ck_rx_state_events_v2_inputs` CHECK — a version-2 row cannot exist without
+  the inputs its digest consumes.
+- **The hashed instant is persisted.** `hashed_at` is kept *beside* `created_at`
+  rather than overwriting it, so the application/database clock drift stays
+  readable instead of being hidden by the fix. Still ~2.9 ms, now harmless.
+- **`previous_hash` is stored**, so the oracle can compare the link the writer
+  claims against the link the rows actually form — a re-pointed chain is now a
+  distinct finding from a broken one.
+- **Ordering is by `sequence_number`**, monotonic from 1, not by `created_at`.
+  The predecessor query is `ORDER BY sequence_number DESC NULLS LAST LIMIT 1`.
+  `transition()` flushes at the event write so a concurrent double-write raises
+  `IntegrityError` in the losing transition rather than forking the chain.
+- **Digest v2 spans `reason`, `event_metadata`, `triggered_by_type` and the
+  event's position.** `event_metadata` is canonicalised (sorted keys, no
+  incidental whitespace, `default=str`) because it round-trips through JSONB,
+  which preserves neither key order nor formatting — a digest sensitive to
+  either would break the chain on an ordinary *read*.
+
+### The migration story for rows already written
+
+**Existing rows were not rehashed, and this was the deliberate choice.**
+Recomputing the stored hashes under the wider digest would have re-blessed as
+valid any row that had already been altered — destroying exactly the evidence
+the column exists to protect — and a wholesale rewrite is indistinguishable from
+an attack. So `digest_version` labels each row with the rule it was written
+under: `1` for everything before `0053`, `2` since. The oracle dispatches per
+row, and `_compute_event_hash` survives in `state_machine.py` for that purpose
+rather than being deleted with the defect. `hash_coverage_gap(version=1)` still
+reports the old gap, because it is still true of those rows.
+
+`sequence_number` **is** backfilled for version-1 rows, by `(created_at, id)`.
+That is a reconstruction of the *read* order, not a record of the *write* order,
+and for rows sharing a `created_at` the two may differ. It is safe only because
+the version-1 digest does not span `sequence_number`, so the backfill cannot
+make a legacy chain verify or fail differently than it did before. `hashed_at`
+and `previous_hash` stay NULL there: the values were never recorded and cannot be
+recovered, and a verifier reports such a row as *unverifiable by design* rather
+than as tampered. Those are different findings requiring different responses,
+and conflating them reports a design gap as an intrusion.
+
+### Interfaces/schema/data
+
+Schema only, additive. No API surface changed. `graph_drift()` is still empty —
+`TRANSITIONS` was not touched. Note: `scripts/seed_financials.py` inserts
+cancellation events by raw SQL with a random `event_hash`; those land as
+version-1 rows and remain unverifiable, as they already were.
+
+### Checks actually run
+
+- **Full unit suite `pytest tests/unit -q` → 2,139 passed, 1 xfailed, 1 failed**
+  in 13m35s. The failure is the known order-dependent
+  `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`,
+  **verified green in isolation** (1 passed). Baseline on this branch was 2,115
+  passed with the same single failure; +24 tests, all new ones passing.
+- `pytest tests/unit/test_simulation_workflow.py tests/unit/test_rx_state_machine.py`
+  → **63 passed** (39 before: 29 + 10; now 43 + 20).
+- `pytest tests/unit/test_model_column_parity.py tests/unit/test_alembic_schema_parity.py`
+  → passed; model↔Postgres column parity holds both directions and the chain is
+  single-headed and linear.
+- **Migration on the disposable database only** (`pharmpilot_test` on 5433,
+  target asserted before every run; production `pharmpilot` never touched):
+  `upgrade head` → `downgrade 0052` → `upgrade head`, all clean. **Rollback
+  evidence**: downgrade drops all four columns and both constraints and returns
+  the DB to `0052`. Backfill verified on the 619 pre-existing rows — 0 NULL
+  sequence numbers, all `digest_version = 1`.
+- `scripts/verify_workflow_audit.py` → **PASS, 0 checks failed, 2 findings**
+  (was 5). The three in-scope notes became **21 checks**.
+- `verify_spine.py` and `verify_money_oracle.py` → still **PASS**.
+- **Mutation-tested, because a green suite proves nothing on its own.**
+  (a) Dropping `hashed_at=now` from the writer: the database *refuses the
+  insert* — `ck_rx_state_events_v2_inputs` violation. The defect cannot be
+  reintroduced silently. (b) Narrowing the v2 digest to stop covering `reason`:
+  `verify_workflow_audit.py` fails 4 checks, because the oracle re-derives the
+  digest instead of importing it. Both mutations reverted and re-verified.
+
+### Risks/blockers
+
+- **The concurrency claim is argued from the constraint, not from a race.** The
+  unique constraint is proven to reject a duplicate position (checked live), and
+  the flush is proven to surface it in the losing transaction — but no test runs
+  two genuinely concurrent transitions on one prescription. The failure mode is
+  now a loud `IntegrityError` rather than a silent fork, which is the right
+  direction; a caller that swallows it would still lose a transition. **No
+  retry-on-conflict exists**; a losing transition raises to its caller.
+- **Version-1 rows are permanently unverifiable**, by design and by necessity.
+  Any audit statement to a regulator or customer must be scoped to rows written
+  after `0053`. The chain now supports that claim for new rows; it cannot be
+  made retroactive, and no future migration should try.
+- `ck_rx_state_events_v2_inputs` does not require `previous_hash` — a first
+  event legitimately has none, and a NOT NULL there would be wrong. A version-2
+  row with a dropped `previous_hash` is caught by the oracle, not the database.
+- Two Phase-2 findings remain open and out of this scope, both still printed as
+  notes: `transferred_out` is declared but unreachable, and `transition()` takes
+  no pharmacy and checks none (Critical, separately owned).
+
+### Next action/owner
+
+- Reviewer: the digest-version cut-over, the `(created_at, id)` backfill
+  rationale, and whether `transition()`'s new flush belongs there or in the
+  caller.
+- Rx-workflow owner: the pharmacy predicate on `transition()` and the direct
+  status writes in `pos.py` / `backoffice_agents.py` — unchanged by this work and
+  still demonstrated live by `verify_workflow_audit.py`.
+- Claude: commit on request; the tree is deliberately left uncommitted.

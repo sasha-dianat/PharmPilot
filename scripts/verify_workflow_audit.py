@@ -18,6 +18,21 @@ Two kinds of result, deliberately separated:
   as failures would make this script permanently red and therefore worthless as a
   gate, which is how a suite stops being read.
 
+Three of the five original notes are now checks. Migration 0053 gave
+`rx_state_events` the columns that make its chain verifiable by someone other
+than the writer — `hashed_at`, `previous_hash`, `sequence_number`,
+`digest_version` — and widened the digest to span `reason`, `event_metadata`,
+`triggered_by_type` and the event's position. What used to be demonstrated as
+broken is now asserted as working, against the same live database and by the
+same oracle.
+
+Two notes remain, both out of this work's scope and owned elsewhere: the
+unreachable `transferred_out` status, and `transition()` taking no pharmacy.
+
+Rows written before 0053 were NOT rehashed — doing so would have re-blessed any
+row that had already been altered. They stay `digest_version = 1` and verify
+under the original six-field digest; the oracle dispatches per row.
+
 Everything lands under a pharmacy created for this run.
 """
 from __future__ import annotations
@@ -93,12 +108,21 @@ async def a_prescription(db, *, pid, patient, prescriber, rx_number,
 
 
 async def events(db, rx_id) -> list[dict]:
-    """The chain as a verifier would have to read it back."""
+    """The chain as a verifier reads it back — nothing the writer kept in memory.
+
+    Ordered by `sequence_number`, the key the writer now assigns, rather than by
+    `created_at`. Postgres now() is transaction-start time, so `created_at` ties
+    across every row of one transaction and cannot order them. NULLS LAST covers
+    a version-1 row the 0053 backfill did not reach.
+    """
     rows = (await db.execute(text(
         "SELECT prescription_id, from_status, to_status, triggered_by_id, "
-        "       created_at, event_hash, reason "
+        "       triggered_by_type, reason, metadata AS event_metadata, "
+        "       created_at, hashed_at, previous_hash, sequence_number, "
+        "       digest_version, event_hash "
         "  FROM rx_state_events WHERE prescription_id = :r "
-        " ORDER BY created_at ASC, id ASC"), {"r": rx_id})).mappings().all()
+        " ORDER BY sequence_number ASC NULLS LAST, created_at ASC, id ASC"),
+        {"r": rx_id})).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -163,60 +187,80 @@ async def main() -> int:
               status == RxStatus.DISPENSED.value, str(status))
 
         # ── the chain, recomputed independently ───────────────────────────
+        # This section used to be the finding. Before migration 0053 every one
+        # of these links failed when recomputed from the table and every one
+        # verified against a Python instant the writer had discarded — the chain
+        # was unverifiable by anyone who was not the process that wrote it.
         print("\nthe audit chain, recomputed from the specification")
         found = w.chain_findings(RX1_LABEL, stored)
         breaks = [f for f in found if "broken at this link" in f]
-        ordering = [f for f in found if "share created_at" in f]
-        check("one transaction per transition leaves the order unambiguous",
+        unverifiable = [f for f in found if "unverifiable rather than" in f]
+        relinked = [f for f in found if "re-linked" in f]
+        ordering = [f for f in found if "share created_at" in f
+                    or "not in order" in f or "not unique" in f]
+
+        check("the chain verifies from the database alone, with nothing the "
+              "writer kept in memory", not breaks and not unverifiable,
+              "; ".join((breaks + unverifiable)[:2]))
+        check("every event stores the digest version it was written under",
+              all(e["digest_version"] for e in stored),
+              str([e["digest_version"] for e in stored]))
+        check("every event stores the instant that was hashed",
+              all(e["hashed_at"] is not None for e in stored))
+        check("every event after the first stores its predecessor's hash",
+              all(e["previous_hash"] is not None for e in stored[1:])
+              and stored[0]["previous_hash"] is None)
+        check("the stored links match the rows they point at", not relinked,
+              "; ".join(relinked[:1]))
+        check("the order a verifier reads is the order the writer used",
               not ordering, "; ".join(ordering[:1]))
+        check("positions are 1..n with no gaps",
+              [e["sequence_number"] for e in stored] == list(range(1, len(stored) + 1)),
+              str([e["sequence_number"] for e in stored]))
 
-        # Does it fail because the rows were tampered with, or because the
-        # digest was never recomputable? From the table alone those are
-        # indistinguishable, so replay with the instants the machine hashed.
-        replay = [dict(e, created_at=t) for e, t in zip(stored, captured)]
-        replay_breaks = [f for f in w.chain_findings(RX1_LABEL, replay)
-                         if "broken at this link" in f]
-        check("the chain verifies against the instants the machine hashed",
-              captured and not replay_breaks,
-              f"{len(replay_breaks)} break(s) even on replay")
+        # The clock probe survives the fix, now checking the opposite claim.
+        # `hashed_at` must be the instant the machine actually hashed, not
+        # merely *an* instant: a column written from a second `now()` call would
+        # look right in the table and still fail every recomputation.
+        check("hashed_at is the instant the machine hashed, not a second "
+              "reading of the clock",
+              bool(captured) and all(e["hashed_at"] == t
+                                     for e, t in zip(stored, captured)),
+              f"{sum(1 for e, t in zip(stored, captured) if e['hashed_at'] != t)}"
+              f" of {len(stored)} differ")
 
-        if breaks and not replay_breaks:
-            drifts = [abs((e["created_at"] - t).total_seconds())
-                      for e, t in zip(stored, captured)]
-            note("the hashed timestamp is never stored, so no one can verify "
-                 "the chain from the database",
-                 f"all {len(breaks)} links fail when recomputed from "
-                 f"created_at and all {len(stored)} verify against the Python "
-                 f"instant the machine hashed (median drift "
-                 f"{sorted(drifts)[len(drifts)//2]:.6f}s). `transition()` hashes "
-                 f"`datetime.now(timezone.utc)` while `created_at` is "
-                 f"`server_default=func.now()` — a different clock, and the "
-                 f"hashed value is written to no column. rx_state_events also "
-                 f"stores no previous_hash, so both inputs a verifier needs are "
-                 f"absent: the tamper evidence is unfalsifiable in practice.")
-        else:
-            check("the chain the machine wrote verifies end to end", not breaks,
-                  "; ".join(breaks[:2]))
+        # And the drift that used to break everything is still there — it is
+        # simply no longer load-bearing, because nothing hashes created_at.
+        drifts = [abs((e["created_at"] - e["hashed_at"]).total_seconds())
+                  for e in stored if e["hashed_at"]]
+        if drifts:
+            print(f"        (application and database clocks still differ by a "
+                  f"median {sorted(drifts)[len(drifts)//2]:.6f}s — harmless now "
+                  f"that created_at is not what gets hashed)")
 
-        # ── tamper detection: what the chain DOES catch ───────────────────
-        # Measured against `replay`, the only sequence that verifies at all. Run
-        # against `stored` these would "pass" because every link is already
-        # broken — a tamper test that cannot fail is worse than none.
+        # ── tamper detection: what the chain catches ──────────────────────
+        # Measured against `stored` — the rows as they sit in the database.
+        # Before 0053 this had to run against a replayed sequence, because
+        # every stored link was already broken and a tamper test that cannot
+        # fail is worse than none.
         print("\nwhat the chain catches")
-        tampered = [dict(e) for e in replay]
-        tampered[3]["to_status"] = RxStatus.CANCELLED.value
-        check("a rewritten status is detected",
-              any("broken at this link" in f
-                  for f in w.chain_findings(RX1_LABEL, tampered)))
+        for label, field, value in [
+            ("a rewritten status", "to_status", RxStatus.CANCELLED.value),
+            ("a rewritten actor", "triggered_by_id", uuid.uuid4()),
+            ("a rewritten actor type", "triggered_by_type", "ai"),
+            ("a rewritten position", "sequence_number", 99),
+        ]:
+            tampered = [dict(e) for e in stored]
+            tampered[3][field] = value
+            check(f"{label} is detected",
+                  any("broken at this link" in f
+                      for f in w.chain_findings(RX1_LABEL, tampered)))
 
-        tampered = [dict(e) for e in replay]
-        tampered[2]["triggered_by_id"] = uuid.uuid4()
-        check("a rewritten actor is detected",
-              any("broken at this link" in f
-                  for f in w.chain_findings(RX1_LABEL, tampered)))
-
-        # ── and what it does not ──────────────────────────────────────────
-        print("\nwhat the chain does not catch")
+        # ── the finding this work closed ──────────────────────────────────
+        # Under version 1 this exact edit left every link verifying. It is done
+        # against the live database rather than in memory, because that is how
+        # it was demonstrated to be broken.
+        print("\nan edited justification, against the live database")
         target = stored[2]
         original_reason = target["reason"]
         await db.execute(text(
@@ -228,20 +272,28 @@ async def main() -> int:
         after = await events(db, rx_id)
         edited = [e for e in after if e["reason"] == "rewritten after the fact"]
         check("the reason really was changed in the database", bool(edited))
-        after_replay = [dict(e, created_at=t) for e, t in zip(after, captured)]
-        after_breaks = [f for f in w.chain_findings(RX1_LABEL, after_replay)
+        after_breaks = [f for f in w.chain_findings(RX1_LABEL, after)
                         if "broken at this link" in f]
-        if edited and not after_breaks:
-            note("an edited reason leaves the chain intact",
-                 f"reason on the {target['to_status']} event was changed from "
-                 f"{original_reason!r} to 'rewritten after the fact' and every "
-                 f"link still verifies. The digest does NOT span "
-                 f"{', '.join(w.hash_coverage_gap())} — precisely the fields a "
-                 f"regulator reads when asking why an override happened.")
-        else:
-            check("an edited reason leaves the chain intact (expected finding)",
-                  False, f"{len(after_breaks)} break(s) — the digest may now "
-                         f"cover reason; update the oracle")
+        check("and the chain now breaks on it", bool(after_breaks),
+              f"reason on the {target['to_status']} event went from "
+              f"{original_reason!r} to 'rewritten after the fact' and every link "
+              f"still verified — the digest has stopped covering reason")
+        check("exactly the edited link breaks, and the damage does not spread",
+              len(after_breaks) == 1, f"{len(after_breaks)} break(s)")
+        check("the version-2 digest leaves no audited field unprotected",
+              w.hash_coverage_gap(version=2) == [],
+              str(w.hash_coverage_gap(version=2)))
+
+        # Repair the row so the ordering and tenancy sections below read a
+        # coherent chain rather than inheriting this deliberate break.
+        await db.execute(text(
+            "UPDATE rx_state_events SET reason = :old WHERE prescription_id = :r "
+            "  AND to_status = :t"),
+            {"old": original_reason, "r": rx_id, "t": target["to_status"]})
+        await db.commit()
+        check("and the chain verifies again once the edit is reverted",
+              not [f for f in w.chain_findings(RX1_LABEL, await events(db, rx_id))
+                   if "broken at this link" in f])
 
         # ── a status that moved without the machine ───────────────────────
         print("\na status that moved without passing through the machine")
@@ -280,18 +332,44 @@ async def main() -> int:
         await db.commit()               # both rows in ONE transaction
         three = await events(db, rx3)
         stamps = {e["created_at"].isoformat() for e in three}
-        if len(three) > 1 and len(stamps) == 1:
-            note("two events in one transaction share created_at exactly",
-                 f"{len(three)} events, {len(stamps)} distinct timestamp. "
-                 f"created_at is server_default=func.now() and Postgres now() is "
-                 f"transaction-start time, while the writer selects its "
-                 f"predecessor with ORDER BY created_at DESC LIMIT 1 — so which "
-                 f"event the second one chains to is decided by the planner. "
-                 f"rx_state_events also stores no previous_hash column, so a "
-                 f"verifier cannot recover the order the writer used.")
-        else:
-            check("two events in one transaction share created_at (expected)",
-                  False, f"{len(stamps)} distinct stamps — the design changed")
+        seqs = [e["sequence_number"] for e in three]
+
+        # The ambiguity is still in `created_at` and always will be — Postgres
+        # now() is transaction-start time. What changed is that nothing depends
+        # on it any more. Asserting the tie still exists keeps this honest: if
+        # it ever stopped, the checks below would be passing for the wrong
+        # reason and would no longer be testing anything.
+        check("two events in one transaction still share created_at exactly",
+              len(three) > 1 and len(stamps) == 1,
+              f"{len(stamps)} distinct stamps across {len(three)} events")
+        check("but they carry distinct, ordered positions",
+              seqs == sorted(seqs) and len(set(seqs)) == len(seqs), str(seqs))
+        check("and the second chains to the first by stored hash, not by clock",
+              three[1]["previous_hash"] == three[0]["event_hash"])
+        check("so the chain written in one transaction still verifies",
+              not [f for f in w.chain_findings(f"AUD-003-{RUN}", three)
+                   if "broken at this link" in f])
+
+        # The constraint is what makes the position trustworthy under
+        # concurrency: without it two transitions racing on one prescription
+        # both read max(sequence_number) and both write the same successor.
+        dup = False
+        try:
+            await db.execute(text(
+                "INSERT INTO rx_state_events (id, prescription_id, from_status, "
+                "  to_status, triggered_by_type, event_hash, sequence_number, "
+                "  digest_version, hashed_at, created_at, updated_at, is_deleted) "
+                "VALUES (gen_random_uuid(), :r, 'pending_dur', "
+                "  'pending_verification', 'staff', :h, :s, 2, now(), now(), "
+                "  now(), false)"),
+                {"r": rx3, "h": "0" * 64, "s": seqs[-1]})
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            dup = True
+        check("a second event cannot claim a position already taken", dup,
+              "the unique constraint on (prescription_id, sequence_number) is "
+              "missing — two concurrent transitions can fork the chain")
 
         # ── the graph refuses what the specification refuses ──────────────
         print("\nthe machine refuses an illegal step")
