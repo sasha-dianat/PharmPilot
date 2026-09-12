@@ -3271,6 +3271,33 @@ so the properties are "kill every provider and no deterministic verdict changes"
 provenance on every recommendation, and no patient identifier reaching any
 provider — not equality against an oracle.
 
+### Addendum to Phase 3 — a shared-database hazard between worktrees
+
+Recorded separately because it affects **anyone** running `tests/unit` right now
+and is not a defect in any workstream's code.
+
+- This worktree's Alembic chain head: **0052** (`0052_zone_fk.py`).
+- The shared `pharmpilot_test` database: stamped **0053**.
+- No migration file in this worktree describes 0053 or the four
+  `rx_state_events` columns it added.
+
+The audit-chain task spun off from Phase 2 runs in its own git worktree, so its
+migration file exists there while the **database is shared**. Every other
+session's suite therefore sees a database ahead of its own migration chain, and
+`test_model_column_parity` fails on columns that session has not yet mapped.
+
+Do not "fix" it by adding the columns to `shared/models/prescription.py` or to
+`IGNORED_DB_COLUMNS` — that would collide with the owning workstream and mask a
+real parity check. It resolves when that branch lands its model changes. A
+session that needs a clean parity run before then should point `DATABASE_URL` at
+its own disposable database rather than the shared one.
+
+The general lesson for the ledger: **a dedicated branch or worktree isolates
+files, not the database.** Schema work in parallel worktrees needs either a
+per-worktree database or an explicit hand-off on who may stamp the shared one.
+
+---
+
 ---
 
 ## 2026-09-12 — CL-004 — The Rx audit chain becomes verifiable by someone else
