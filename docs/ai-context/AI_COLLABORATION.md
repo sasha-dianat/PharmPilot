@@ -74,7 +74,7 @@ At the end of every session:
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
 | CL-003 | Claude Code | READY_FOR_REVIEW | `feat/inventory-integrity` | `services/core/inventory/{ledger,reconciliation,formulary_binding}.py`, `routers/inventory_integrity.py`, `routers/inventory.py`, `shared/models/inventory.py`, `shared/models/auth.py` (permission table), migration `0030`, `InventoryIntegrity.tsx` + nav/api wiring, `docs/design/INVENTORY_SYSTEM.md`, three new test modules | Independent review of the maker-checker rules, the migration on a disposable DB, and the P2 dispense-hook design before it is built |
 | CL-004 | Claude Code | READY_FOR_REVIEW | `claude/determined-mccarthy-1476a8` @ `2fc98de` (off `feat/inventory-integrity` @ `ee8dc0e`), unpushed | The Rx audit chain: `services/core/pharmacy_workflow/state_machine.py` (digest + event write path only), `shared/models/prescription.py` (`RxStateEvent` columns), migration `0053`, `tests/simulation/domains/workflow.py`, `tests/unit/test_simulation_workflow.py`, `tests/unit/test_rx_state_machine.py`, `scripts/verify_workflow_audit.py` | Independent review of the digest-version cut-over, the migration on a disposable DB, and the concurrency claim on `sequence_number` |
-| CL-005 | Claude Code | READY_FOR_REVIEW | `fix/shelf-fractional-ledger` (off `claude/determined-mccarthy-1476a8` @ `7989dc7`, with `9aa8c21` + its two ledger commits cherry-picked across from `feat/frontend-consolidation`), unpushed | The shelf ledger's arithmetic: `services/core/inventory/dispense.py` (`_take_off_shelf` only), `shared/models/depot.py` (three quantity columns), `services/platform/routers/depot_transfer.py` (the two `int()` casts on `current_units` only), migration `0054`, `scripts/verify_shelf_domain.py` (clamp branch), `tests/unit/test_inventory_shelf_ledger_e2e.py`, `tests/unit/test_model_column_parity.py` (quantity-type pin), `docs/design/SHELF_LEDGER.md` | Independent review of migration `0054` on a disposable DB, and the inventory owner's decision on the duplicate writable cache (`SHELF_LEDGER.md` §5) |
+| CL-005 | Claude Code | READY_FOR_REVIEW | `fix/shelf-fractional-ledger` @ `a5a0ee9` · PR [#27](https://github.com/sasha-dianat/PharmPilot/pull/27) → `claude/determined-mccarthy-1476a8` (off `7989dc7`, with `9aa8c21` + its two ledger commits cherry-picked across from `feat/frontend-consolidation`) | The shelf ledger's arithmetic: `services/core/inventory/dispense.py` (`_take_off_shelf` only), `shared/models/depot.py` (three quantity columns), `services/platform/routers/depot_transfer.py` (the two `int()` casts on `current_units` only), migration `0054`, `scripts/verify_shelf_domain.py` (clamp branch), `tests/unit/test_inventory_shelf_ledger_e2e.py`, `tests/unit/test_model_column_parity.py` (quantity-type pin), `docs/design/SHELF_LEDGER.md` | Independent review of migration `0054` on a disposable DB, and the inventory owner's decision on the duplicate writable cache (`SHELF_LEDGER.md` §5) |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
@@ -3446,7 +3446,14 @@ version-1 rows and remain unverifiable, as they already were.
 - Workstream: `CL-005` (new). Opened because Phase 3's shelf oracle *demonstrated*
   the defect and referred it out; this fixes it. No overlap with CL-003's owned
   files, and the only CL-004 file touched is none — `0054` simply stacks on `0053`.
-- Branch/commit: `fix/shelf-fractional-ledger`, unpushed.
+- Branch/commit: `fix/shelf-fractional-ledger` @ `a5a0ee9`, pushed.
+  PR [#27](https://github.com/sasha-dianat/PharmPilot/pull/27) against
+  `claude/determined-mccarthy-1476a8`. **The PR base is a review surface, not a
+  landing decision** — `determined-mccarthy` is the only base carrying `0053`, so
+  it gives the narrowest honest diff, but merging CL-005 into CL-004's branch
+  would entangle two workstreams and turn CL-004's review into a review of two
+  things. Of the four commits in the PR, only `a5a0ee9` is new work; the other
+  three are Phase 3's oracle cherry-picked verbatim, and the PR body says so.
 
 ### Where this branch came from, and why not `feat/frontend-consolidation`
 
