@@ -109,7 +109,11 @@ def _enforce_finalize_guards(body: "ShelfPlaceRequest", *, drug: dict, shelf: di
         raise HTTPException(422, f"Cold chain: {cc['reason']}")
 
     # Capacity: non-blocking warn (recorded)
-    cap = R.capacity_check(staged=body.quantity, current=int(shelf.get("current_units", 0)),
+    # `current_units` is Numeric(10,3) since migration 0054, so it can carry a
+    # fraction left by a fractional dispense. int() here rounded it down and made
+    # the capacity warning fire slightly late; capacity itself stays whole.
+    cap = R.capacity_check(staged=body.quantity,
+                           current=Decimal(str(shelf.get("current_units", 0) or 0)),
                            capacity=int(shelf.get("capacity_units", 0)))
     if cap["verdict"] == "warn":
         flags["capacity_warning"] = cap["reason"]
@@ -343,7 +347,12 @@ async def shelf_place(
         created_by=staff.id, updated_by=staff.id,
     )
     db.add(placement)
-    shelf.current_units = int(shelf.current_units) + int(body.quantity)
+    # Decimal, not int. `current_units` is Numeric(10,3) since migration 0054 and
+    # a fractional dispense legitimately leaves it fractional; int() here would
+    # round the cached total away on the very next placement and re-open the
+    # drift 0054 closed. The placement itself is a scanned, whole-unit act, so
+    # `body.quantity` stays an integer — it is the running total that is not.
+    shelf.current_units = Decimal(str(shelf.current_units)) + Decimal(str(body.quantity))
     shelf.updated_by = staff.id
 
     event = ShelfTransferEvent(

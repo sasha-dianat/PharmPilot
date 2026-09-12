@@ -181,3 +181,46 @@ async def test_the_two_columns_that_caused_this_guard_are_mapped(schema):
     for column in ("quantity_damaged", "quantity_returned", "quantity_in_transit"):
         assert column in schema["models"]["inventory_lots"], (
             f"the {column} holding bucket (migration 0035) is unmapped again")
+
+
+# Every column that carries a dispensable quantity. The checks above compare
+# column NAMES, which is the failure they were written for — but a quantity
+# column of the wrong TYPE is mapped, present, and silently wrong, and that is
+# its own defect: as INTEGERs these three rounded every fractional dispense, so
+# 2.9 units off a placement of 30 left the two copies of that number four apart
+# (migration 0054). Pinned by name because the guard cannot infer which columns
+# are quantities and which are counts of things that do not divide —
+# `pharmacy_shelves.capacity_units` is deliberately absent from this list.
+_QUANTITY_COLUMNS = (
+    ("shelf_placements", "units"),
+    ("pharmacy_shelves", "current_units"),
+    ("shelf_transfer_events", "quantity_delta"),
+    ("inventory_lots", "quantity_on_hand"),
+    ("prescription_fills", "quantity_dispensed"),
+)
+
+
+async def test_every_dispensable_quantity_is_numeric_not_integer(schema):
+    """A quantity stored as INTEGER rounds, and rounds silently.
+
+    Liquids, creams and paediatric doses are ordinary. A column that cannot hold
+    2.9 does not report an error when it is handed one — it stores 2, and every
+    figure derived from it is wrong by an amount nothing records.
+    """
+    engine = create_async_engine(URL)
+    try:
+        async with engine.connect() as conn:
+            types = dict((f"{t}.{c}", d) for t, c, d in (await conn.execute(text("""
+                SELECT table_name, column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'"""))).all())
+    finally:
+        await engine.dispose()
+
+    wrong = [f"{table}.{column} is {types[f'{table}.{column}']}"
+             for table, column in _QUANTITY_COLUMNS
+             if types.get(f"{table}.{column}") not in (None, "numeric")]
+    assert not wrong, (
+        "These columns hold a dispensable quantity but cannot represent a "
+        "fraction of one, so every fractional dispense rounds silently:\n  "
+        + "\n  ".join(wrong))
