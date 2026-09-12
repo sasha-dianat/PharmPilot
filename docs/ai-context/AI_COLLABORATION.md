@@ -73,7 +73,7 @@ At the end of every session:
 | CX-001 | Codex | READY_FOR_REVIEW | `agent/ai-collaboration-protocol` (stacked on CL-001) | `AGENTS.md`, `CLAUDE.md`, and `docs/ai-context/AI_COLLABORATION.md` only | Review and merge the coordination protocol into `feat/darunameh-crawler` |
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
 | CL-003 | Claude Code | READY_FOR_REVIEW | `feat/inventory-integrity` | `services/core/inventory/{ledger,reconciliation,formulary_binding}.py`, `routers/inventory_integrity.py`, `routers/inventory.py`, `shared/models/inventory.py`, `shared/models/auth.py` (permission table), migration `0030`, `InventoryIntegrity.tsx` + nav/api wiring, `docs/design/INVENTORY_SYSTEM.md`, three new test modules | Independent review of the maker-checker rules, the migration on a disposable DB, and the P2 dispense-hook design before it is built |
-| CL-004 | Claude Code | READY_FOR_REVIEW | `claude/determined-mccarthy-1476a8` (off `feat/inventory-integrity` @ `ee8dc0e`), uncommitted | The Rx audit chain: `services/core/pharmacy_workflow/state_machine.py` (digest + event write path only), `shared/models/prescription.py` (`RxStateEvent` columns), migration `0053`, `tests/simulation/domains/workflow.py`, `tests/unit/test_simulation_workflow.py`, `tests/unit/test_rx_state_machine.py`, `scripts/verify_workflow_audit.py` | Independent review of the digest-version cut-over, the migration on a disposable DB, and the concurrency claim on `sequence_number` |
+| CL-004 | Claude Code | READY_FOR_REVIEW | `claude/determined-mccarthy-1476a8` @ `2fc98de` (off `feat/inventory-integrity` @ `ee8dc0e`), unpushed | The Rx audit chain: `services/core/pharmacy_workflow/state_machine.py` (digest + event write path only), `shared/models/prescription.py` (`RxStateEvent` columns), migration `0053`, `tests/simulation/domains/workflow.py`, `tests/unit/test_simulation_workflow.py`, `tests/unit/test_rx_state_machine.py`, `scripts/verify_workflow_audit.py` | Independent review of the digest-version cut-over, the migration on a disposable DB, and the concurrency claim on `sequence_number` |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
@@ -3181,9 +3181,10 @@ a shelf, so `shelf.py` is still untouched by the pilot.
   findings out** — "they are schema and write-path changes … not CL-003's to
   make" — and no workstream owned `state_machine.py` or the `rx_state_events`
   schema. Registered in the table above before editing.
-- Branch/commit: `claude/determined-mccarthy-1476a8`, branched off
-  `feat/inventory-integrity` @ `ee8dc0e`. **Uncommitted working tree** at time of
-  writing; 6 files modified, 1 added (the migration).
+- Branch/commit: `claude/determined-mccarthy-1476a8` @ `2fc98de`, branched off
+  `feat/inventory-integrity` @ `ee8dc0e`. 8 files, +1,069/−146. **Not pushed** —
+  no remote branch and no PR yet. The SHA above was recorded in a follow-up
+  commit, since naming it inside the commit it describes is not possible.
 - **Base correction worth recording.** The task arrived pointed at a worktree on
   `master`, where none of Phase 2 exists: no `scripts/verify_workflow_audit.py`,
   no `tests/simulation/` at all, ledger ending 2026-07-26, Alembic head `0029`
@@ -3308,4 +3309,6 @@ version-1 rows and remain unverifiable, as they already were.
 - Rx-workflow owner: the pharmacy predicate on `transition()` and the direct
   status writes in `pos.py` / `backoffice_agents.py` — unchanged by this work and
   still demonstrated live by `verify_workflow_audit.py`.
-- Claude: commit on request; the tree is deliberately left uncommitted.
+- Project owner: decide whether this lands on `feat/inventory-integrity` (whose
+  `0052` it already stacks on) or waits for that branch's own review. Nothing is
+  pushed, so either is still cheap.
