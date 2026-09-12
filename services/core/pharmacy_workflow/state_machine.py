@@ -102,6 +102,17 @@ EPCS_REQUIRED_STATES = {RxStatus.VERIFICATION_IN_PROGRESS, RxStatus.FILLING}
 QUEUE_LEASE_SECONDS = 300  # 5 minutes — auto-released if not completed
 
 
+# The digest definition a row's `event_hash` was built under. Rows written
+# before migration 0053 are version 1 and are verified under `_compute_event_hash`
+# below; everything written since is version 2.
+#
+# Version 1 was never rehashed into version 2, and deliberately so. Recomputing
+# the stored hashes would have re-blessed as valid any row that had already been
+# altered — the one thing the chain exists to prevent — and a wholesale rewrite
+# is indistinguishable from an attack. Old rows keep their old rule.
+DIGEST_VERSION = 2
+
+
 def _compute_event_hash(
     prescription_id: UUID,
     from_status: Optional[str],
@@ -111,14 +122,79 @@ def _compute_event_hash(
     previous_hash: Optional[str] = None,
 ) -> str:
     """
-    SHA-256 hash of the transition — chains with previous event hash
-    for tamper evidence on the audit trail.
+    The version-1 digest. Retained to verify rows written before migration 0053
+    — not used for new events.
+
+    It spans only the shape of a transition. `reason`, `event_metadata` and
+    `triggered_by_type` are outside it, so under this rule a DUR override's
+    stated justification could be rewritten with every link still verifying.
+    That is why version 2 exists; this stays so that history written under the
+    old rule remains checkable rather than silently invalidated.
     """
     payload = json.dumps({
         "prescription_id": str(prescription_id),
         "from_status": from_status,
         "to_status": to_status,
         "triggered_by_id": str(triggered_by_id) if triggered_by_id else None,
+        "timestamp": timestamp.isoformat(),
+        "previous_hash": previous_hash,
+    }, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def canonical_metadata(metadata: Optional[dict]) -> str:
+    """`event_metadata` as one stable string, so the digest can span it.
+
+    Sorted keys and no incidental whitespace, because the value makes a round
+    trip through JSONB before any verifier sees it and Postgres preserves
+    neither key order nor formatting. `default=str` keeps a stray Decimal or
+    datetime from raising inside an audit write, where refusing to record the
+    transition would be far worse than recording a stringified value.
+    """
+    return json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"),
+                      default=str)
+
+
+def _compute_event_hash_v2(
+    prescription_id: UUID,
+    sequence_number: int,
+    from_status: Optional[str],
+    to_status: str,
+    triggered_by_id: Optional[UUID],
+    triggered_by_type: str,
+    reason: Optional[str],
+    event_metadata: Optional[dict],
+    timestamp: datetime,
+    previous_hash: Optional[str] = None,
+) -> str:
+    """
+    The version-2 digest: every field an auditor reads, plus the position.
+
+    Three additions over version 1, each closing a demonstrated hole:
+
+      reason, event_metadata, triggered_by_type — the fields a regulator
+        actually reads when asking why an override happened. Under version 1
+        these were unprotected, and an edited justification was shown to leave
+        the whole chain verifying.
+
+      sequence_number — binds the event to its position, so reordering the
+        chain breaks it. Version 1 hashed no position at all, and the writer
+        inferred one from `created_at`, which is identical across every row of
+        a transaction.
+
+      timestamp — unchanged in the digest, but now `hashed_at` is persisted, so
+        this value can be read back rather than guessed at.
+    """
+    payload = json.dumps({
+        "version": DIGEST_VERSION,
+        "prescription_id": str(prescription_id),
+        "sequence_number": sequence_number,
+        "from_status": from_status,
+        "to_status": to_status,
+        "triggered_by_id": str(triggered_by_id) if triggered_by_id else None,
+        "triggered_by_type": triggered_by_type,
+        "reason": reason,
+        "event_metadata": canonical_metadata(event_metadata),
         "timestamp": timestamp.isoformat(),
         "previous_hash": previous_hash,
     }, sort_keys=True)
@@ -174,27 +250,49 @@ class RxStateMachine:
                     f"(Schedule {rx.dea_schedule}) in state {to_status.value}"
                 )
 
-        # Get previous hash for chain
+        # The predecessor, by POSITION rather than by clock. This used to be
+        # `ORDER BY created_at DESC LIMIT 1`, and `created_at` is
+        # `server_default=func.now()` — Postgres now() is transaction-start
+        # time, so every event written in one transaction carries the same
+        # value and "the previous event" was whichever row the planner happened
+        # to return. `sequence_number` is monotonic per prescription and unique,
+        # so this returns one specific row or none.
+        #
+        # `nulls_last` guards the ordering against a legacy row the 0053
+        # backfill did not reach: a NULL would otherwise sort first under
+        # Postgres DESC and be picked as the predecessor of everything.
         prev_event_result = await self.db.execute(
             select(RxStateEvent)
             .where(RxStateEvent.prescription_id == prescription_id)
-            .order_by(RxStateEvent.created_at.desc())
+            .order_by(RxStateEvent.sequence_number.desc().nulls_last())
             .limit(1)
         )
         prev_event = prev_event_result.scalar_one_or_none()
         prev_hash = prev_event.event_hash if prev_event else None
+        sequence_number = (prev_event.sequence_number or 0) + 1 if prev_event else 1
 
         now = datetime.now(timezone.utc)
-        event_hash = _compute_event_hash(
+        event_metadata = metadata or {}
+        event_hash = _compute_event_hash_v2(
             prescription_id=prescription_id,
+            sequence_number=sequence_number,
             from_status=from_status.value,
             to_status=to_status.value,
             triggered_by_id=triggered_by_id,
+            triggered_by_type=triggered_by_type,
+            reason=reason,
+            event_metadata=event_metadata,
             timestamp=now,
             previous_hash=prev_hash,
         )
 
-        # Create immutable state event
+        # Create immutable state event.
+        #
+        # `hashed_at`, `previous_hash` and `sequence_number` are persisted
+        # because the digest consumed them. Before 0053 all three were computed,
+        # fed to SHA-256 and dropped, which is what made the tamper evidence
+        # unfalsifiable: every link failed when recomputed from the table, and
+        # a verifier could not tell that from actual tampering.
         event = RxStateEvent(
             prescription_id=prescription_id,
             from_status=from_status.value,
@@ -202,11 +300,21 @@ class RxStateMachine:
             triggered_by_id=triggered_by_id,
             triggered_by_type=triggered_by_type,
             reason=reason,
-            event_metadata=metadata or {},
+            event_metadata=event_metadata,
             event_hash=event_hash,
+            hashed_at=now,
+            previous_hash=prev_hash,
+            sequence_number=sequence_number,
+            digest_version=DIGEST_VERSION,
             created_by=triggered_by_id,
         )
         self.db.add(event)
+        # The unique constraint on (prescription_id, sequence_number) is what
+        # makes the position above trustworthy under concurrency, but it is only
+        # enforced at flush. Flushing here turns a concurrent double-write into
+        # an IntegrityError raised by the losing transition, rather than a
+        # deferred failure attributed to whatever ran next.
+        await self.db.flush()
 
         # Update prescription
         rx.status = to_status.value

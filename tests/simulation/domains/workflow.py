@@ -14,33 +14,43 @@ specification and the implementation disagree about what is legal — a finding 
 its own right, and a different one from "the application took an illegal step".
 
 The hash is recomputed from its documented definition. That recomputation is
-what makes the two audit findings below demonstrable rather than assertions:
+what made the audit findings below demonstrable rather than asserted — and what
+now demonstrates that they are closed.
 
-**The chain has no stored link.** `rx_state_events` has `event_hash` and no
-`previous_hash` column. The previous hash goes *into* the digest and is then
-thrown away, so the chain cannot be verified from the table — a verifier has to
-recompute forward from the first event and hope it reconstructs the same order
-the writer used. Which leads directly to:
+**Two digest versions, because history was not rewritten.** Migration 0053
+widened the digest, which changes every hash it computes. Rehashing the rows
+already in the table would have re-blessed as valid any row that had been
+altered, so rows keep the rule they were written under: `digest_version = 1` for
+anything written before 0053, `2` for everything since. This oracle verifies
+each row under its own version and says so when it cannot verify one at all.
 
-**The order the writer used is not reliably reconstructible.** The writer selects
-its predecessor with `ORDER BY created_at DESC LIMIT 1`, and `created_at` is
-`server_default=func.now()` — Postgres `now()` is *transaction start* time, the
-same value for every row written in one transaction. Two transitions in one
-transaction therefore carry byte-identical timestamps and "the previous event"
-becomes whichever row the planner happens to return.
+**What version 1 could not do, and why the distinction matters.** A version-1
+row stores neither the instant that was hashed (the writer hashed
+`datetime.now(timezone.utc)`; the row took `created_at` from
+`server_default=func.now()`, a different clock) nor the predecessor's hash. Both
+digest inputs were discarded after use. Such a row is *unverifiable by design*,
+which is not the same finding as *tampered with*, and from the table alone the
+two are indistinguishable — a verifier that conflated them would report a design
+gap as an intrusion. `chain_findings()` keeps them apart.
 
-**The digest does not cover what an auditor reads.** It spans prescription_id,
-from_status, to_status, triggered_by_id, timestamp and previous_hash. It does not
-span `reason`, `event_metadata` or `triggered_by_type`. The chain is therefore
-tamper-evident about the *shape* of a transition and silent about its stated
-justification — the DUR override reason, the actor type, the metadata a
-regulator would actually read. `hash_coverage_gap()` demonstrates it by editing a
-reason and showing every hash still verifies.
+**Version 2 stores what it consumed.** `hashed_at`, `previous_hash` and
+`sequence_number` are columns now, so the chain is recomputable by someone other
+than the writer. `sequence_number` also replaces `created_at` as the ordering
+key: Postgres `now()` is transaction-start time, so two transitions committed
+together carried byte-identical timestamps and "the previous event" was whichever
+row the planner returned.
 
-None of this is a claim that the chain is worthless. It detects a changed status,
-a changed actor id or a deleted event. It does not detect an edited reason, and
-an audit trail that advertises tamper evidence should be precise about which
-fields it covers.
+**Version 2 spans what an auditor reads.** `reason`, `event_metadata` and
+`triggered_by_type` are inside the digest, along with the event's position. Under
+version 1 they were not, and an edited DUR override justification left every link
+verifying — demonstrated against a live database, not cited.
+`hash_coverage_gap()` still reports the version-1 gap, because version-1 rows
+still exist and that is still true of them.
+
+None of this ever meant the chain was worthless. Version 1 detects a changed
+status, a changed actor id or a deleted event. It does not detect an edited
+reason, and an audit trail that advertises tamper evidence should be precise
+about which fields it covers — under either version.
 """
 from __future__ import annotations
 
@@ -104,16 +114,30 @@ TERMINAL = {DISPENSED, RETURNED_TO_STOCK, CANCELLED, TRANSFERRED_OUT}
 # A controlled substance entering either of these needs an EPCS-enrolled actor.
 EPCS_REQUIRED = {VERIFICATION_IN_PROGRESS, FILLING}
 
-# The fields the documented digest actually spans. Kept as data so the coverage
-# gap below is a computed fact rather than a claim in a comment.
+# The fields each digest version spans. Kept as data so the coverage gap below
+# is a computed fact rather than a claim in a comment.
+LEGACY_DIGEST_VERSION = 1
+DIGEST_VERSION = 2
+
 HASHED_FIELDS = ("prescription_id", "from_status", "to_status",
                  "triggered_by_id", "timestamp", "previous_hash")
+# What version 1 left outside the digest. Still true of version-1 rows, which is
+# why this survives the fix rather than being deleted with it.
 AUDITED_BUT_UNHASHED = ("reason", "event_metadata", "triggered_by_type")
+
+HASHED_FIELDS_V2 = ("version", "prescription_id", "sequence_number",
+                    "from_status", "to_status", "triggered_by_id",
+                    "triggered_by_type", "reason", "event_metadata",
+                    "timestamp", "previous_hash")
 
 
 def event_digest(prescription_id, from_status, to_status, triggered_by_id,
                  timestamp: datetime, previous_hash: str | None) -> str:
-    """The chain hash, recomputed from its documented definition."""
+    """The version-1 chain hash, recomputed from its documented definition.
+
+    Kept for rows written before migration 0053. They were never rehashed, so
+    this is the only rule under which they verify.
+    """
     payload = json.dumps({
         "prescription_id": str(prescription_id),
         "from_status": from_status,
@@ -123,6 +147,60 @@ def event_digest(prescription_id, from_status, to_status, triggered_by_id,
         "previous_hash": previous_hash,
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def canonical_metadata(metadata: dict | None) -> str:
+    """`event_metadata` as one stable string.
+
+    Re-derived here rather than imported for the same reason the rest of this
+    module is: a shared helper would make a canonicalisation bug agree with
+    itself on both sides. Sorted keys and no incidental whitespace, because the
+    value round-trips through JSONB before a verifier reads it and Postgres
+    preserves neither key order nor formatting.
+    """
+    return json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"),
+                      default=str)
+
+
+def event_digest_v2(prescription_id, sequence_number: int, from_status,
+                    to_status, triggered_by_id, triggered_by_type: str,
+                    reason: str | None, event_metadata: dict | None,
+                    timestamp: datetime, previous_hash: str | None) -> str:
+    """The version-2 chain hash: the transition's shape, position and stated
+    justification, recomputed from the definition in migration 0053."""
+    payload = json.dumps({
+        "version": DIGEST_VERSION,
+        "prescription_id": str(prescription_id),
+        "sequence_number": sequence_number,
+        "from_status": from_status,
+        "to_status": to_status,
+        "triggered_by_id": str(triggered_by_id) if triggered_by_id else None,
+        "triggered_by_type": triggered_by_type,
+        "reason": reason,
+        "event_metadata": canonical_metadata(event_metadata),
+        "timestamp": timestamp.isoformat(),
+        "previous_hash": previous_hash,
+    }, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def digest_for(ev: dict, *, previous_hash: str | None) -> str:
+    """Recompute one stored event's hash under whichever version wrote it.
+
+    `previous_hash` is passed in rather than read off `ev` so the caller can
+    choose: the *stored* link (what the writer claims) or the *recomputed* one
+    (what the chain actually produces). Verifying both, and reporting where they
+    disagree, is what catches a re-linked chain.
+    """
+    if int(ev.get("digest_version") or LEGACY_DIGEST_VERSION) >= DIGEST_VERSION:
+        return event_digest_v2(
+            ev["prescription_id"], ev["sequence_number"], ev.get("from_status"),
+            ev["to_status"], ev.get("triggered_by_id"),
+            ev.get("triggered_by_type") or "staff", ev.get("reason"),
+            ev.get("event_metadata"), ev["hashed_at"], previous_hash)
+    return event_digest(
+        ev["prescription_id"], ev.get("from_status"), ev["to_status"],
+        ev.get("triggered_by_id"), ev["created_at"], previous_hash)
 
 
 @dataclass
@@ -221,7 +299,7 @@ class WorkflowDomain:
 
     # ── the chain ─────────────────────────────────────────────────────────
     def chain(self, rx: str) -> list[str]:
-        """Recompute the chain forward. Returns each event's expected hash."""
+        """Recompute the version-1 chain forward. Each event's expected hash."""
         h = self.history.get(rx)
         if h is None:
             return []
@@ -232,18 +310,60 @@ class WorkflowDomain:
             out.append(prev)
         return out
 
+    def chain_v2(self, rx: str, *, triggered_by_type: str = "staff",
+                 event_metadata: dict | None = None) -> list[str]:
+        """The same, under the version-2 digest.
+
+        Positions start at 1 to match the writer, which numbers a prescription's
+        first event 1 rather than 0. An oracle that started at 0 would disagree
+        with every real row while looking correct in isolation.
+        """
+        h = self.history.get(rx)
+        if h is None:
+            return []
+        out: list[str] = []
+        prev: str | None = None
+        for i, s in enumerate(h.steps, start=1):
+            prev = event_digest_v2(s.rx, i, s.frm, s.to, s.actor,
+                                   triggered_by_type, s.reason, event_metadata,
+                                   s.at, prev)
+            out.append(prev)
+        return out
+
     def chain_findings(self, rx: str, stored: list[dict]) -> list[str]:
         """Compare a stored event sequence against the recomputed chain.
 
-        `stored` is a list of {from_status, to_status, triggered_by_id,
-        created_at, event_hash} in the order the application would read them.
+        `stored` is a list of event records in the order the application would
+        read them. A version-2 record carries digest_version, sequence_number,
+        hashed_at, previous_hash, reason, event_metadata and triggered_by_type
+        alongside the original fields; a version-1 record carries only the
+        original six and is verified under the old rule.
+
+        A record with no `digest_version` is treated as version 1, so a caller
+        holding legacy rows needs to know nothing about versioning.
         """
         out: list[str] = []
         prev: str | None = None
         for i, ev in enumerate(stored):
-            expect = event_digest(
-                ev["prescription_id"], ev.get("from_status"), ev["to_status"],
-                ev.get("triggered_by_id"), ev["created_at"], prev)
+            version = int(ev.get("digest_version") or LEGACY_DIGEST_VERSION)
+
+            # A version-2 row missing an input the version-2 digest consumes
+            # cannot be checked at all. Say that, rather than recomputing
+            # against a guess and reporting the mismatch as tampering.
+            if version >= DIGEST_VERSION:
+                missing = [k for k in ("sequence_number", "hashed_at")
+                           if ev.get(k) is None]
+                if missing:
+                    out.append(
+                        f"rx {rx} event {i} ({ev.get('from_status')} → "
+                        f"{ev['to_status']}): claims digest version {version} "
+                        f"but stores no {', '.join(missing)} — the digest "
+                        f"cannot be recomputed, so this row is unverifiable "
+                        f"rather than verified")
+                    prev = ev["event_hash"]
+                    continue
+
+            expect = digest_for(ev, previous_hash=prev)
             if ev["event_hash"] != expect:
                 out.append(
                     f"rx {rx} event {i} ({ev.get('from_status')} → "
@@ -256,34 +376,87 @@ class WorkflowDomain:
             else:
                 prev = expect
 
-        # Ambiguous ordering: the writer picks its predecessor by created_at, so
-        # two events sharing one makes "the previous event" arbitrary.
+        out.extend(self._link_findings(rx, stored))
+        out.extend(self._order_findings(rx, stored))
+        return out
+
+    def _link_findings(self, rx: str, stored: list[dict]) -> list[str]:
+        """Does each row's STORED predecessor match the row before it?
+
+        Only version 2 can be asked this — version 1 stored no `previous_hash`,
+        which is the whole reason its chain was never verifiable from the table.
+        The recomputation above already folds the link into each digest, so a
+        disagreement here means the stored link and the hashed link differ:
+        someone re-pointed the chain and left the digests alone.
+        """
+        out: list[str] = []
+        expected_prev: str | None = None
+        for i, ev in enumerate(stored):
+            if int(ev.get("digest_version") or LEGACY_DIGEST_VERSION) >= DIGEST_VERSION:
+                if ev.get("previous_hash") != expected_prev:
+                    out.append(
+                        f"rx {rx} event {i}: stored previous_hash "
+                        f"{str(ev.get('previous_hash'))[:16]}… is not the hash "
+                        f"of the event before it "
+                        f"({str(expected_prev)[:16]}…) — the chain was "
+                        f"re-linked")
+            expected_prev = ev["event_hash"]
+        return out
+
+    def _order_findings(self, rx: str, stored: list[dict]) -> list[str]:
+        """Can a verifier recover the order the writer used?
+
+        Version 2 records a position and is asked whether it is sane. Version 1
+        recorded none, so the only thing that can be asked of it is whether
+        `created_at` — the key its writer actually ordered by — distinguishes
+        its rows, and transaction-start time frequently does not.
+        """
+        out: list[str] = []
+        v2 = [e for e in stored
+              if int(e.get("digest_version") or LEGACY_DIGEST_VERSION) >= DIGEST_VERSION]
+        v1 = [e for e in stored if e not in v2]
+
+        seqs = [e.get("sequence_number") for e in v2]
+        if seqs:
+            if len(set(seqs)) != len(seqs):
+                out.append(
+                    f"rx {rx}: sequence numbers {seqs} are not unique — two "
+                    f"events claim one position and the chain forks")
+            elif seqs != sorted(seqs):
+                out.append(
+                    f"rx {rx}: sequence numbers {seqs} are not in order as read "
+                    f"— the read order is not the order the writer used")
+
         stamps: dict[str, int] = {}
-        for ev in stored:
+        for ev in v1:
             key = ev["created_at"].isoformat()
             stamps[key] = stamps.get(key, 0) + 1
         for stamp, n in stamps.items():
             if n > 1:
                 out.append(
-                    f"rx {rx}: {n} events share created_at {stamp} — the writer "
-                    f"selects its predecessor with ORDER BY created_at DESC "
-                    f"LIMIT 1, so which one they chain to is arbitrary and the "
-                    f"chain cannot be reconstructed by a verifier")
+                    f"rx {rx}: {n} version-1 events share created_at {stamp} — "
+                    f"their writer selected its predecessor with ORDER BY "
+                    f"created_at DESC LIMIT 1, so which one they chain to is "
+                    f"arbitrary and that part of the chain cannot be "
+                    f"reconstructed by a verifier")
         return out
 
-    def hash_coverage_gap(self) -> list[str]:
-        """Fields an auditor reads that the digest does not protect.
+    def hash_coverage_gap(self, version: int = LEGACY_DIGEST_VERSION) -> list[str]:
+        """Fields an auditor reads that the given digest version does not protect.
 
         Not a disagreement with the application — a property of the documented
         digest. Reported separately so it is never mistaken for a broken chain.
-        """
-        out = []
-        for f in AUDITED_BUT_UNHASHED:
-            if f not in HASHED_FIELDS:
-                out.append(f)
-        return out
 
-    def unprotected_edit(self, before: dict, after: dict) -> tuple[bool, list[str]]:
+        Version 1 leaves `reason`, `event_metadata` and `triggered_by_type`
+        outside. Version 2 spans them and returns nothing, and this is computed
+        from the field lists rather than hard-coded so that narrowing the digest
+        again would show up here instead of in a comment.
+        """
+        covered = HASHED_FIELDS_V2 if version >= DIGEST_VERSION else HASHED_FIELDS
+        return [f for f in AUDITED_BUT_UNHASHED if f not in covered]
+
+    def unprotected_edit(self, before: dict, after: dict,
+                         version: int = LEGACY_DIGEST_VERSION) -> tuple[bool, list[str]]:
         """Did an edit between these two event records leave the chain intact?
 
         Takes two genuinely different records and reports (chain_still_valid,
@@ -292,15 +465,19 @@ class WorkflowDomain:
         this codebase's known sins, and an audit demonstration is the last place
         to add one. So this hashes two records that really do differ and lets the
         caller see which differences the digest noticed.
+
+        Under version 2 an edited `reason` is no longer unprotected, so the same
+        pair of records that returned True here now returns False. The method
+        keeps its name because the question it asks is unchanged; only the
+        answer moved.
         """
         changed = [k for k in set(before) | set(after)
                    if before.get(k) != after.get(k)]
-        h_before = event_digest(before["prescription_id"], before.get("from_status"),
-                                before["to_status"], before.get("triggered_by_id"),
-                                before["created_at"], before.get("previous_hash"))
-        h_after = event_digest(after["prescription_id"], after.get("from_status"),
-                               after["to_status"], after.get("triggered_by_id"),
-                               after["created_at"], after.get("previous_hash"))
+        stamped = dict(digest_version=version)
+        h_before = digest_for({**stamped, **before},
+                              previous_hash=before.get("previous_hash"))
+        h_after = digest_for({**stamped, **after},
+                             previous_hash=after.get("previous_hash"))
         return h_before == h_after, sorted(changed)
 
     # ── the Domain protocol ───────────────────────────────────────────────
@@ -325,7 +502,12 @@ class WorkflowDomain:
             "SELECT p.rx_number, p.status, "
             "       (SELECT e.to_status FROM rx_state_events e "
             "         WHERE e.prescription_id = p.id "
-            "         ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS last_event, "
+            # sequence_number first: created_at is transaction-start time and
+            # ties across every row of one transaction, so it cannot name the
+            # last event. NULLS LAST keeps a legacy row the 0053 backfill missed
+            # from sorting to the front under DESC and posing as the latest.
+            "         ORDER BY e.sequence_number DESC NULLS LAST, "
+            "                  e.created_at DESC, e.id DESC LIMIT 1) AS last_event, "
             "       (SELECT count(*) FROM rx_state_events e "
             "         WHERE e.prescription_id = p.id) AS n_events "
             "  FROM prescriptions p WHERE p.pharmacy_id = :p"),
