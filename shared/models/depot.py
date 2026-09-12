@@ -28,7 +28,16 @@ class PharmacyShelf(AuditedBase):
     label: Mapped[str] = mapped_column(String(40), nullable=False)        # e.g. "A-03-B-05"
     zone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     capacity_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    current_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # denormalized cache of Σ placements
+    # Numeric(10,3), matching inventory_lots.quantity_on_hand and
+    # prescription_fills.quantity_dispensed (migration 0054). As an INTEGER this
+    # rounded away every fractional dispense; capacity_units above stays whole
+    # because it describes the furniture, not a quantity anything divides.
+    #
+    # A denormalised cache of Σ placements, and therefore a SECOND WRITABLE COPY
+    # of a derivable number. Exact arithmetic stops it drifting by accident; it
+    # does not stop a write path forgetting to update it. Referred to the
+    # inventory owner — see docs/design/SHELF_LEDGER.md, "The cache".
+    current_units: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False, default=0)
     storage_condition: Mapped[str] = mapped_column(String(20), nullable=False, default="ROOM_TEMP")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -40,7 +49,9 @@ class ShelfPlacement(AuditedBase):
     inventory_lot_id: Mapped[UUID] = mapped_column(ForeignKey("inventory_lots.id"), nullable=False, index=True)
     shelf_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacy_shelves.id"), nullable=False, index=True)
     ndc11: Mapped[str] = mapped_column(String(11), nullable=False, index=True)
-    units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Numeric(10,3) since migration 0054: what stands on a shelf is measured in
+    # the same units as the lot it came from, and half a bottle is ordinary.
+    units: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False, default=0)
     placed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -66,7 +77,10 @@ class ShelfTransferEvent(AuditedBase):
     inventory_lot_id: Mapped[UUID] = mapped_column(ForeignKey("inventory_lots.id"), nullable=False)
     shelf_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacy_shelves.id"), nullable=False)
     ndc11: Mapped[str] = mapped_column(String(11), nullable=False)
-    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Numeric(10,3) since migration 0054. This is the audit trail for shelf
+    # movement; as an INTEGER a fractional take was recorded as 0, so the one
+    # row that could have reconstructed the drift was rounded away itself.
+    quantity_delta: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False)
     performed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     barcode_verification_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ai_verification_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

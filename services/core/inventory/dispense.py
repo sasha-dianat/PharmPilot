@@ -25,6 +25,7 @@ Three properties this module has to hold, in order of importance:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -138,6 +139,24 @@ async def _take_off_shelf(db: AsyncSession, *, pharmacy_id, lot_id, ndc11,
     way, and an unrecorded shelf decrement is a reconciliation finding rather
     than a reason to refuse care. That is the same failure direction the ledger
     decrement itself takes, and for the same reason.
+
+    **Every quantity here stays a Decimal.** `allocate` computes in Decimal and
+    quantises to three places; this function used to convert its answer three
+    different ways on the way to the database — `float(take.after)` into the
+    placement, `int(take.units)` out of the cached total, `-int(take.units)`
+    into the movement row — against three `INTEGER` columns. A 2.9-unit dispense
+    off a placement of 30 therefore left the placement reading 25 and the cache
+    reading 29, two copies of one number four apart and neither equal to 27.1.
+    Migration 0054 makes all three `Numeric(10,3)`; passing the Decimal through
+    is the other half of that fix, and one without the other still rounds.
+
+    **The cached total is not clamped.** `GREATEST(0, ...)` wrote a
+    plausible-looking zero whenever the cache could not cover the take, which is
+    the fallback-constant pattern the provenance rule forbids — the shelf read 0
+    and no row said why. A cache that cannot cover its own take has already
+    drifted from the rows it caches, so the real arithmetic is written (negative
+    if that is the truth) and flagged, on the returned take and on the durable
+    movement row, for reconciliation to find.
     """
     rows = [dict(r) for r in (await db.execute(text("""
         SELECT id, shelf_id, inventory_lot_id, ndc11, units, placed_at
@@ -154,12 +173,33 @@ async def _take_off_shelf(db: AsyncSession, *, pharmacy_id, lot_id, ndc11,
         await db.execute(text(
             "UPDATE shelf_placements SET units = :after, updated_at = NOW() "
             "WHERE id = :id"),
-            {"after": float(take.after), "id": take.placement_id})
-        await db.execute(text(
+            {"after": take.after, "id": take.placement_id})
+        # RETURNING rather than a second SELECT: the decrement and the figure it
+        # produced have to come from the same statement, or a concurrent take
+        # can land between them and this reports a number nobody wrote.
+        cached_after = (await db.execute(text(
             "UPDATE pharmacy_shelves SET current_units = "
-            "GREATEST(0, current_units - :taken), updated_at = NOW() "
-            "WHERE id = :id"),
-            {"taken": int(take.units), "id": take.shelf_id})
+            "current_units - :taken, updated_at = NOW() "
+            "WHERE id = :id RETURNING current_units"),
+            {"taken": take.units, "id": take.shelf_id})).scalar()
+        cached_after = None if cached_after is None else L.q(cached_after)
+
+        # A cache that cannot cover its own take disagreed with its rows before
+        # this dispense touched it. Saying so is the whole point; the previous
+        # code clamped it to zero, which made the shelf look merely empty.
+        inconsistent = cached_after is not None and cached_after < 0
+        if inconsistent:
+            log.warning(
+                "shelf %s cached total went to %s taking %s units off "
+                "placement %s — the cached figure disagreed with its placements "
+                "before this dispense; it is recorded as-is rather than clamped",
+                take.shelf_id, cached_after, take.units, take.placement_id)
+
+        basis = {"basis": take.basis, "source": "dispense",
+                 "fill_id": str(fill_id),
+                 "cached_total_after": None if cached_after is None
+                                       else str(cached_after),
+                 "cached_total_inconsistent": inconsistent}
         await db.execute(text("""
             INSERT INTO shelf_transfer_events
               (id, pharmacy_id, inventory_lot_id, shelf_id, ndc11,
@@ -169,12 +209,15 @@ async def _take_off_shelf(db: AsyncSession, *, pharmacy_id, lot_id, ndc11,
             VALUES (gen_random_uuid(), :pid, :lot, :shelf, :ndc, :delta, :by,
                     CAST(:basis AS jsonb), :now, NOW(), false, false)"""), {
             "pid": pharmacy_id, "lot": lot_id, "shelf": take.shelf_id,
-            "ndc": ndc11, "delta": -int(take.units), "by": actor_id, "now": now,
+            "ndc": ndc11, "delta": -take.units, "by": actor_id, "now": now,
             # Recorded on the event itself, because a reconciliation weeks later
-            # has to know which of these movements anybody actually looked at.
-            "basis": f'{{"basis": "{take.basis}", "source": "dispense", '
-                     f'"fill_id": "{fill_id}"}}'})
-        out.append(take.as_dict())
+            # has to know which of these movements anybody actually looked at,
+            # and whether the cached total was already unreliable at the time.
+            "basis": json.dumps(basis)})
+        out.append({**take.as_dict(),
+                    "cached_total_after": None if cached_after is None
+                                          else float(cached_after),
+                    "cached_total_inconsistent": inconsistent})
     return out
 
 

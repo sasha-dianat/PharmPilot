@@ -315,7 +315,7 @@ async def main() -> int:
         clamped = (await db.execute(text(
             "SELECT current_units FROM pharmacy_shelves WHERE id = :i"),
             {"i": shelf_a})).scalar()
-        if res3.ok and int(clamped) == 0:
+        if res3.ok and D(str(clamped)) == 0:
             note("the decrement clamps at zero and absorbs the drift silently",
                  f"current_units was 3 against placements holding more; "
                  f"dispensing 10 drove it to {clamped} via "
@@ -324,6 +324,24 @@ async def main() -> int:
                  f"plausible number in place of an unknown one is the "
                  f"fallback-constant pattern the provenance rule forbids: the "
                  f"shelf now reads 0 and no row says why.")
+        else:
+            # The repaired path. Asserted rather than left to the absence of the
+            # note above: a note that stops firing looks identical whether the
+            # clamp was removed or the whole code path stopped running, and the
+            # second of those is a regression this script would otherwise pass.
+            flagged = [t for t in (getattr(res3, "shelf_takes", []) or [])
+                       if t.get("cached_total_inconsistent")]
+            check("a cached total driven below zero is recorded, not clamped",
+                  res3.ok and D(str(clamped)) == D("-7.000"),
+                  f"current_units was 3 against placements holding more; "
+                  f"dispensing 10 left {clamped}, which is the arithmetic that "
+                  f"actually happened rather than a plausible zero")
+            check("and the movement says the cached figure was unreliable",
+                  bool(flagged) and all(
+                      D(str(t["cached_total_after"])) == D("-7.000")
+                      for t in flagged),
+                  f"{len(flagged)} take(s) flagged: "
+                  f"{[t.get('cached_total_after') for t in flagged]}")
 
         # ── the detector, against a real count ───────────────────────────
         print("\nexpected against counted")

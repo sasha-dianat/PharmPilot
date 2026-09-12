@@ -74,6 +74,7 @@ At the end of every session:
 | CX-002 | Codex | PLANNED | Read-only review of PR #22; fix branch only after findings are accepted | Independent review of tenant isolation, PHI/AI-provider policy, migration integrity, pricing conservation/provenance, frontend/API regressions, and test evidence; no edits to CL-001-owned files without handoff | Deliver prioritized findings with file/line evidence and proposed ownership |
 | CL-003 | Claude Code | READY_FOR_REVIEW | `feat/inventory-integrity` | `services/core/inventory/{ledger,reconciliation,formulary_binding}.py`, `routers/inventory_integrity.py`, `routers/inventory.py`, `shared/models/inventory.py`, `shared/models/auth.py` (permission table), migration `0030`, `InventoryIntegrity.tsx` + nav/api wiring, `docs/design/INVENTORY_SYSTEM.md`, three new test modules | Independent review of the maker-checker rules, the migration on a disposable DB, and the P2 dispense-hook design before it is built |
 | CL-004 | Claude Code | READY_FOR_REVIEW | `claude/determined-mccarthy-1476a8` @ `2fc98de` (off `feat/inventory-integrity` @ `ee8dc0e`), unpushed | The Rx audit chain: `services/core/pharmacy_workflow/state_machine.py` (digest + event write path only), `shared/models/prescription.py` (`RxStateEvent` columns), migration `0053`, `tests/simulation/domains/workflow.py`, `tests/unit/test_simulation_workflow.py`, `tests/unit/test_rx_state_machine.py`, `scripts/verify_workflow_audit.py` | Independent review of the digest-version cut-over, the migration on a disposable DB, and the concurrency claim on `sequence_number` |
+| CL-005 | Claude Code | READY_FOR_REVIEW | `fix/shelf-fractional-ledger` (off `claude/determined-mccarthy-1476a8` @ `7989dc7`, with `9aa8c21` + its two ledger commits cherry-picked across from `feat/frontend-consolidation`), unpushed | The shelf ledger's arithmetic: `services/core/inventory/dispense.py` (`_take_off_shelf` only), `shared/models/depot.py` (three quantity columns), `services/platform/routers/depot_transfer.py` (the two `int()` casts on `current_units` only), migration `0054`, `scripts/verify_shelf_domain.py` (clamp branch), `tests/unit/test_inventory_shelf_ledger_e2e.py`, `tests/unit/test_model_column_parity.py` (quantity-type pin), `docs/design/SHELF_LEDGER.md` | Independent review of migration `0054` on a disposable DB, and the inventory owner's decision on the duplicate writable cache (`SHELF_LEDGER.md` §5) |
 | CL-002 | Claude Code | PLANNED | New branch after CL-001 stabilizes | Iran-proxy/NFI and insurer-publication data operations, replay evidence, and source diagnostics; no Codex hardening paths | Project owner approves data-source inputs and operating window |
 | CX-003 | Codex | PLANNED | New branch from the accepted post-PR-22 base | First safety slice from `CODEX_NEXT_BUILD_PLAN.md`: tenant-bound, provenance-safe identity; excludes Claude-owned data-pipeline paths | Project owner approves implementation after CX-002 and PR #22 disposition |
 
@@ -3437,3 +3438,137 @@ version-1 rows and remain unverifiable, as they already were.
 - Project owner: decide whether this lands on `feat/inventory-integrity` (whose
   `0052` it already stacks on) or waits for that branch's own review. Nothing is
   pushed, so either is still cheap.
+
+---
+
+## 2026-09-12 — CL-005 — The shelf ledger stops drifting in both directions
+
+- Workstream: `CL-005` (new). Opened because Phase 3's shelf oracle *demonstrated*
+  the defect and referred it out; this fixes it. No overlap with CL-003's owned
+  files, and the only CL-004 file touched is none — `0054` simply stacks on `0053`.
+- Branch/commit: `fix/shelf-fractional-ledger`, unpushed.
+
+### Where this branch came from, and why not `feat/frontend-consolidation`
+
+The shelf-oracle commit `9aa8c21` was sitting on `feat/frontend-consolidation`,
+which is **early-stage frontend WIP** (`cf78bdf wip(frontend): Astra P1
+checkpoint`, `e97d3d4`, `bd47e1a`). Basing a backend safety fix there would chain
+its mergeability to unfinished UI, so it was not merged into and not branched
+from.
+
+Instead this branch is off `claude/determined-mccarthy-1476a8` @ `7989dc7`
+(CL-004), which sits on the clean backend base `feat/inventory-integrity` @
+`ee8dc0e` and carries migration `0053` — the revision the shared
+`pharmpilot_test` database is already stamped at. `9aa8c21` was cherry-picked
+across (three files, backend only, pure additions, no conflict), as were its two
+ledger commits `ff1d8da` and `34c7b99`, whose append-at-end conflicts were
+resolved chronologically so the Phase 3 entry and its addendum sit in order.
+
+**The blocking precondition is therefore satisfied, not worked around.**
+`python -m alembic heads` → `0053 (head)`, exactly one; shared `pharmpilot_test`
+`alembic_version` → `0053`. They match, so this migration is `0054` and no second
+head is created. Note the divergence itself is unresolved upstream: CL-004 is
+still `READY_FOR_REVIEW` and unmerged, and `feat/frontend-consolidation` still
+has no `0053`. A migration added on *that* lineage would still collide.
+
+### Changed
+
+- `services/core/inventory/dispense.py` — `_take_off_shelf` only. Every quantity
+  stays a `Decimal` to the database: `take.after` into the placement,
+  `take.units` out of the cached total, `-take.units` into the movement row. The
+  `GREATEST(0, …)` clamp is gone; the decrement now uses `RETURNING` so the
+  figure reported is the one the same statement wrote.
+- `shared/models/depot.py` — `ShelfPlacement.units`, `PharmacyShelf.current_units`
+  and `ShelfTransferEvent.quantity_delta` become `Numeric(10,3)`.
+  `capacity_units` deliberately stays `Integer`.
+- `services/platform/routers/depot_transfer.py` — two `int()` casts on
+  `current_units` only. The increment path would otherwise have rounded a
+  fractional cached total away on the very next placement and re-opened the drift.
+- `data/migrations/versions/0054_shelf_units_are_fractional.py` — new.
+- `scripts/verify_shelf_domain.py` — the clamp branch had a `note` and no `else`,
+  so a repaired implementation asserted nothing there. It now has two `check`s.
+- `tests/unit/test_inventory_shelf_ledger_e2e.py` — new, 7 tests.
+- `tests/unit/test_model_column_parity.py` — a quantity-**type** pin. The existing
+  guard compares column names; a quantity silently reverting to `INTEGER` is
+  mapped, present, and wrong.
+- `docs/design/SHELF_LEDGER.md` — new.
+
+### Behaviour
+
+Dispensing 2.9 units off a placement of 30 now leaves `27.100` in both copies and
+`-2.900` on the movement row. Previously: `25`, `29` and `-2`.
+
+A cached total that cannot cover its take is recorded as the negative it actually
+is and flagged `cached_total_inconsistent` on the returned take **and** inside the
+`shelf_transfer_events.barcode_verification_result` JSON, because a reconciliation
+weeks later reads rows and not a response body. A negative `current_units` is
+intentional and diagnostic.
+
+### Interfaces/schema/data
+
+Migration `0054`: three `INTEGER` → `Numeric(10,3)`. Upgrade is lossless (every
+integer is exactly representable). **Downgrade is lossy** and says so — any
+fraction recorded while `0054` was in force is destroyed by `ROUND()`. No data
+backfill: existing whole-unit values are already correct.
+
+`shelf_transfer_events.barcode_verification_result` gains two keys on
+dispense-written rows. Additive; the JSON is now built with `json.dumps` rather
+than f-string interpolation.
+
+### Verification
+
+All against a **disposable** database, `pharmpilot_shelf_fix`, cloned from
+`pharmpilot_test` with `TEMPLATE`. The shared database was never migrated or
+written to — verified after the fact: still stamped `0053`, still 758,093
+`inventory_exceptions` rows.
+
+- `alembic upgrade head` → `0053 → 0054`; `information_schema` confirms all three
+  columns `numeric(10,3)` and `capacity_units` still `integer`.
+- `alembic downgrade 0053` → all three back to `integer`; `upgrade head` again →
+  `numeric(10,3)`. **up→down→up proven.**
+- `python scripts/verify_shelf_domain.py` → **PASS, 0 findings, 0 checks failed**
+  (was PASS with 3 notes). The two fractional notes flipped to `check`
+  automatically as the script was written to; the clamp note needed the `else`
+  branch added.
+- `pytest tests/unit/test_simulation_shelf.py tests/unit/test_inventory_shelf.py
+  tests/unit/test_model_column_parity.py tests/unit/test_inventory_shelf_ledger_e2e.py
+  tests/unit/test_depot_guards.py tests/unit/test_depot_transfer_endpoints.py`
+  → **101 passed**.
+- `pytest tests/unit` → **2178 passed, 1 failed, 2 skipped, 1 xfailed** in 4:06.
+  The failure is `test_integrations_sandbox.py::test_notifications_sandbox_success_shape_no_network_and_masked_logs`,
+  the known order-dependent caplog case; **confirmed passing in isolation**
+  (`1 passed in 0.35s`). Pre-existing and unrelated.
+- RED was watched before GREEN: all 7 new tests failed first, each on the defect
+  itself (`27` vs `27.100`, `-2` vs `-2.900`, `0` vs `-7.000`), not on setup.
+- `graphify update .` → 13,065 nodes / 29,255 edges; the finding and the open
+  design question saved to `graphify-out/memory/` and copied to the main
+  checkout's copy, since `graphify-out/` is gitignored and dies with a worktree.
+
+### Risks/blockers
+
+- **Open design question, referred and NOT decided: `pharmacy_shelves.current_units`
+  is a second writable copy of `SUM(shelf_placements.units)`.** Exact arithmetic
+  stops the copies drifting by accident; it does not stop a future write path
+  updating one and forgetting the other, which is the failure mode that produced
+  this defect. Options and trade-offs in `docs/design/SHELF_LEDGER.md` §5 —
+  delete the column, make it generated, or keep it and rely on reconciliation.
+  This is a schema/performance call on the inventory owner's table.
+- The `0053` divergence described above is still live upstream.
+- **Incidental, not mine to fix, but it is costing everyone:** the shared
+  `pharmpilot_test` database holds ~1.5M rows of accumulated test detritus
+  (`inventory_exception_rows` 1,543,516; `inventory_exceptions` 1,219,294;
+  `inventory_exception_events` 758,113). A test that does a full-table
+  `UPDATE inventory_exceptions SET is_deleted = true` over it dominates the run:
+  the suite was projecting to roughly **two hours** and completed in **4 minutes**
+  after those three tables were truncated **in the disposable clone only**. The
+  suite does not clean up after itself.
+
+### Next action/owner
+
+- Inventory owner: decide the cached-total question (`SHELF_LEDGER.md` §5).
+- Reviewer: migration `0054` on a disposable DB, and whether a negative
+  `current_units` is the right way to surface an inconsistent cache — the
+  alternative is a separate findings table, which this deliberately did not build.
+- Project owner: this branch carries CL-004's unreviewed `0053`. Decide whether
+  CL-005 lands with it, after it, or is rebased once CL-004 is reviewed.
+- Somebody: a teardown for the exception tables, or the test suite keeps slowing.
