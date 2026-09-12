@@ -128,7 +128,6 @@ async def seed(reset: bool = False) -> None:
                 INSERT INTO drug_products
                     (id, ndc11, brand_name, generic_name, strength, dosage_form,
                      is_generic, is_otc, is_controlled, storage_condition,
-                     awp_unit_price, wac_price, drug_db_metadata,
                      created_at, updated_at, is_deleted)
                 VALUES
                     (:id, :ndc, :brand, :generic, :strength, :form,

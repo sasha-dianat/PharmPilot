@@ -261,8 +261,6 @@ def parse_fda_record(record: dict) -> Optional[dict]:
         "requires_refrigeration": is_refrigerated_,
         "is_generic": is_generic_,
         "is_otc": is_otc_,
-        "awp_unit_price": None,
-        "wac_price": None,
         "fdb_drug_id": None,
         "medspan_drug_id": None,
         "is_active": True,
@@ -281,7 +279,6 @@ INSERT INTO drug_products (
     strength, dosage_form, route, package_size, package_quantity,
     gpi, rxcui, dea_schedule, is_controlled, is_hazardous,
     requires_refrigeration, is_generic, is_otc,
-    awp_unit_price, wac_price,
     fdb_drug_id, medspan_drug_id,
     is_active, discontinued, drug_db_metadata,
     created_at, updated_at
@@ -320,7 +317,6 @@ async def bulk_insert(conn: asyncpg.Connection, rows: list[dict]) -> int:
             r["gpi"], r["rxcui"], r["dea_schedule"],
             r["is_controlled"], r["is_hazardous"], r["requires_refrigeration"],
             r["is_generic"], r["is_otc"],
-            r["awp_unit_price"], r["wac_price"],
             r["fdb_drug_id"], r["medspan_drug_id"],
             r["is_active"], r["discontinued"], r["drug_db_metadata"],
         ))

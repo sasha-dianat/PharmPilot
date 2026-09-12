@@ -148,6 +148,15 @@ class PrescriptionFill(AuditedBase):
     verifying_pharmacist_id: Mapped[UUID] = mapped_column(nullable=False)
     lot_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # The recall link (migration 0030). `lot_number` alone is free text and
+    # cannot answer "which patients received lot X" reliably; this can.
+    inventory_lot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("inventory_lots.id"), nullable=True, index=True
+    )
+    # Jalali fill date (migration 0003). In the database since 0003 but never
+    # mapped — a Persian-calendar deployment could not read its own fill dates
+    # through the ORM.
+    fill_date_jalali: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     # Patient pickup
     pickup_confirmed_by_biometric: Mapped[bool] = mapped_column(default=False)

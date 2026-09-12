@@ -95,7 +95,31 @@ _SALT_TOKENS = {
     "mesylate", "maleate", "tartrate", "besylate", "succinate", "fumarate", "tosylate",
     "citrate", "acetate", "carbonate", "phosphate", "gluconate", "bromide", "chloride",
     "dihydrate", "monohydrate", "hemihydrate", "anhydrous",
+    # The di- forms, and two counter-ions with only one marketed salt each.
+    # Their absence was an asymmetry, not a judgement: «hydrochloride» was
+    # stripped and «dihydrochloride» was not, so NFI's «betahistine
+    # hydrochloride» normalized to «betahistine» while the formulary's
+    # «BETAHISTINE DIHYDROCHLORIDE» stayed whole — the two spellings of one
+    # substance could never meet, and all 30 betahistine tablets were
+    # unreachable from the insurer list.
+    "dihydrochloride", "dihydrobromide", "besilate", "xinafoate",
+    "trihydrate", "pentahydrate",
 }
+# NOT here, and never to be added: the mineral counter-ions sodium, potassium,
+# calcium and magnesium. They were added on 2026-08-04 to make «losartan
+# potassium» meet a formulary row naming the base, and that was wrong — the
+# counter-ion often IS the product. Diclofenac is sold in Iran as four distinct
+# products (potassium 23,000–39,000 rial, sodium 3,300–1,350,000, diethylamine,
+# epolamine); potassium is the rapid-onset salt for acute pain and migraine
+# while sodium is the enteric-coated and sustained-release salt for chronic
+# inflammatory disease. Folding them let one match the other's formulary row and
+# inherit its price. Where a base really does have only ONE marketed salt, the
+# salt-tolerant lane in structural_match resolves it — that lane checks the
+# catalog and accepts only when exactly one candidate extends the row's name,
+# which is the safe, data-aware version of what this list cannot know.
+# NOT stripped, deliberately: «propionate» and «furoate» pick out DIFFERENT
+# products (fluticasone propionate is Flixotide, fluticasone furoate is Avamys),
+# and «hydrate» alone would turn chloral hydrate into chloral.
 
 
 def normalize(name: str | None) -> str:

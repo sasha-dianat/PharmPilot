@@ -29,3 +29,10 @@ class Pharmacy(AuditedBase):
     config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     # e.g. {"pdmp_required_schedules": ["CII","CIII"], "epcs_enabled": true,
     #        "compounding_enabled": false, "state": "TX"}
+
+    # Iranian deployment defaults (migration 0003). Present in the database
+    # since 0003 but never mapped, so ORM writes were dropped and reads raised.
+    identity_system: Mapped[str] = mapped_column(
+        String(10), default="iranian", nullable=False)
+    default_locale: Mapped[str] = mapped_column(
+        String(10), default="fa-IR", nullable=False)

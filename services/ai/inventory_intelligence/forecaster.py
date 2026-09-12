@@ -28,6 +28,10 @@ class DemandForecast:
     trend: str = "stable"           # up, down, stable
     anomaly_detected: bool = False
     forecast_date: date = field(default_factory=date.today)
+    # observed | sparse | no_history — how much of a measurement this is.
+    # A consumer that ignores this cannot tell a rate derived from 180 days of
+    # dispensing from one derived from nothing at all.
+    basis: str = "observed"
 
 
 @dataclass
@@ -54,7 +58,11 @@ class DemandForecaster:
     """
 
     MIN_HISTORY_DAYS = 30     # Minimum dispense history for ML forecasting
-    FALLBACK_DEMAND_RATE = 1.0  # Units/day when no history available
+    # There is deliberately no fallback demand rate. This was 1.0 units/day,
+    # which meant an item with no dispensing at all reported a full unit a day
+    # to the purchasing engine — indistinguishable, downstream, from a measured
+    # rate. A forecast with no history now reports 0.0 with basis="no_history",
+    # so the caller can tell "we measured nothing" from "we know nothing".
 
     def __init__(self, db=None, clickhouse_client=None):
         self.db = db
@@ -94,8 +102,13 @@ class DemandForecaster:
         prophet_7d = await self._prophet_forecast(df, horizon=7)
         prophet_30d = await self._prophet_forecast(df, horizon=30)
 
-        # Stockout probability: P(demand in lead_time > current_stock)
-        lead_time_days = 2  # Default wholesaler lead time
+        # Stockout probability: P(demand in lead_time > current_stock).
+        # This was a bare 2 while the procurement engine assumed 7, so the same
+        # item could be urgent in one screen and comfortable in the other. Both
+        # now read the one declared default, and a caller with measured supplier
+        # history should pass that instead.
+        from services.core.inventory.lead_time import DECLARED_DEFAULT_DAYS
+        lead_time_days = DECLARED_DEFAULT_DAYS
         lead_time_demand = avg_demand * lead_time_days
         lead_time_std = std_demand * (lead_time_days ** 0.5)
 
@@ -163,9 +176,12 @@ class DemandForecaster:
         if history:
             avg = float(np.mean([h.get("units_dispensed", 0) for h in history]))
             std = float(np.std([h.get("units_dispensed", 0) for h in history]))
+            basis = "sparse"
         else:
-            avg = self.FALLBACK_DEMAND_RATE
-            std = avg * 0.3
+            # No history is not evidence of low demand, and it is not evidence
+            # of any demand either. Reporting zero keeps the purchasing engine
+            # silent on this item, which is the only defensible answer.
+            avg, std, basis = 0.0, 0.0, "no_history"
 
         return DemandForecast(
             ndc11=ndc11,
@@ -176,6 +192,7 @@ class DemandForecaster:
             forecast_30d=avg * 30,
             stockout_probability_7d=0.0,
             stockout_probability_30d=0.0,
+            basis=basis,
         )
 
     async def _load_dispense_history(

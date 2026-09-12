@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.core.inventory import replenishment as R
@@ -30,6 +30,8 @@ from shared.models.depot import (
     SurveillanceEvent, ShiftHandoverReport,
 )
 from shared.models.inventory import DrugProduct, InventoryLot
+from services.core.inventory import ledger as L
+from services.platform.routers.inventory_integrity import append_movement
 
 router = APIRouter()
 
@@ -192,17 +194,84 @@ async def depot_collect(
         if scan.serial:
             seen.add(scan.serial)
         results.append({"serial": scan.serial, **v})
+    # Units picked off the depot shelf are no longer available to dispense —
+    # they are on a trolley. Until now this endpoint recorded the checkpoint and
+    # moved no stock at all, so a carried carton stayed sellable in two places
+    # at once. TRANSFER_OUT holds them in `in_transit` for the duration.
+    moved = await _collect_to_transit(db, sess, body, staff)
+
     sess.depot_checkpoint = _jsonable({
         "counted_units": body.counted_units,
         "inventory_lot_id": body.inventory_lot_id,
         "scan_results": results,
         "at": datetime.now(timezone.utc),
         "by": staff.id,
+        "stock_moved_to_transit": moved,
     })
     sess.status = "IN_TRANSIT"
     sess.updated_by = staff.id
     await db.flush()
-    return {"id": str(sess.id), "status": sess.status, "depot_checkpoint": sess.depot_checkpoint}
+    return {"id": str(sess.id), "status": sess.status,
+            "depot_checkpoint": sess.depot_checkpoint,
+            "moved_to_transit": moved}
+
+
+def _lot_view(lot: InventoryLot) -> "L.Lot":
+    return L.Lot(lot_id=str(lot.id), lot_number=lot.lot_number,
+                 expiry_date=lot.expiry_date,
+                 quantity_on_hand=L.q(lot.quantity_on_hand),
+                 quantity_reserved=L.q(lot.quantity_reserved or 0),
+                 quantity_damaged=L.q(lot.quantity_damaged or 0),
+                 quantity_returned=L.q(lot.quantity_returned or 0),
+                 quantity_in_transit=L.q(lot.quantity_in_transit or 0),
+                 is_quarantined=bool(lot.is_quarantined),
+                 is_recalled=bool(lot.is_recalled),
+                 cold_chain_breach=bool(lot.cold_chain_breach),
+                 storage_location=lot.storage_location)
+
+
+async def _collect_to_transit(db, sess, body, staff) -> float:
+    """Move the counted units from the depot lot into `in_transit`.
+
+    Idempotent on the session: a re-posted collection must not carry the stock
+    twice, and the checkpoint records whether the move already happened.
+    """
+    if (sess.depot_checkpoint or {}).get("stock_moved_to_transit"):
+        return 0.0
+    if not body.inventory_lot_id or not body.counted_units:
+        return 0.0
+
+    lot = (await db.execute(select(InventoryLot).where(
+        InventoryLot.id == body.inventory_lot_id,
+        InventoryLot.pharmacy_id == staff.pharmacy_id,
+        InventoryLot.is_deleted == False,  # noqa: E712
+    ))).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(404, "inventory lot not found")
+
+    try:
+        plan = L.plan_bucket_transfer(
+            _lot_view(lot), body.counted_units, movement_type="TRANSFER_OUT",
+            reason=f"depot collection for session {sess.id}")
+    except L.LedgerError as e:
+        # The depot cannot hand over stock it does not have. Refusing here is
+        # right: the alternative is a session that claims to carry units the
+        # shelf will never receive.
+        raise HTTPException(422, str(e))
+
+    lot.quantity_on_hand = plan.quantity_after
+    lot.quantity_in_transit = plan.bucket_after
+    lot.updated_by = staff.id
+    await db.execute(text("""
+        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                updated_at = NOW()
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+        {"d": float(plan.quantity_delta), "pid": staff.pharmacy_id,
+         "ndc": lot.ndc11})
+    await append_movement(db, pharmacy_id=staff.pharmacy_id, ndc11=lot.ndc11,
+                          irc=lot.irc, lot_id=lot.id, plan=plan,
+                          actor_id=staff.id)
+    return float(abs(plan.quantity_delta))
 
 
 @router.post("/ai/shelf-verify")
@@ -259,6 +328,14 @@ async def shelf_place(
     recon = R.reconcile(depot_out=depot_out, shelf_in=body.quantity)
 
     now = datetime.now(timezone.utc)
+
+    # The units arrive: `in_transit` → sellable. This is the releasing
+    # direction, which the ledger normally gates behind an approval — the
+    # barcode scan, the count check and the pharmacist attestation enforced
+    # above are that gate, recorded on the movement rather than repeated as a
+    # second signature after the fact.
+    released = await _release_from_transit(db, lot, body, staff, sess)
+
     # Commit: placement (+units), shelf cache, ledger.
     placement = ShelfPlacement(
         pharmacy_id=staff.pharmacy_id, inventory_lot_id=lot.id, shelf_id=shelf.id,
@@ -298,7 +375,56 @@ async def shelf_place(
         "transfer_event_id": str(event.id), "session_status": sess.status,
         "reconciliation": recon, "flags": flags, "shelf_current_units": shelf.current_units,
         "primary_location_prompt": primary_prompt,
+        "stock": released,
     }
+
+
+async def _release_from_transit(db, lot, body, staff, sess) -> dict:
+    """Put the placed units back into sellable stock.
+
+    Whatever was collected but not placed stays in `in_transit` rather than
+    being quietly forgiven. That residue is the reconciliation discrepancy
+    expressed as a real, countable quantity instead of a note in a JSON blob —
+    `R.reconcile` already computed the number, but nothing had ever held the
+    stock it referred to.
+    """
+    in_transit = L.q(lot.quantity_in_transit or 0)
+    if in_transit <= 0:
+        # Nothing was carried under the ledger — a session begun before the
+        # depot checkpoint moved stock. Place the units without inventing a
+        # release that has no source.
+        return {"released": 0.0, "in_transit_remaining": 0.0,
+                "note": "no stock was held in transit for this session"}
+
+    place = min(L.q(body.quantity), in_transit)
+    try:
+        plan = L.plan_bucket_release(
+            _lot_view(lot), place, from_bucket="in_transit",
+            reason=f"shelf placement for session {sess.id}",
+            verified_by="depot dual-verification: barcode + count check"
+                        + (" + pharmacist attestation"
+                           if body.pharmacist_attestation_by else ""))
+    except L.LedgerError as e:
+        raise HTTPException(422, str(e))
+
+    lot.quantity_on_hand = plan.quantity_after
+    lot.quantity_in_transit = plan.bucket_after
+    lot.updated_by = staff.id
+    await db.execute(text("""
+        UPDATE stock_levels SET quantity_on_hand = quantity_on_hand + :d,
+                                updated_at = NOW()
+        WHERE pharmacy_id = :pid AND ndc11 = :ndc"""),
+        {"d": float(plan.quantity_delta), "pid": staff.pharmacy_id,
+         "ndc": lot.ndc11})
+    await append_movement(db, pharmacy_id=staff.pharmacy_id, ndc11=lot.ndc11,
+                          irc=lot.irc, lot_id=lot.id, plan=plan,
+                          actor_id=staff.id)
+
+    stranded = float(plan.bucket_after)
+    return {"released": float(place), "in_transit_remaining": stranded,
+            "note": (f"{stranded} units collected but not placed remain in "
+                     f"transit and are not sellable until reconciled")
+                    if stranded else None}
 
 
 @router.get("/replenishment/{session_id}")

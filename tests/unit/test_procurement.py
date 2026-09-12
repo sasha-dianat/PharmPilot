@@ -164,9 +164,14 @@ def test_build_contract_shape():
     rec = out["recommendations"][0]
     assert set(rec.keys()) == {
         "ndc11", "on_hand", "avg_daily_demand", "days_of_stock",
-        "reorder_point", "lead_time_days", "recommended_order_qty",
-        "order_by_date", "urgency", "est_cost", "rationale",
+        "reorder_point", "lead_time_days", "lead_time_basis",
+        "recommended_order_qty", "order_by_date", "urgency", "est_cost",
+        "rationale",
     }
+    # Whether the lead time behind this recommendation was measured or assumed.
+    # Without it, a number derived from the declared default is indistinguishable
+    # from one derived from the supplier's actual delivery record.
+    assert rec["lead_time_basis"] in ("observed", "declared_default")
     summary = out["summary"]
     assert set(summary.keys()) == {
         "total_skus", "total_est_cost", "critical_count",

@@ -58,8 +58,20 @@ async def lifespan(app: FastAPI):
         price_sync_task = asyncio.create_task(daily_loop())
         logger.info("Daily price-sync scheduler started")
 
+    # Nightly inventory sweep (opt-in; files advice, decides nothing). Without
+    # it every engine only raises when somebody opens its tab with the flag set,
+    # so the recommendation ledger — built to measure whether each engine is any
+    # good — has nothing to measure.
+    inventory_sweep_task = None
+    if os.getenv("INVENTORY_SWEEP_ENABLED", "").lower() in ("1", "true", "yes"):
+        from services.core.inventory.sweep import nightly_loop
+        inventory_sweep_task = asyncio.create_task(nightly_loop())
+        logger.info("Nightly inventory sweep scheduled")
+
     yield
 
+    if inventory_sweep_task:
+        inventory_sweep_task.cancel()
     if price_sync_task:
         price_sync_task.cancel()
     logger.info("PharmPilot shutting down")
@@ -105,6 +117,8 @@ def create_app() -> FastAPI:
         intel_clinical, intel_workflow, cds, adr, counselling, polypharmacy, pgx, physician_message,
         lab_safety, med_reconciliation, second_brain, drug_intelligence,
         depot_transfer, ai_settings, inventory_movements, procurement,
+        inventory_integrity, inventory_admin, inventory_exceptions,
+        inventory_recall, biometric_admin, surveillance, vision,
         pricing,
     )
 
@@ -114,6 +128,9 @@ def create_app() -> FastAPI:
     app.include_router(adjudication.router,  prefix="/api/v1/claims",        tags=["claims"])
     app.include_router(inventory.router,     prefix="/api/v1/inventory",     tags=["inventory"])
     app.include_router(biometric.router,     prefix="/api/v1/biometric",     tags=["biometric"])
+    app.include_router(biometric_admin.router, prefix="/api/v1/biometric",   tags=["biometric gallery admin"])
+    app.include_router(surveillance.router,   prefix="/api/v1/surveillance", tags=["surveillance"])
+    app.include_router(vision.router,         prefix="/api/v1/vision", tags=["vision"])
     app.include_router(audio.router,         prefix="/api/v1/audio",         tags=["audio"])
     app.include_router(clinical_brain.router,prefix="/api/v1/clinical",      tags=["clinical"])
     app.include_router(knowledge.router,     prefix="/api/v1/knowledge",     tags=["knowledge"])
@@ -154,6 +171,10 @@ def create_app() -> FastAPI:
     app.include_router(drug_intelligence.router, prefix="/api/v1/drug-intelligence",      tags=["drug intelligence"])
     app.include_router(depot_transfer.router,    prefix="/api/v1/inventory",              tags=["depot transfer"])
     app.include_router(inventory_movements.router, prefix="/api/v1/inventory",            tags=["inventory movements"])
+    app.include_router(inventory_integrity.router, prefix="/api/v1/inventory",            tags=["inventory integrity"])
+    app.include_router(inventory_admin.router,    prefix="/api/v1/inventory",            tags=["inventory admin"])
+    app.include_router(inventory_exceptions.router, prefix="/api/v1/inventory",          tags=["inventory exceptions"])
+    app.include_router(inventory_recall.router,   prefix="/api/v1/inventory",            tags=["inventory recall"])
     app.include_router(procurement.router,       prefix="/api/v1/intelligence/inventory", tags=["procurement"])
     app.include_router(ai_settings.router,       prefix="/api/v1/ai-settings",            tags=["ai settings"])
 

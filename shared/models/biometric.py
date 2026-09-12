@@ -2,7 +2,8 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text
+from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, Numeric,
+                        String, Text)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -140,3 +141,68 @@ class SecurityEvent(TimestampedBase):
     # DB column is event_metadata (see migration); the prior "metadata" override
     # pointed at a nonexistent column → every ORM SELECT of SecurityEvent 500'd.
     event_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class BiometricTemplate(AuditedBase):
+    """One enrolled biometric sample. Many per person, per modality.
+
+    `BiometricIdentity` keeps a single embedding column per modality, which
+    caps accuracy: enrolment cannot accumulate, and one poor capture degrades
+    that person permanently. Here a template is an individual, retirable record
+    with its own quality, provenance and model version.
+    """
+    __tablename__ = "biometric_templates"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    identity_id: Mapped[UUID] = mapped_column(
+        ForeignKey("biometric_identities.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    modality: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Comparing vectors from two extractor versions compares different spaces.
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    capture_context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    enrolled_by_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Retired, not deleted: an identification made last year stays explainable
+    # from the templates that existed when it was made.
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    # A candidate model's templates are enrolled and measured without entering
+    # the index that decides identifications. Excluded from load_index by
+    # default; opting in is explicit and lands in a separate cache slot.
+    shadow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class BiometricScoreStats(TimestampedBase):
+    """Measured genuine/impostor score distributions, per modality and model.
+
+    Fusion turns a raw similarity into a likelihood ratio, and that conversion
+    is only meaningful against distributions measured on this population and
+    these cameras. Storing them makes the numbers behind an identification
+    auditable instead of hard-coded.
+    """
+    __tablename__ = "biometric_score_stats"
+
+    pharmacy_id: Mapped[UUID] = mapped_column(ForeignKey("pharmacies.id"), nullable=False, index=True)
+    modality: Mapped[str] = mapped_column(String(16), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    genuine_mean: Mapped[float] = mapped_column(Float, nullable=False)
+    genuine_std: Mapped[float] = mapped_column(Float, nullable=False)
+    impostor_mean: Mapped[float] = mapped_column(Float, nullable=False)
+    impostor_std: Mapped[float] = mapped_column(Float, nullable=False)
+    samples: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Which occlusion subset this was measured on. A single pooled distribution
+    # averages veiled faces in with unoccluded ones and yields a threshold too
+    # LOW for the veiled subset, so the FPIR guarantee fails for exactly the
+    # group it most affects. 'all' is the pooled row that predates strata.
+    stratum: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    # The active model version this row is a candidate to replace. NULL means
+    # this row IS active, which is why the live lookup filters on IS NULL — an
+    # unpromoted model must never set live thresholds.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    measured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

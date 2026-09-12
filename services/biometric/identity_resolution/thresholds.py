@@ -99,6 +99,38 @@ def expected_false_matches(stats: ImpostorStats, similarity: float,
     return max(0.0, gallery_size * tail)
 
 
+def _log_survival(z: float) -> float:
+    """log(1 - Phi(z)), accurate far into the tail.
+
+    The direct form underflows to log(0) beyond about z=8, and identification
+    operates at z of 10-17 — so the naive computation returns -inf exactly where
+    the discrimination lives. Beyond z=6 this switches to the Mills-ratio
+    asymptotic expansion, which stays accurate arbitrarily far out.
+    """
+    import math
+    if z < 6.0:
+        return math.log(max(1.0 - _NORM.cdf(z), 1e-300))
+    log_phi = -0.5 * z * z - 0.5 * math.log(2.0 * math.pi)
+    # sf(z) ~ phi(z)/z * (1 - 1/z^2 + 3/z^4 - 15/z^6)
+    corr = 1.0 - 1.0 / z**2 + 3.0 / z**4 - 15.0 / z**6
+    return log_phi - math.log(z) + math.log(max(corr, 1e-12))
+
+
+def log_expected_false_matches(stats: ImpostorStats, similarity: float,
+                               gallery_size: int) -> float:
+    """log(lambda) — the log of the expected number of gallery impostors scoring
+    at least `similarity`.
+
+    Fusion works in this space rather than in probability space because
+    `confidence_from_similarity` saturates at exactly 1.0 well before two
+    genuinely different scores stop differing, which makes agreeing modalities
+    indistinguishable from a single one.
+    """
+    import math
+    z = (similarity - stats.mean) / stats.std
+    return math.log(max(1, gallery_size)) + _log_survival(z)
+
+
 def confidence_from_similarity(stats: ImpostorStats, similarity: float,
                                gallery_size: int) -> float:
     """P(no impostor in the gallery would score this high), via a Poisson tail.

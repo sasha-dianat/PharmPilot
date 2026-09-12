@@ -60,6 +60,15 @@ class TranscriptionResult:
     model_used: str
 
 
+# `medium.en` was the default here. `.en` models are English-ONLY: on Persian
+# they do not fail, they hallucinate plausible English. Persian requires a
+# multilingual model, and the language is pinned rather than auto-detected
+# because a short noisy counter utterance is exactly the case auto-detect gets
+# wrong — and a wrong guess yields confident nonsense, not an error.
+DEFAULT_MODEL = "large-v3"
+DEFAULT_LANGUAGE = "fa"
+
+
 class PharmacyTranscriptionEngine:
     """
     Whisper-based transcription with pharmacy vocabulary boosting.
@@ -69,14 +78,19 @@ class PharmacyTranscriptionEngine:
     """
 
     MODEL_SIZES = {
-        "tiny.en": {"speed": "fastest", "accuracy": "basic"},
-        "base.en": {"speed": "fast", "accuracy": "good"},
-        "medium.en": {"speed": "medium", "accuracy": "high"},    # Default for pharmacy
-        "large-v3": {"speed": "slow", "accuracy": "highest"},    # For counseling room
+        # `.en` variants are ENGLISH-ONLY. They are listed because Whisper
+        # offers them, not because they may be used here: on Persian they do not
+        # fail, they emit plausible English that was never said.
+        "tiny.en": {"speed": "fastest", "accuracy": "basic", "english_only": True},
+        "base.en": {"speed": "fast", "accuracy": "good", "english_only": True},
+        "medium.en": {"speed": "medium", "accuracy": "high", "english_only": True},
+        "large-v3": {"speed": "slow", "accuracy": "highest", "english_only": False},
     }
 
-    def __init__(self, model_size: str = "medium.en"):
+    def __init__(self, model_size: str = DEFAULT_MODEL,
+                 language: str = DEFAULT_LANGUAGE):
         self.model_size = model_size
+        self.language = language
         self._model = None
         self._processor = None
 
@@ -106,6 +120,12 @@ class PharmacyTranscriptionEngine:
             or "Pharmacy conversation. Medical terms: "
             + ", ".join(PHARMACY_VOCABULARY[:50])
         )
+
+        # None means "auto-detect" to Whisper, and auto-detect on a short noisy
+        # counter utterance guesses wrong often enough to matter — producing
+        # confident nonsense rather than an error. Fall back to the engine's
+        # configured language instead.
+        language = language or self.language
 
         start_time = time.time()
         result = self._model.transcribe(

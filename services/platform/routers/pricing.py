@@ -63,10 +63,52 @@ def _coverage(rec: CatalogRecord, insurer: str) -> tuple[bool, Decimal | None, D
     entry = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
     if entry is not None:
         covered = bool(entry.get("covered", True))
-        ref = entry.get("reference_price")
+        # A pack-basis reference must be divided down before the engine
+        # multiplies by quantity, or a whole pack is billed for every tablet.
+        # `reference_unit_price` is the machine flag written by
+        # coverage_import._mark_reference_basis; the human-readable
+        # `reference_basis_note` rides alongside it on the quote line.
+        ref = (entry.get("reference_unit_price")
+               if entry.get("reference_basis") == "pack"
+               else entry.get("reference_price"))
         return covered, (Decimal(str(ref)) if ref is not None else None), vat
     covered = rec.category in (ItemCategory.DRUG, ItemCategory.OTC)
     return covered, None, vat
+
+
+_CHANNEL_FA = {
+    "hard_to_treat_fund": "صرفاً از صندوق صعب‌العلاج — بیمهٔ پایه سهمی نمی‌پردازد",
+    "govt_subsidy":       "صرفاً مشمول یارانهٔ دولت — بیمهٔ پایه سهمی نمی‌پردازد",
+}
+
+
+def _channel_of(rec: CatalogRecord, insurer: str) -> dict:
+    """Quote-line annotations that must not be silent: the funding channel, and
+    the HUMAN half of the pack-basis pair.
+
+    Both are empty for the ordinary line, so they cost nothing on the lines that
+    have neither and cannot be mistaken for one.
+
+    The pack-basis note is deliberately separate from the machine flag the
+    engine consumes. The basis is INFERRED from a price ratio — no insurer
+    publishes it — so a supervisor has to be able to see the inference and
+    overrule it. A guessed number applied silently is how it becomes policy.
+    """
+    raw = (rec.coverage or {}).get(insurer) if isinstance(rec.coverage, dict) else None
+    entry: dict = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    ch = entry.get("funding_channel")
+    if ch:
+        out |= {"funding_channel": ch, "funding_channel_fa": _CHANNEL_FA.get(ch, ch)}
+    if entry.get("reference_basis") == "pack":
+        out |= {
+            "reference_basis": "pack",
+            "reference_price_pack": entry.get("reference_price"),
+            "reference_unit_price": entry.get("reference_unit_price"),
+            "reference_basis_note": entry.get("reference_basis_note"),
+            "needs_price_confirmation": True,
+        }
+    return out
 
 
 @router.post("/quote")
@@ -92,6 +134,16 @@ async def quote(body: QuoteRequest,
         elig = await provider.inquire(national_id=body.national_id, insurer=body.insurer, ircs=ircs)
     elig_lines = {ln.irc: ln for ln in elig.lines} if elig else {}
 
+    # ── The shelf price: what this pharmacy actually sells the item for ───────
+    # The owner's ruling: the insurer's reference decides the insurer's share,
+    # and the patient's remainder is what is left of the SHELF price. NFI's
+    # announced price is authoritative for neither. So the consumer price comes
+    # from inventory — the highest of every batch registered through purchasing
+    # and whatever the owner entered by hand — and NFI is only a last resort,
+    # which the line says out loud rather than passing off as a real price.
+    from services.core.inventory.shelf_price import shelf_prices_for_ircs
+    shelf = await shelf_prices_for_ircs(db, [rec.irc for _, rec in resolved if rec])
+
     # ── Cheaper alternatives per line (same ingredient_key) ───────────────────
     keys = [rec.ingredient_key for _, rec in resolved if rec is not None]
     pool = await repo.fetch_by_ingredient_keys(db, keys)
@@ -111,15 +163,19 @@ async def quote(body: QuoteRequest,
             covered = el.covered
             if el.reference_price is not None:
                 ref = Decimal(str(el.reference_price))
+        unit_price, price_source = shelf.get(rec.irc), "shelf"
+        if unit_price is None:
+            unit_price, price_source = rec.effective_price, "nfi_fallback"
         engine_lines.append(LineInput(
             drug=DrugPrice(
-                irc=rec.irc, name=rec.name_fa, consumer_price=rec.effective_price,
+                irc=rec.irc, name=rec.name_fa, consumer_price=unit_price,
                 insurer_reference_price=ref, category=rec.category,
                 is_covered=covered, vat_rate=vat,
             ),
             quantity=Decimal(str(l.quantity)),
         ))
-        line_meta.append({"line": l, "rec": rec, "skip": False})
+        line_meta.append({"line": l, "rec": rec, "skip": False,
+                          "price_source": price_source})
 
     fee = Decimal(str(body.technical_fee)) if body.technical_fee is not None else DEFAULT_TECHNICAL_FEE_RIAL
     pricing = price_prescription(engine_lines, plan, technical_fee=fee, setting=body.setting)
@@ -143,11 +199,31 @@ async def quote(body: QuoteRequest,
             "irc": rec.irc, "name": rec.name_fa, "generic_name": rec.generic_name,
             "brand_name": rec.brand_name, "is_generic": rec.is_generic,
             "category": rec.category.value, "quantity": float(l.quantity),
-            "unit_price": float(rec.effective_price),
+            "unit_price": float(b.unit_price),
+            # "shelf" means the pharmacy's own price, from what it paid plus its
+            # margin or from the owner's own entry. "nfi_fallback" means there is
+            # no priced stock and this is the authority's announced figure, which
+            # the owner has ruled is not authoritative — it is shown so the
+            # counter knows to price the item properly before dispensing it.
+            "price_source": meta.get("price_source", "nfi_fallback"),
             "gross": float(b.gross), "covered": b.covered,
+            # The base the insurer actually recognised — reference × quantity,
+            # capped at the sale price. Without it a line shows a مابه‌التفاوت
+            # that nobody can check: the patient is told what they owe above the
+            # reference but not what the reference came to, and
+            # covered_base + differential == gross is the identity that makes
+            # the line auditable at the counter.
+            "covered_base": float(b.covered_base),
             "insurer_share": float(b.insurer_share), "patient_share": float(b.patient_share),
             "differential": float(b.differential), "vat": float(b.vat),
             "patient_total": float(b.patient_total),
+            # tamin names a FUNDING CHANNEL inside its «تعهد» column for 367
+            # products — «صرفا مشمول يارانه دولت» and «صرفا مشمول صندوق صعب
+            # العلاج». Both carry share 0, so the arithmetic above correctly has
+            # the insurer paying nothing; but the patient IS entitled, through a
+            # channel they must claim from. Without this the counter cannot tell
+            # that apart from "not insured".
+            **_channel_of(rec, body.insurer),
             "alternatives": [{
                 "irc": a.record.irc, "name": a.record.name_fa, "brand_name": a.record.brand_name,
                 "is_generic": a.record.is_generic, "unit_price": float(a.effective_price),

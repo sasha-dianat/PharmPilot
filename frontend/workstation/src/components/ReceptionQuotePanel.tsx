@@ -15,6 +15,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { pricingApi, type QuoteLine } from '../lib/api'
+import { useLang } from '../lib/i18n'
 
 interface BasketItem { drug_name: string; quantity: number }
 interface AltOut {
@@ -41,7 +42,7 @@ const INSURERS = [
   { code: 'armed_forces', label: 'نیروهای مسلح' },
   { code: 'cash', label: 'آزاد (بدون بیمه)' },
 ]
-const rial = (n: number | undefined) => `${new Intl.NumberFormat('fa-IR').format(Math.round(n ?? 0))} ﷼`
+
 
 // editable line state — irc overrides the name once an alternative is chosen
 interface EditLine { drug_name: string; irc: string | null; quantity: number; removed: boolean }
@@ -54,6 +55,8 @@ export default function ReceptionQuotePanel({
   onClose: () => void
   onSendToFilling?: (lines: QuoteLine[]) => void
 }) {
+  const { t, n, dir } = useLang()
+  const rial = (v: number | undefined) => `${n(Math.round(v ?? 0))} ${t('IRR', '﷼')}`
   const [insurer, setInsurer] = useState('tamin')
   const [setting, setSetting] = useState('outpatient')
   const [techFee, setTechFee] = useState(200000)
@@ -81,7 +84,7 @@ export default function ReceptionQuotePanel({
   const quoteByIndex = useMemo(() => data?.lines ?? [], [data])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    <div dir={dir} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div className="cd-scope bg-canvas w-full max-w-3xl max-h-[90vh] rounded-2xl overflow-hidden flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}>
 
@@ -89,41 +92,43 @@ export default function ReceptionQuotePanel({
         <div className="px-5 py-3.5 bg-surface border-b border-line flex items-center gap-3">
           <span className="w-7 h-7 rounded-lg bg-intel-soft text-intel flex items-center justify-center">💳</span>
           <div className="min-w-0">
-            <h2 className="cd-ui text-[15px] font-semibold text-ink">Reception quote · {patientName}</h2>
-            <p className="cd-ui text-[11px] text-ink3">قیمت‌گذاری نسخه و تطبیق با توان پرداخت بیمار</p>
+            <h2 className="cd-ui text-[15px] font-semibold text-ink">
+              {t('Reception quote', 'استعلام پذیرش')} · {patientName}</h2>
+            <p className="cd-ui text-[11px] text-ink3">{t('Price the prescription and fit it to what the patient can pay',
+                                                          'قیمت‌گذاری نسخه و تطبیق با توان پرداخت بیمار')}</p>
           </div>
-          <button onClick={onClose} className="cd-ui ml-auto text-ink3 hover:text-ink text-sm px-2">✕</button>
+          <button onClick={onClose} className="cd-ui ms-auto text-ink3 hover:text-ink text-sm px-2">✕</button>
         </div>
 
         {/* ── Controls ───────────────────────────────────────────────────── */}
         <div className="px-5 py-2.5 bg-surface2 border-b border-line flex flex-wrap items-center gap-3 text-[12px]">
           <label className="flex items-center gap-1.5">
-            <span className="text-ink3">بیمه</span>
+            <span className="text-ink3">{t('Insurer', 'بیمه')}</span>
             <select value={insurer} onChange={e => setInsurer(e.target.value)}
               className="cd-ui bg-surface border border-line2 rounded-lg px-2 py-1 text-ink">
               {INSURERS.map(o => <option key={o.code} value={o.code}>{o.label}</option>)}
             </select>
           </label>
           <label className="flex items-center gap-1.5">
-            <span className="text-ink3">نوع</span>
+            <span className="text-ink3">{t('Setting', 'نوع')}</span>
             <select value={setting} onChange={e => setSetting(e.target.value)}
               className="cd-ui bg-surface border border-line2 rounded-lg px-2 py-1 text-ink">
-              <option value="outpatient">سرپایی</option>
-              <option value="inpatient">بستری</option>
+              <option value="outpatient">{t('Outpatient', 'سرپایی')}</option>
+              <option value="inpatient">{t('Inpatient', 'بستری')}</option>
             </select>
           </label>
           <label className="flex items-center gap-1.5">
-            <span className="text-ink3">حق فنی</span>
+            <span className="text-ink3">{t('Technical fee', 'حق فنی')}</span>
             <input type="number" value={techFee} onChange={e => setTechFee(Number(e.target.value) || 0)}
               className="cd-data w-24 bg-surface border border-line2 rounded-lg px-2 py-1 text-ink" />
           </label>
-          <label className="flex items-center gap-1.5 ml-auto">
-            <span className="text-ink3">توان پرداخت بیمار</span>
+          <label className="flex items-center gap-1.5 ms-auto">
+            <span className="text-ink3">{t('What the patient can pay', 'توان پرداخت بیمار')}</span>
             <input type="number" placeholder="—" value={target}
               onChange={e => setTarget(e.target.value === '' ? '' : Number(e.target.value))}
               className="cd-data w-28 bg-surface border border-line2 rounded-lg px-2 py-1 text-ink" />
           </label>
-          {isFetching && <span className="cd-ui text-[11px] text-intel">…محاسبه</span>}
+          {isFetching && <span className="cd-ui text-[11px] text-intel">{t('calculating…', '…محاسبه')}</span>}
         </div>
 
         {/* ── Lines ──────────────────────────────────────────────────────── */}
@@ -137,18 +142,19 @@ export default function ReceptionQuotePanel({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="cd-ui text-[13px] font-bold text-ink">{q?.name || l.drug_name}</span>
-                      {q?.brand_name && <span className="cd-ui text-[10px] bg-counsel-soft text-counsel border border-counsel/30 rounded px-1">برند</span>}
-                      {q?.is_generic && <span className="cd-ui text-[10px] bg-safe-soft text-safe border border-safe/30 rounded px-1">ژنریک</span>}
-                      {isSupp && <span className="cd-ui text-[10px] bg-warning-soft text-warning border border-warning/30 rounded px-1">مکمل/آرایشی — بدون پوشش</span>}
-                      {q?.unmatched && <span className="cd-ui text-[10px] bg-blocker-soft text-blocker border border-blocker/30 rounded px-1">در فهرست یافت نشد</span>}
+                      {q?.brand_name && <span className="cd-ui text-[10px] bg-counsel-soft text-counsel border border-counsel/30 rounded px-1">{t('Brand', 'برند')}</span>}
+                      {q?.is_generic && <span className="cd-ui text-[10px] bg-safe-soft text-safe border border-safe/30 rounded px-1">{t('Generic', 'ژنریک')}</span>}
+                      {isSupp && <span className="cd-ui text-[10px] bg-warning-soft text-warning border border-warning/30 rounded px-1">{t('Supplement/cosmetic — not covered', 'مکمل/آرایشی — بدون پوشش')}</span>}
+                      {q?.unmatched && <span className="cd-ui text-[10px] bg-blocker-soft text-blocker border border-blocker/30 rounded px-1">{t('Not found in the list', 'در فهرست یافت نشد')}</span>}
                     </div>
                     {!q?.unmatched && !l.removed && (
                       <div className="cd-data text-[11px] text-ink2 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-                        <span>قیمت واحد: <b>{rial(q?.unit_price)}</b></span>
-                        <span>کل: <b>{rial(q?.gross)}</b></span>
-                        <span className="text-safe">سهم بیمه: {rial(q?.insurer_share)}</span>
-                        <span className="text-intel">سهم بیمار: <b>{rial(q?.patient_total)}</b></span>
-                        {(q?.differential ?? 0) > 0 && <span className="text-caution">مابه‌التفاوت: {rial(q?.differential)}</span>}
+                        <span>{t('Unit price', 'قیمت واحد')}: <b>{rial(q?.unit_price)}</b></span>
+                        <span>{t('Total', 'کل')}: <b>{rial(q?.gross)}</b></span>
+                        <span className="text-safe">{t('Insurer share', 'سهم بیمه')}: {rial(q?.insurer_share)}</span>
+                        <span className="text-intel">{t('Patient share', 'سهم بیمار')}: <b>{rial(q?.patient_total)}</b></span>
+                        {(q?.differential ?? 0) > 0 && <span className="text-caution">
+                          {t('Differential', 'مابه‌التفاوت')}: {rial(q?.differential)}</span>}
                       </div>
                     )}
                   </div>
@@ -166,25 +172,26 @@ export default function ReceptionQuotePanel({
                   <button onClick={() => set(i, { removed: !l.removed })}
                     className={`cd-ui text-[11px] px-2 py-1 rounded border flex-shrink-0 ${
                       l.removed ? 'border-safe/40 text-safe' : 'border-line2 text-ink3 hover:bg-surface2'}`}>
-                    {l.removed ? 'افزودن' : 'حذف'}
+                    {l.removed ? t('Add back', 'افزودن') : t('Remove', 'حذف')}
                   </button>
                 </div>
 
                 {/* cheaper alternatives (lever 1) */}
                 {!l.removed && (q?.alternatives?.length ?? 0) > 0 && (
                   <div className="mt-2 pt-2 border-t border-line">
-                    <div className="cd-ui text-[10px] text-ink3 mb-1">جایگزین ارزان‌تر (همان ماده مؤثره):</div>
+                    <div className="cd-ui text-[10px] text-ink3 mb-1">{t('Cheaper alternative (same active ingredient):',
+                                                                              'جایگزین ارزان‌تر (همان ماده مؤثره):')}</div>
                     <div className="flex flex-wrap gap-1.5">
                       {q!.alternatives!.map(a => (
                         <button key={a.irc} onClick={() => set(i, { irc: a.irc })}
                           className="cd-ui text-[11px] px-2 py-1 rounded-lg border border-intel/30 bg-intel-soft text-intel hover:brightness-105 text-right">
                           {a.brand_name || a.name} · {rial(a.unit_price)}
-                          <span className="text-safe block text-[10px]">صرفه‌جویی {rial(a.savings_total)}</span>
+                          <span className="text-safe block text-[10px]">{t('saves', 'صرفه‌جویی')} {rial(a.savings_total)}</span>
                         </button>
                       ))}
                       {l.irc && (
                         <button onClick={() => set(i, { irc: null })}
-                          className="cd-ui text-[11px] px-2 py-1 rounded-lg border border-line2 text-ink3 hover:bg-surface2">بازگردانی به نسخه</button>
+                          className="cd-ui text-[11px] px-2 py-1 rounded-lg border border-line2 text-ink3 hover:bg-surface2">{t('Back to the prescribed item', 'بازگردانی به نسخه')}</button>
                       )}
                     </div>
                   </div>
@@ -198,23 +205,25 @@ export default function ReceptionQuotePanel({
         <div className="border-t border-line bg-surface px-5 py-3 space-y-2">
           {data?.notes?.map((n, i) => <p key={i} className="cd-ui text-[11px] text-ink3 italic">• {n}</p>)}
           <div className="flex items-end gap-5">
-            <Tot label="کل نسخه" v={data?.totals.gross} />
-            <Tot label="سهم بیمه" v={data?.totals.insurer} tone="safe" />
-            <Tot label="پرداختی بیمار" v={patientPays} tone={overBudget ? 'blocker' : 'intel'} big />
-            {(data?.totals.differential ?? 0) > 0 && <Tot label="مابه‌التفاوت" v={data?.totals.differential} tone="caution" />}
+            <Tot label={t('Prescription total', 'کل نسخه')} v={data?.totals.gross} />
+            <Tot label={t('Insurer share', 'سهم بیمه')} v={data?.totals.insurer} tone="safe" />
+            <Tot label={t('Patient pays', 'پرداختی بیمار')} v={patientPays} tone={overBudget ? 'blocker' : 'intel'} big />
+            {(data?.totals.differential ?? 0) > 0 && <Tot label={t('Differential', 'مابه‌التفاوت')}
+                                                          v={data?.totals.differential} tone="caution" />}
             <div className="ml-auto flex gap-2">
-              <button onClick={onClose} className="cd-ui px-3 py-2 text-sm rounded-lg border border-line2 text-ink2 hover:bg-surface2">انصراف</button>
+              <button onClick={onClose} className="cd-ui px-3 py-2 text-sm rounded-lg border border-line2 text-ink2 hover:bg-surface2">{t('Cancel', 'انصراف')}</button>
               <button onClick={() => onSendToFilling?.(payloadLines)}
                 disabled={overBudget}
-                title={overBudget ? 'هنوز بالاتر از توان پرداخت بیمار است' : ''}
+                title={overBudget ? t('Still above what the patient can pay', 'هنوز بالاتر از توان پرداخت بیمار است') : ''}
                 className="cd-ui px-4 py-2 text-sm rounded-lg bg-safe text-white hover:brightness-110 disabled:opacity-40">
-                تأیید و ارسال به نسخه‌پیچی →
+                {t('Confirm and send to filling', 'تأیید و ارسال به نسخه‌پیچی')} →
               </button>
             </div>
           </div>
           {overBudget && (
             <p className="cd-ui text-[12px] text-blocker">
-              {rial(patientPays - Number(target))} بالاتر از توان پرداخت — جایگزین ارزان‌تر، حذف مکمل یا کاهش تعداد را اعمال کنید.
+              {t(`${rial(patientPays - Number(target))} above what the patient can pay — switch to a cheaper alternative, drop a supplement, or reduce the quantity.`,
+                 `${rial(patientPays - Number(target))} بالاتر از توان پرداخت — جایگزین ارزان‌تر، حذف مکمل یا کاهش تعداد را اعمال کنید.`)}
             </p>
           )}
         </div>

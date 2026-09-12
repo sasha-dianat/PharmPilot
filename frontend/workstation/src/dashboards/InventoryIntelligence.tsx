@@ -8,7 +8,7 @@
 import { useState, useEffect } from 'react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine,
+  Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
@@ -172,21 +172,25 @@ function DemandForecastPanel({ items }: { items: StockItem[] }) {
     enabled: !!selectedNdc,
     staleTime: 120_000,
   })
-  const avg    = fc?.avg_daily_demand ?? (item?.avg_daily_demand || 3)
-  const std    = fc?.std_dev_daily ?? avg * 0.25
+  // No `|| 3` fallback. An item with no measured demand reports none, and the
+  // panel says so rather than drawing a forecast around an invented rate.
+  const avg    = fc?.avg_daily_demand ?? item?.avg_daily_demand ?? null
+  const basis  = fc?.basis ?? (avg === null ? 'no_history' : 'observed')
+  const measured = avg !== null && basis !== 'no_history'
+  const std    = fc?.std_dev_daily ?? (measured ? avg * 0.25 : 0)
   const trend  = fc?.trend ?? 'stable'
-  const fdaily = (fc?.forecast_30d ?? avg * 30) / 30
+  const fdaily = measured ? (fc?.forecast_30d ?? avg * 30) / 30 : 0
 
-  const days = Array.from({length: 30}, (_, i) => {
-    const isHistory = i < 20
-    return {
-      day: i - 20, label: `${i - 20}d`,
-      actual:   isHistory ? Math.max(0, Math.round(avg + Math.sin(i * 1.3) * std)) : undefined,
-      forecast: !isHistory ? Math.round(fdaily) : undefined,
-      ci_upper: !isHistory ? Math.round(fdaily + std) : undefined,
-      ci_lower: !isHistory ? Math.max(0, Math.round(fdaily - std)) : undefined,
-    }
-  })
+  // Only the forecast half is plotted. The left half used to be
+  // `avg + Math.sin(i * 1.3) * std` drawn under a legend reading "Actual" —
+  // a sine wave presented as this pharmacy's dispensing history. Real history
+  // is not available from this endpoint, so nothing is drawn for it.
+  const days = measured ? Array.from({length: 30}, (_, i) => ({
+    day: i, label: `+${i}d`,
+    forecast: Math.round(fdaily),
+    ci_upper: Math.round(fdaily + std),
+    ci_lower: Math.max(0, Math.round(fdaily - std)),
+  })) : []
 
   return (
     <div className="bg-[#1a1f2e] rounded-xl p-4 border border-[#1e293b]">
@@ -199,30 +203,37 @@ function DemandForecastPanel({ items }: { items: StockItem[] }) {
           </select>
         </div>
         <div className="flex gap-3 text-[10px]">
-          {[['#3b82f6','Actual'],['#22c55e','Forecast'],['#f97316 opacity-30','95% CI']].map(([c,l]) => (
+          {[['#22c55e','Forecast'],['#f97316 opacity-30','95% CI']].map(([c,l]) => (
             <span key={l as string} className="flex items-center gap-1">
               <span className="w-3 h-1 rounded" style={{ background: c as string }} /><span className="text-slate-500">{l}</span>
             </span>
           ))}
         </div>
       </div>
-      <ResponsiveContainer width="100%" height={140}>
+      {!measured && (
+        <div className="h-[140px] flex flex-col items-center justify-center text-center gap-1">
+          <p className="text-xs text-slate-400">No dispensing recorded for this item</p>
+          <p className="text-[10px] text-slate-600 max-w-xs">
+            No demand rate is derived, and none is assumed. A forecast drawn
+            around an invented rate is indistinguishable from a measured one.
+          </p>
+        </div>)}
+      {measured && <ResponsiveContainer width="100%" height={140}>
         <ComposedChart data={days} margin={{ top:4, right:4, left:-20, bottom:0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis dataKey="label" tick={{ fill:'#475569', fontSize:9 }} interval={4} />
           <YAxis tick={{ fill:'#475569', fontSize:9 }} />
           <Tooltip contentStyle={{ background:'#1a1f2e', border:'1px solid #334155', borderRadius:8, fontSize:11 }} />
-          <ReferenceLine x={days[19]?.label} stroke="#475569" strokeDasharray="4 2" label={{ value:'Today', fill:'#64748b', fontSize:9 }} />
-          <ReferenceLine x={days[14]?.label} stroke="#f97316" strokeDasharray="6 2" label={{ value:'Order by', fill:'#f97316', fontSize:9 }} />
-          <Bar dataKey="actual" fill="#3b82f6" fillOpacity={0.8} radius={[2,2,0,0]} />
           <Bar dataKey="forecast" fill="#22c55e" fillOpacity={0.7} radius={[2,2,0,0]} />
           <Line dataKey="ci_upper" stroke="#f97316" strokeOpacity={0.3} dot={false} strokeWidth={1} />
           <Line dataKey="ci_lower" stroke="#f97316" strokeOpacity={0.3} dot={false} strokeWidth={1} />
         </ComposedChart>
-      </ResponsiveContainer>
+      </ResponsiveContainer>}
       <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1">
-        <span>avg <span className="font-mono text-slate-300">{avg.toFixed(1)}/day</span></span>
-        <span>30-day forecast <span className="font-mono text-slate-300">{(fc?.forecast_30d ?? avg * 30).toFixed(0)}</span></span>
+        <span>avg <span className="font-mono text-slate-300">
+          {measured ? `${avg.toFixed(1)}/day` : 'not measured'}</span></span>
+        <span>30-day forecast <span className="font-mono text-slate-300">
+          {measured ? (fc?.forecast_30d ?? avg * 30).toFixed(0) : '—'}</span></span>
         <span>trend <span className={trend === 'up' ? 'text-red-400' : trend === 'down' ? 'text-emerald-400' : 'text-slate-300'}>
           {trend === 'up' ? '↑ rising' : trend === 'down' ? '↓ falling' : '→ stable'}</span></span>
       </div>
@@ -319,25 +330,17 @@ export default function InventoryIntelligence() {
     queryKey: ['stock-levels'],
     queryFn: () => apiClient.get('/inventory/stock').then(r => r.data as StockItem[]),
     refetchInterval: 120_000,
-    placeholderData: Array.from({length:20}, (_,i) => ({
-      ndc11: `0007${i}015423`, drug_name: ['Metformin 500mg','Atorvastatin 40mg','Lisinopril 10mg','Gabapentin 300mg','Amlodipine 5mg','Omeprazole 20mg','Metoprolol 25mg','Sertraline 50mg','Levothyroxine 50mcg','Hydrochlorothiazide 25mg'][i%10],
-      quantity_on_hand: 80 + (i * 23) % 120, reorder_point: 30 + (i * 7) % 50,
-      avg_daily_demand: 2 + (i * 0.7) % 8, stockout_probability_7d: (i * 0.07) % 0.95,
-      days_supply: 5 + (i * 18) % 200, reorder_quantity: 100 + (i * 37) % 400,
-      last_dispensed_at: new Date().toISOString(), forecast_updated_at: new Date().toISOString(),
-    })) as StockItem[],
+    // No placeholderData. This used to invent twenty stock rows with fabricated
+    // drug names, demand rates and stockout percentages, which rendered as real
+    // whenever the API returned nothing — a manager reading "Metoprolol, 73%
+    // stockout risk" had no way to tell it was decoration. An empty shelf shows
+    // as empty.
   })
 
   const { data: expiringData } = useQuery({
     queryKey: ['expiring-lots'],
     queryFn: () => apiClient.get('/inventory/expiring?days=90').then(r => r.data as ExpiringLot[]),
     refetchInterval: 300_000,
-    placeholderData: Array.from({length:10}, (_,i) => ({
-      ndc11: `0007${i}015423`, lot_number: `LOT${i}001`,
-      expiry_date: new Date(Date.now()+(i*8+3)*24*3600*1000).toISOString().split('T')[0],
-      days_until_expiry: i*8+3, quantity_on_hand: 20 + (i * 17) % 80,
-      urgency: i<2?'immediate':i<4?'high':i<7?'moderate':'low' as any,
-    })),
   })
 
   const items = stockData || []

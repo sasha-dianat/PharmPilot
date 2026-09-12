@@ -1,0 +1,118 @@
+{
+  "date": "2026-08-04",
+  "jalali": "1405/05/13",
+  "scope": "The 861 open incompatibilities reported by the insurance-coverage panel",
+  "adjudicated_by": "Claude (Opus 5), pharmacological review",
+  "result": {"before": 861, "after": 581},
+  "note": "The crosswalk `reason` column is varchar(40), so each ruling below carries a short label there and its full rationale here.",
+
+  "structural_resolutions": [
+    {
+      "class": "nfi_missing_strength",
+      "resolved": 86,
+      "root_cause": "nfi.parse_detail split «ترکیبات» with a name pattern of [A-Za-z \\-/+.]*, which admits no comma, bracket, colon, parenthesis or digit. Every substance whose printed name contains one lost its dose at parse time even though the page stated it.",
+      "examples": [
+        "GONADOTROPHIN, CHORIONIC 5000 [iU]  (comma)",
+        "Brigatinib [USAN:INN] 180 mg  (bracket + colon)",
+        "Follitropin Alfa (alpha-subunit) 600 [iU]/1mL  (parentheses)",
+        "Vitamin K1 10 mg  (digit in the name)"
+      ],
+      "fix": "backfill.strength_from_composition locates the DOSE instead of the name; wired into nfi.parse_detail for future harvests and applied retroactively to rows already held.",
+      "validation": "98.2% agreement against 38,552 rows that already carry a strength (97.6% exact, 0.3% same dose set); the widened dose vocabulary left the generic_full path unchanged at 98.1%.",
+      "why_not_more": "A sibling-strength heuristic was rejected: composition states brigatinib 180 mg on one row and 90 mg on another, so inferring from an agreeing sibling would have written 90 mg on both. Alunbrig is 30/90/180 mg and sirolimus 0.5/1/2 mg — one agreeing sibling proves nothing.",
+      "deliberately_left_empty": "Products that print no dose anywhere: AMYL NITRITE, ACETIC ACID, NITROUS OXIDE (pure substances), «Immune Globulin» on the antivenoms (potency is expressed as venom neutralised per vial, not as a concentration), and APREMILAST whose page covers 10/20/30 mg together. An invented strength would be worse than the gap."
+    },
+    {
+      "class": "coverage_unmatched_researchable",
+      "resolved": 179,
+      "root_cause": "For a fixed-dose combination NFI states only the FIRST ingredient in «نام ژنریک» and writes the rest into the dose (generic_name='empagliflozin', strength='10 mg/LINAGLIPTIN 5 mg'). The record advertised one ingredient while being a two-ingredient product, so match()'s ingredient-set guard — right to demand agreement in both directions — refused candidates agreeing on molecule set, form AND dose.",
+      "fix": "structural_match.record_components reads the full ingredient list from monograph.generic_full (which names every ingredient ahead of the form) and from the strength string (gated on the known vocabulary).",
+      "also_fixed": {
+        "defect": "«PIPERACILLIN 4 g» matched a piperacillin/tazobactam record at 0.93 — above the auto-apply line — because the record understated itself. A patient entitled to piperacillin alone would have been quoted Tazocin.",
+        "status": "closed by the same change; regression test test_a_mono_row_never_lands_on_a_combination"
+      },
+      "second_defect": {
+        "defect": "doses_agree asks whether two sides share ANY dose. For a combination that is far too weak: «EMPAGLIFLOZIN / LINAGLIPTIN 10 mg/5 mg» matched a 25 mg/5 mg record on the shared 5, offering a 25 mg tablet against a 10 mg entitlement.",
+        "fix": "doses_agree_all requires every dose on each side to have a partner; used whenever the row is a combination."
+      },
+      "verified_pairings": [
+        "Symbicort budesonide/formoterol 160/4.5 and 320/9",
+        "Cosopt dorzolamide 2%/timolol 0.5%",
+        "Tienam imipenem/cilastatin 250, 500, 750",
+        "Tazocin piperacillin/tazobactam 2/0.25, 3/0.375, 4/0.5",
+        "Seretide salmeterol/fluticasone 25/50, 25/125, 25/250",
+        "Azarga brinzolamide 10/timolol 5",
+        "losartan/hydrochlorothiazide 50/12.5"
+      ],
+      "correctly_still_unmatched": "Stalevo 125 (levodopa 125 / carbidopa 31.25 / entacapone 200) is a real product absent from our catalog. It must NOT fall back to the 200 mg tablet on the shared entacapone 200."
+    },
+    {
+      "class": "board arithmetic",
+      "root_cause": "A cause was closed only by a `*` ruling — correct, since price_gap_extreme must never be blanket-silenced. But the counts are pure SQL, so a row ruled INDIVIDUALLY went on being counted forever: both spliced monographs were accepted per-IRC and the board still read 2.",
+      "fix": "issue_registry.ruled_subjects; per-row accepted/resolved/wont_fix subjects leave the count. `deferred` deliberately does not — it records postponed work, not a settled question.",
+      "care": "`moderate` is derived as any_gap − extreme, so a row ruled at the extreme tier is excluded from BOTH queries; otherwise ruling it merely demoted it into the moderate bucket and the total never fell."
+    }
+  ],
+
+  "price_gap_extreme": {
+    "ruled": 12,
+    "verdict": "accepted — basis mismatch, not a price error",
+    "evidence": "In every row the reference/announced ratio equals the package count: betamethasone ×600 (pack 500), terbutaline ×40 (50), cycloserine ×33 (30), methylphenidate ×32 (30), thiopental ×23 (25), imiquimod ×23 (24), sodium chloride ×19 (21), sulfadiazine ×18 (20), pantoprazole ×12 (14), imiquimod ×11 (12). Normalised to a common basis every gap falls within 0.86–1.24.",
+    "tested_before_generalising": "The hypothesis that the insurer reference is ALWAYS package-based was measured across all 45,797 priced coverage entries and REFUTED: the reference agrees with the UNIT price for 47.5% within ±11% and with the package price for only 0.3%. These 12 are per-row exceptions, so each was ruled individually rather than by a blanket rule that would silence genuinely wrong prices."
+  },
+
+  "coverage_review_conflict": [
+    {
+      "row": "LEVODOPA -  B  FORTE",
+      "verdict": "confirmed",
+      "irc": "1144422447002575",
+      "rationale": "«لوودوپا-ب» is levodopa + benserazide (Madopar); FORTE is the 200/50 strength. The conflict flag fired only because the insurer's name never spells out the second molecule."
+    },
+    {
+      "row": "LEVODOPA - C  FORTE",
+      "verdict": "confirmed",
+      "irc": "0000000455106508",
+      "rationale": "«لوودوپا-ث» is levodopa + carbidopa (Sinemet); FORTE is the 250/25 strength."
+    },
+    {
+      "row": "NAPHAZOLINE  ANTAZOLINE",
+      "verdict": "confirmed",
+      "irc": "3127269685164584",
+      "rationale": "Naphazoline HCl 0.05% + antazoline phosphate 0.5% ophthalmic drops — the same product."
+    },
+    {
+      "row": "PROSTAGLANDINE F2a INJECTION PARENTERAL 5 mg/1mL",
+      "verdict": "rejected",
+      "was_matched_to": "6426403624320462 dinoprostone 10 mg/1mL",
+      "rationale": "Prostaglandin F2α is dinoprost; dinoprostone is PGE2. Two different prostaglandins with different clinical use — postpartum haemorrhage and mid-trimester termination versus cervical ripening. The dose disagrees too (5 vs 10 mg/mL). We hold no dinoprost at all; the only PGF2α analogue in the catalog is carboprost 250 µg/mL (همابیت). The row is a genuine catalog gap, not a match.",
+      "safety": "clinically material — these are not interchangeable"
+    },
+    {
+      "row": "CEPHALEXIN",
+      "verdict": "rejected",
+      "was_matched_to": "1842455574163964 cefazolin 250 mg INJECTION, POWDER, FOR SOLUTION",
+      "rationale": "Cephalexin is the oral first-generation cephalosporin; cefazolin is the parenteral one. Different drug and different route. We do hold cephalexin monohydrate (250 and 500 mg capsules, 125 mg/5 mL suspension), but the insurer row states neither dose nor form, so it is a molecule-level heading that cannot be pinned to one presentation. Rejecting stops the cefazolin link without fabricating a cephalexin one.",
+      "safety": "clinically material — a parenteral product must not be dispensed against an oral entitlement",
+      "note": "The wrong link arrived via the national-code join at 0.72, which suggests a code collision worth a separate look."
+    }
+  ],
+
+  "remaining_open": {
+    "nfi_missing_strength": {
+      "count": 390,
+      "lane": "research",
+      "why": "These state no dose in name, composition or monograph title. Some are legitimately strength-less (gases, antivenoms, pure substances, cream bases) and some need the source.",
+      "next": "Re-crawl the ~27,000 uncrawled NFI ids and the 631 retryable failures — blocked on the Iran proxy."
+    },
+    "coverage_unmatched_researchable": {
+      "count": 191,
+      "lane": "research",
+      "composition": {
+        "insurer rows stating no dose": 95,
+        "presentations genuinely absent from the catalog": 79,
+        "rows whose name yields no molecule": 32
+      },
+      "note": "The 32 include DROPPER 10CC, GELATIN CAPSUL, CREAM BASE (COLD CREAM) and ostomy lotions — devices and excipient bases mis-laned as research because the device regex does not name them. GASEOUS GANGRENE ANTITOXIN in the same group is a real biological and must not be swept in with them."
+    }
+  }
+}

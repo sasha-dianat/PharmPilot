@@ -25,18 +25,36 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "rx:read", "rx:write", "rx:verify", "rx:dispense",
         "patient:read", "patient:write",
         "inventory:read", "inventory:write", "inventory:order",
+        "inventory:approve",
+        # Setting a shelf price is an OWNER act, not a stocking act. Inventory
+        # staff receive goods and record what they cost; what the customer is
+        # charged is a commercial decision, and the same maker-checker logic
+        # that keeps a requester from approving their own write-off keeps a
+        # receiver from repricing the shelf.
+        "inventory:price",
+        # The owner administers the biometric gallery: enrolment, retirement and
+        # calibration. Read alone cannot change who the system can recognise.
+        "biometric:write",
         "claims:read", "claims:submit",
         "reports:read", "staff:read", "staff:write",
         "biometric:read", "audio:read",
+        # The owner defines where policy applies. Registering a zone moves the
+        # boundary that rules, retention and access are all attached to, so it
+        # sits with the other owner acts rather than with inventory:write.
+        "vision:read", "vision:write",
     ],
     StaffRole.PHARMACIST: [
         "rx:read", "rx:write", "rx:verify", "rx:dispense",
         "rx:override_dur", "rx:controlled_substance",
         "patient:read", "patient:write",
         "claims:read", "claims:submit",
-        "inventory:read", "reports:read",
+        # A pharmacist approves write-offs but does not request them: the
+        # maker-checker split only works if the two sets of people differ.
+        "inventory:read", "inventory:approve", "reports:read",
         "biometric:read", "audio:read",
         "clinical:read", "clinical:write",
+        # Read only: a pharmacist works within the zone map, they do not draw it.
+        "vision:read",
     ],
     StaffRole.PHARMACY_INTERN: [
         "rx:read", "rx:write",
@@ -56,6 +74,9 @@ ROLE_PERMISSIONS: dict[StaffRole, list[str]] = {
         "claims:read",
     ],
     StaffRole.INVENTORY_STAFF: [
+        # Deliberately NOT inventory:approve — inventory staff request stock
+        # write-offs, and a requester who can approve their own write-off is
+        # the control failing silently.
         "inventory:read", "inventory:write", "inventory:order",
         "rx:read",
     ],

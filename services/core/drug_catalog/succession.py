@@ -98,12 +98,53 @@ async def sync_proposals(db, index: Path | None = None) -> dict:
     return {"detected": len(found), "created": created}
 
 
+def same_product_refusal(old, new) -> str | None:
+    """Why these two rows are NOT one product re-registered, or None.
+
+    A succession carries insurer coverage, field overrides and crosswalk
+    pointers from the old IRC to the new, so the pair must be the same thing
+    under a new registration. Two rows at different prices, or holding different
+    pack counts, are two products. The 2026-08-06 modafinil pair looked
+    identical on brand, manufacturer, strength, ATC and licence date until the
+    packs separated them — 30 against 100 — and merging would have moved a
+    30-pack's decided facts onto a 100-pack.
+
+    Silence is not evidence: when either side lacks the field, it cannot refuse
+    on it. Owner's rule, 2026-08-09: differing price means differing row.
+    """
+    if old is None or new is None:
+        return None
+    po, pn = getattr(old, "announced_price", None), getattr(new, "announced_price", None)
+    if po and pn and int(po) != int(pn):
+        return (f"قیمت اعلامی این دو ردیف یکی نیست ({int(po):,} در برابر {int(pn):,}) — "
+                "دو فرآوردهٔ متفاوت‌اند، نه یک ثبت تازه. جانشینی ثبت نشد.")
+    co, cn = getattr(old, "package_count", None), getattr(new, "package_count", None)
+    if co and cn and co != cn:
+        return (f"تعداد بسته یکی نیست ({co} در برابر {cn}) — "
+                "دو ارائهٔ متفاوت‌اند. جانشینی ثبت نشد.")
+    return None
+
+
 async def propose_manual(db, old_irc: str, new_irc: str, *, staff_id=None) -> dict:
     """An owner-entered succession — same carry-over, evidence marked manual."""
     from sqlalchemy import select
     from shared.models.catalog_succession import CatalogSuccession
+    from shared.models.drug_catalog import DrugCatalogItem
     if not old_irc or not new_irc or old_irc == new_irc:
         raise RuntimeError("دو IRC متفاوت لازم است.")
+
+    # A succession CARRIES coverage and overrides across, so the two rows must be
+    # the same thing sold under a new registration. Two rows at different prices
+    # are two products — the 2026-08-06 modafinil pair looked identical until the
+    # pack counts (30 vs 100) and prices separated them, and merging would have
+    # moved a 30-pack's decided facts onto a 100-pack. Owner's rule: differing
+    # price means differing row.
+    pair = {r.irc: r for r in (await db.execute(select(DrugCatalogItem).where(
+        DrugCatalogItem.irc.in_([old_irc, new_irc])))).scalars().all()}
+    refusal = same_product_refusal(pair.get(old_irc), pair.get(new_irc))
+    if refusal:
+        raise RuntimeError(refusal)
+
     row = (await db.execute(select(CatalogSuccession).where(
         CatalogSuccession.old_irc == old_irc,
         CatalogSuccession.new_irc == new_irc))).scalar_one_or_none()

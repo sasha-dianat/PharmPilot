@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-PRICE_TYPES = ("announced", "invoice", "insurer_reference")
+# "shelf" is what the customer is charged — set by the owner, per product,
+# and never derived from NFI. It earns a type of its own so a repricing is
+# queryable apart from an authority announcement or a distributor invoice.
+PRICE_TYPES = ("announced", "invoice", "insurer_reference", "shelf")
 
 
 async def record_price(db, irc: str, price_type: str, value, *,

@@ -44,6 +44,16 @@ _MASS_RE = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*(mcg|microgram|µg|ug|mg|kg|gr|g)\b", re.I)
 _PCT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 _IU_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:\[?\s*i\.?u\.?\s*\]?|units?)\b", re.I)
+# Radioactivity, folded to mCi (1 GBq = 27.027 mCi). A radiopharmaceutical is
+# labelled by its activity at calibration — «FLUDEOXYGLUCOSE F-18 10 mCi» is that
+# product's strength in the sense mg is a tablet's — and it needs its own
+# namespace for the same reason IU does: 10 mCi is neither 10 mg nor 10 IU.
+# Without it `dose_set` returned an empty set for every radiopharmaceutical, and
+# `backfill_strength` — which validates its extraction through `dose_set` —
+# discarded 51 activities it had read correctly out of NFI's own composition.
+_ACT_MCI = {"ci": 1000.0, "mci": 1.0, "uci": 0.001, "µci": 0.001,
+            "gbq": 27.027, "mbq": 0.027027, "kbq": 2.7027e-5, "bq": 2.7027e-8}
+_ACT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(mci|µci|uci|ci|gbq|mbq|kbq|bq)\b", re.I)
 
 
 def record_volumes(rec) -> set:
@@ -76,6 +86,11 @@ def dose_set(text) -> set:
         try:
             out.add(("iu", round(float(num.replace(",", ".")), 4)))
         except ValueError:
+            continue
+    for num, unit in _ACT_RE.findall(s):
+        try:
+            out.add(("act", round(float(num.replace(",", ".")) * _ACT_MCI[unit.lower()], 6)))
+        except (ValueError, KeyError):
             continue
     return out
 
@@ -168,11 +183,104 @@ def ingredient_agrees(a: str, b: str) -> bool:
     return False
 
 
+# The three ways NFI spells a respiratory inhaler. Splitting on the comma puts
+# them in three different families — «AEROSOL», «INHALANT», «POWDER» — so a
+# formulary row saying INHALANT could never reach a pMDI, and beclomethasone
+# 250 ug/dose failed to match the beclomethasone 250 ug/dose we hold.
+# SPRAY, SPRAY METERED and SPRAY SUSPENSION are deliberately NOT here: those are
+# nasal and topical, and fluticasone nasal is not fluticasone inhaled.
+_INHALATION_FORMS = {"AEROSOL, METERED", "INHALANT", "POWDER, METERED"}
+
+
+# Hydration states. «azithromycin anhydrous» and «azithromycin dihydrate» are
+# the same substance dried differently; they must not be mistaken for two salts.
+_HYDRATION = frozenset(("anhydrous", "hydrous", "dihydrate", "monohydrate",
+                        "hemihydrate", "trihydrate", "pentahydrate", "sesquihydrate"))
+
+# Modifiers that make a DIFFERENT product even when the catalog lists only one
+# of them, so the count rule below cannot see it. This is a pharmacological
+# judgement and the place to record more of them.
+#
+#   lysine — «ibuprofen lysine» is the intravenous neonatal product used to
+#   close a patent ductus arteriosus (NeoProfen). It shares a molecule with the
+#   oral analgesic and nothing else: different route, different indication,
+#   different patient, different price. Owner's ruling, 2026-08-04.
+#
+#   arginine — «ibuprofen arginine» is the same class of case (a salt chosen to
+#   change onset, sold as its own product); listed here so it is separated on
+#   the day it appears rather than after it has mis-matched.
+_IDENTITY_BEARING_MODIFIERS = frozenset(("lysine", "arginine"))
+
+
+def components_full(text) -> list[str]:
+    """Ingredients WITHOUT the clinical class-folding — the salt is kept.
+
+    `components()` runs each part through `normalize()`, which exists for the
+    interaction engine and deliberately answers with the drug CLASS: it returns
+    early on GENERIC_CLASSES, so «diclofenac sodium» and «diclofenac potassium»
+    both come back «diclofenac». That is the right answer for a DUR lookup and
+    the wrong one for identity — in Iran those are two products at 3,300–1,350,000
+    and 23,000–39,000 rial, the potassium salt being the rapid-onset form for
+    acute pain and the sodium salt the enteric-coated one for chronic disease.
+    """
+    out: list[str] = []
+    for part in re.split(r"[/+]|\band\b", str(text or "")):
+        p = re.sub(r"\([^)]*\)", " ", part)
+        p = re.sub(r"[^A-Za-z\s-]", " ", p).strip()
+        if len(p) < 3:
+            continue
+        cg = re.sub(r"\s+", " ", canonical_ingredient(p.lower()) or p.lower()).strip()
+        if cg and cg not in out:
+            out.append(cg)
+    return out
+
+
+def identity_bearing_bases(catalog) -> frozenset:
+    """Bases the catalog sells under MORE THAN ONE salt, where the salt is part
+    of the product's identity and must never be folded away.
+
+    Decided from the data, not from a hand-kept list: whatever the insurer or
+    NFI adds next is classified the same way. A base with a single salt form
+    («losartan potassium», «atorvastatin calcium») is NOT here — the
+    salt-tolerant lane resolves those, and it already refuses when more than one
+    candidate extends the row's name.
+    """
+    forms: dict[str, set] = {}
+    for rec in catalog or []:
+        raw = re.sub(r"[^a-z\s-]", " ", str(getattr(rec, "generic_name", "") or "").lower())
+        raw = re.sub(r"\s+", " ", raw).strip()
+        if not raw:
+            continue
+        head, _, rest = raw.partition(" ")
+        rest = " ".join(w for w in rest.split() if w not in _HYDRATION)
+        forms.setdefault(head, set())
+        if rest:
+            forms[head].add(rest)
+    return frozenset(h for h, s in forms.items()
+                     if len(s) > 1
+                     or any(w in _IDENTITY_BEARING_MODIFIERS
+                            for r in s for w in r.split()))
+
+
+def salt_base(name: str) -> str:
+    """An ingredient with its salt and hydrate words removed.
+
+    Returns the name unchanged when nothing would be left — an ingredient may
+    BE a salt («aluminum hydroxide», «magnesium oxide»), and reducing those to
+    an empty string would make them equal to each other and to everything else.
+    """
+    words = [w for w in str(name or "").lower().split() if w not in FILLER_TOKENS]
+    return " ".join(words) or str(name or "").strip().lower()
+
+
 def form_family(form: str) -> str:
     """Coarse family of an exact form string: 'INJECTION, POWDER, LYOPHILIZED,
     FOR SOLUTION' → 'INJECTION'. Lets a row that states only the family still
     reach the specific product, at lower confidence than an exact form hit."""
-    return re.split(r"[,;(]", str(form or "").upper(), maxsplit=1)[0].strip()
+    f = str(form or "").upper().strip()
+    if f in _INHALATION_FORMS:
+        return "INHALATION"
+    return re.split(r"[,;(]", f, maxsplit=1)[0].strip()
 
 
 def family_index(catalog) -> dict:
@@ -279,7 +387,8 @@ def parse_name(name: str, form_vocab: list[str]) -> dict:
         cg = re.sub(r"\s+", " ", cg).strip()
         if cg and cg not in generics:
             generics.append(cg)
-    return {"generics": generics, "form": form, "route": route,
+    return {"generics": generics, "generics_full": components_full(head),
+            "form": form, "route": route,
             "doses": dose_set(raw), "volumes": volume_set(raw),
             "combo": len(generics) > 1}
 
@@ -303,6 +412,134 @@ def components(text) -> list[str]:
     return out
 
 
+# Words that appear inside a strength string and are never an ingredient.
+_UNIT_WORDS = frozenset((
+    "mg", "gr", "kg", "ug", "mcg", "microgram", "ml", "iu", "dose", "doses",
+    "puff", "puffs", "actuation", "actuations", "unit", "units", "hr", "hour",
+    "mmol", "mol", "meq", "mosm", "ci", "mci", "uci", "bq", "mbq", "gbq",
+    "as", "and", "per", "each", "in", "of", "the", "sterile", "water", "usp"))
+
+
+def doses_agree_all(row: set, catalog: set, tol: float = 0.01) -> bool:
+    """Every dose the CATALOG states appears in the row. Asymmetric on purpose.
+
+    `doses_agree` asks whether the two sides share ANY dose, which is the right
+    question for a single-ingredient row that may carry stray numbers. For a
+    combination it is far too weak: «EMPAGLIFLOZIN / LINAGLIPTIN 10 mg/5 mg»
+    and a 25 mg/5 mg record share the 5, and matching on that alone offers the
+    patient a 25 mg tablet against a 10 mg entitlement. A combination is
+    identified by its whole dose vector, not by one component of it.
+
+    But it must not be symmetric. A formulary name is noisy where a catalog
+    `strength` is clean: «CLOTRIMAZOLE / BETAMETHASONE 1 %/0.05 % 15 g CREAM»
+    parses to {1%, 0.05%, 15000} — the TUBE SIZE read as a dose — and demanding
+    a partner for that phantom rejected a correct match. Requiring only that the
+    catalog's doses be present keeps the 10/5-is-not-25/5 protection (25 is
+    absent from the row, so it still fails) while tolerating the extra tokens
+    an insurer's product name always carries.
+    """
+    if not row or not catalog:
+        return True                      # silence is not disagreement
+    def has_partner(y, xs) -> bool:
+        for x in xs:
+            if isinstance(x, tuple) != isinstance(y, tuple):
+                continue
+            if isinstance(x, tuple) and isinstance(y, tuple):
+                if x[0] == y[0] and abs(x[1] - y[1]) <= tol * max(x[1], y[1], 1e-9):
+                    return True
+            elif not isinstance(x, tuple) and not isinstance(y, tuple):
+                if abs(x - y) <= tol * max(x, y, 1e-9):
+                    return True
+        return False
+    return all(has_partner(y, row) for y in catalog)
+
+
+def record_components(rec, known: set[str]) -> list[str]:
+    """Every active ingredient of a catalog record.
+
+    `generic_name` alone understates a fixed-dose combination — NFI puts the
+    first ingredient there and the rest in the dose. Two further sources say
+    what the product actually contains:
+
+      * `monograph.generic_full` — «PIPERACILLIN (AS SODIUM) / TAZOBACTAM (AS
+        SODIUM) INJECTION, POWDER…» names every ingredient ahead of the form,
+        and needs no vocabulary to be believed.
+      * `strength` — «10 mg/LINAGLIPTIN 5 mg», gated on the known vocabulary
+        because that field also carries units and packaging words.
+
+    Only ever ADDS ingredients, which is the fail-safe direction: an extra
+    component makes the record harder to match (the ingredient sets must agree
+    exactly), so a bad reading withholds a link rather than inventing one.
+    """
+    comps = components(getattr(rec, "generic_name", "") or "")
+    if not comps:
+        return comps
+
+    def add(c: str) -> None:
+        """Add an ingredient unless it is the SAME substance under another name.
+
+        `generic_name` and `generic_full` routinely spell one substance two
+        ways — «betahistine dihydrochloride» and «betahistine». Counting both
+        turned a mono product into a two-ingredient combination, which made the
+        ingredient-set guard reject its own formulary row (all 30 betahistine
+        tablets became unreachable). A salt variant of an ingredient already
+        present is not a second ingredient.
+        """
+        if c in comps:
+            return
+        b = salt_base(c)
+        if any(salt_base(e) == b for e in comps):
+            return
+        comps.append(c)
+
+    gf = str((getattr(rec, "monograph", None) or {}).get("generic_full") or "")
+    if gf:
+        form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
+        head = gf[:gf.upper().index(form)] if form and form in gf.upper() else gf
+        head = re.split(r"\d", head)[0]          # never read past the first dose
+        for c in components(head):
+            add(c)
+    for c in embedded_components(getattr(rec, "strength", "") or "", known):
+        add(c)
+    return comps
+
+
+def embedded_components(strength, known: set[str]) -> list[str]:
+    """Ingredient names NFI buried inside a strength string.
+
+    For a fixed-dose combination NFI states only the FIRST ingredient in
+    «نام ژنریک» and writes the others into the dose:
+
+        generic_name = 'empagliflozin'
+        strength     = '10 mg/LINAGLIPTIN 5 mg'
+
+    The record therefore advertises one ingredient while being a two-ingredient
+    product, and `match()`'s ingredient-set guard — which is right to demand
+    agreement in both directions — refuses candidates that agree on molecule
+    set, form AND dose. Reading the buried names back makes the record describe
+    itself honestly.
+
+    A token counts only if it canonicalizes to an ingredient the catalog
+    already knows, so unit words and packaging noise can never be promoted to
+    an active ingredient by accident.
+    """
+    out: list[str] = []
+    for part in re.split(r"[/+]", str(strength or "")):
+        p = re.sub(r"\([^)]*\)|\{[^}]*\}", " ", part)
+        p = re.sub(r"[^A-Za-z\s-]", " ", p)
+        words = [w for w in p.split() if len(w) > 2 and w.lower() not in _UNIT_WORDS]
+        while words:
+            name = re.sub(r"\s+", " ", " ".join(words).lower()).strip()
+            cg = (canonical_ingredient(normalize(name)) or name).strip()
+            cg = re.sub(r"\s+", " ", cg)
+            if cg in known:
+                if cg not in out:
+                    out.append(cg)
+                break
+            words.pop()            # «fluticasone propionate» → «fluticasone»
+    return out
+
+
 def build_index(catalog) -> dict:
     """(canonical generic, exact form) → [(record, doses, component set)], plus a
     form-family index. Component sets let a combination match only another
@@ -310,10 +547,22 @@ def build_index(catalog) -> dict:
     exact: dict[tuple, list] = {}
     family: dict[tuple, list] = {}
     salt: dict[tuple, list] = {}
+    # Vocabulary first: an ingredient buried in a strength string is only
+    # believed if some record states it as its own generic name.
+    known = {c for rec in catalog
+             for c in components(getattr(rec, "generic_name", "") or "")}
+    ambiguous = identity_bearing_bases(catalog)
     for rec in catalog:
-        comps = components(getattr(rec, "generic_name", "") or "")
+        comps = record_components(rec, known)
         if not comps:
             continue
+        # Where the catalog sells several salts of this base, the salt is the
+        # product. Index under the UNFOLDED name so a potassium row can only
+        # reach the potassium product — and so a row naming no salt at all
+        # reaches neither, falling to the salt lane, which refuses when more
+        # than one candidate extends it.
+        if any(c.split()[0] in ambiguous for c in comps):
+            comps = components_full(getattr(rec, "generic_name", "") or "") or comps
         form = str(getattr(rec, "dosage_form", "") or "").strip().upper()
         doses = dose_set(getattr(rec, "strength", "") or "")
         entry = (rec, doses, frozenset(comps), record_volumes(rec))
@@ -327,7 +576,7 @@ def build_index(catalog) -> dict:
             head = cg.split()[0]
             if head != cg:
                 salt.setdefault((head, form), []).append((cg, entry))
-    return {"exact": exact, "family": family, "salt": salt}
+    return {"exact": exact, "family": family, "salt": salt, "ambiguous": ambiguous}
 
 
 # confidence tiers — an exact controlled-vocabulary hit is strong evidence, but
@@ -346,6 +595,12 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     generics = parsed.get("generics") or []
     if not generics or not parsed.get("form"):
         return None, 0.0, ""
+    # Same switch the index made: for a base sold under several salts, compare
+    # the unfolded names, so «DICLOFENAC POTASSIUM» reaches only the potassium
+    # product and a bare «DICLOFENAC» reaches none of them.
+    ambiguous = index.get("ambiguous") or frozenset()
+    if any(g.split()[0] in ambiguous for g in generics):
+        generics = parsed.get("generics_full") or generics
     form = parsed["form"]
     doses = parsed.get("doses") or set()
     vols = parsed.get("volumes") or set()
@@ -355,17 +610,36 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     for level in ("exact", "family"):
         lookup_form = form if level == "exact" else form_family(form)
         for cg in generics:
+            viable = []
             for rec, cat_doses, comps, cat_vols in index[level].get((cg, lookup_form), []):
                 # Ingredient sets must agree in BOTH directions: a combination
                 # never lands on a mono product, and a mono row never lands on a
                 # combination that merely contains it.
                 if comps != want:
                     continue
-                if doses and cat_doses and not doses_agree(doses, cat_doses):
+                # A combination is identified by its whole dose vector: sharing
+                # one component's dose is not agreement (10 mg/5 mg is not
+                # 25 mg/5 mg).
+                agree = doses_agree_all if combo else doses_agree
+                if doses and cat_doses and not agree(doses, cat_doses):
                     continue
                 # a 10 mL vial is not a 100 mL vial, however well the dose agrees
                 if not volumes_agree(vols, cat_vols):
                     continue
+                viable.append((rec, cat_doses))
+            if not viable:
+                continue
+            # A row that names NO dose must not be handed one. This tier applies
+            # at 0.80, above the 0.75 line, and returns whichever candidate the
+            # index happens to reach first. «IBUPROFEN INJECTION» resolved to the
+            # 100 mg/mL adult product while the catalog also holds PEDEA at
+            # 5 mg/mL — the preterm-neonate dose for closing a ductus, a
+            # twenty-fold difference decided by iteration order. Where the
+            # strengths differ, the row is genuinely ambiguous and belongs to a
+            # human.
+            if not doses and len({frozenset(cd) for _, cd in viable if cd}) > 1:
+                return None, 0.0, ""
+            for rec, cat_doses in viable[:1]:
                 if doses and cat_doses:
                     conf = CONF_EXACT_DOSE if level == "exact" else CONF_FAMILY_DOSE
                     why = f"{level} form + dose"
@@ -381,10 +655,27 @@ def match(parsed: dict, index: dict) -> tuple[object | None, float, str]:
     # prints the base and NFI keeps the salt. Accepted ONLY when exactly one
     # NFI ingredient extends the row's name — otherwise "INSULIN" would silently
     # pick one of insulin glargine / aspart / lispro.
-    if not combo:
+    if not combo and generics[0].split()[0] not in ambiguous:
+        # Withheld for a base sold under several salts. The row named no salt,
+        # the catalog holds more than one, and this lane auto-applies at 0.76 —
+        # above the 0.75 line. A bare «DICLOFENAC 50 mg TABLET» would otherwise
+        # resolve to the potassium salt merely because it is the only PLAIN
+        # tablet (the sodium ones are enteric-coated), quietly choosing between
+        # a 23,000 and a 1,350,000 rial product. That belongs in review.
         g = generics[0]
         cands = index.get("salt", {}).get((g.split()[0], form)) or []
         widened = {cg for cg, _e in cands if cg.startswith(g + " ")}
+        if not widened:
+            # Both sides name a salt, but not the SAME word: the formulary says
+            # «BETAHISTINE DIHYDROCHLORIDE» where NFI says «betahistine
+            # hydrochloride». A prefix test cannot see that; comparing what is
+            # left once the salt words go can. Still gated on exactly one
+            # catalog ingredient reducing to the row's base, so «INSULIN» cannot
+            # reach insulin glargine (glargine is not a salt word) and
+            # metoprolol succinate cannot reach metoprolol tartrate (two
+            # candidates reduce to «metoprolol», so neither is chosen).
+            gb = salt_base(g)
+            widened = {cg for cg, _e in cands if salt_base(cg) == gb}
         if len(widened) == 1:
             for cg, (rec, cat_doses, comps, cat_vols) in cands:
                 if cg not in widened or len(comps) != 1:

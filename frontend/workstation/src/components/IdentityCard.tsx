@@ -13,6 +13,7 @@
  */
 import { useState } from 'react'
 import { formatJalali } from '../lib/jalali'
+import { useLang } from '../lib/i18n'
 
 export interface IdentityCandidate {
   patient_id: string
@@ -59,13 +60,14 @@ interface Props {
 
 const GENDER_LABEL: Record<string, string> = { M: '♂', F: '♀', U: '?', O: '⚧' }
 const ORG_LABEL: Record<string, string> = {
-  salamat: 'بیمه سلامت',
+  salamat: 'بیمه سلامت',          // insurer brands stay in their own name
   tamin: 'تأمین اجتماعی',
   armed_forces: 'بیمه نیروهای مسلح',
   supplementary: 'بیمه تکمیلی',
 }
 
 export default function IdentityCard({ resolution, onSelect, onDismiss }: Props) {
+  const { t } = useLang()
   const [selected, setSelected] = useState<string | null>(
     resolution.auto_loaded && resolution.candidates.length === 1
       ? resolution.candidates[0].patient_id
@@ -94,7 +96,7 @@ export default function IdentityCard({ resolution, onSelect, onDismiss }: Props)
           <span className="text-2xl">{is_returning_customer ? '👋' : '👤'}</span>
           <div className="flex-1">
             <div className="font-bold text-sm">
-              {is_returning_customer ? 'بازگشت مجدد — Returning Customer' : 'شناسایی بیمار — Patient Identified'}
+              {is_returning_customer ? t('Returning customer', 'بازگشت مجدد') : t('Patient identified', 'شناسایی بیمار')}
             </div>
             <div className="text-xs text-white/75 truncate">{message}</div>
           </div>
@@ -146,7 +148,7 @@ export default function IdentityCard({ resolution, onSelect, onDismiss }: Props)
                       </span>
                       {c.is_self && (
                         <span className="text-[9px] bg-green-100 text-green-700 border border-green-300 rounded px-1.5 py-0.5 font-semibold">
-                          خود بیمار · Self
+                          {t('Self', 'خود بیمار')}
                         </span>
                       )}
                       {!c.is_self && c.relationship_hint && (
@@ -156,7 +158,7 @@ export default function IdentityCard({ resolution, onSelect, onDismiss }: Props)
                       )}
                       {c.active_rx_count > 0 && (
                         <span className="text-[9px] bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">
-                          {c.active_rx_count} active Rx
+                          {t(`${c.active_rx_count} active Rx`, `${c.active_rx_count} نسخهٔ فعال`)}
                         </span>
                       )}
                     </div>
@@ -164,12 +166,12 @@ export default function IdentityCard({ resolution, onSelect, onDismiss }: Props)
                     <div className="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-2">
                       {(c.dob_jalali || c.dob) && (
                         <span>
-                          ت.ت: {c.dob_jalali || formatJalali(c.dob, { short: true, persianDigits: false })}
+                          {t('DOB', 'ت.ت')}: {c.dob_jalali || formatJalali(c.dob, { short: true, persianDigits: false })}
                         </span>
                       )}
                       {c.national_id && (
                         <span className="font-mono">
-                          کد: {c.national_id.slice(0, 3)}****{c.national_id.slice(-2)}
+                          {t('ID', 'کد')}: {c.national_id.slice(0, 3)}****{c.national_id.slice(-2)}
                         </span>
                       )}
                     </div>

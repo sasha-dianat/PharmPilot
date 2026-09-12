@@ -14,6 +14,7 @@ import { formatJalali, ageFromDob, dateDisplay } from '../lib/jalali'
 import DictateNote from './DictateNote'
 import { useRxQueueStore } from '../stores/rxQueue'
 import { PrescriberProfileCard, PrescriberDeviationFlag } from './PrescriberIntelligence'
+import { useT } from '../lib/i18n'
 
 interface Props {
   patientId: string
@@ -58,6 +59,7 @@ function getEGFRFlag(value: string): string | null {
 }
 
 export default function PatientPanel({ patientId }: Props) {
+  const t = useT()
   const [activeTab, setActiveTab] = useState<'overview' | 'meds' | 'labs' | 'fills'>('overview')
   const [prescriberOpen, setPrescriberOpen] = useState(false)
   // The Rx currently being worked drives prescriber context (profile + this-Rx
@@ -162,11 +164,11 @@ export default function PatientPanel({ patientId }: Props) {
               {patient.last_name?.toUpperCase()}, {patient.first_name}
             </div>
             <div className="text-xs text-ink3 mt-0.5">
-              ت.ت: {dobJalali}{patient.date_of_birth && ` (${patient.date_of_birth})`} · {age !== null ? `${age}y` : ''} · {patient.gender}
+              {t('DOB', 'ت.ت')}: {dobJalali}{patient.date_of_birth && ` (${patient.date_of_birth})`} · {age !== null ? `${age}y` : ''} · {patient.gender}
             </div>
             {patient.national_id && (
               <div className="cd-data text-[10px] text-intel mt-0.5">
-                کد ملی: ●●●●●●{patient.national_id.slice(-4)}
+                {t('National ID', 'کد ملی')}: ●●●●●●{patient.national_id.slice(-4)}
               </div>
             )}
             {patient.phone_primary && (

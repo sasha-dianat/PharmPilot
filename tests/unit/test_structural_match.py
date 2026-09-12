@@ -113,22 +113,220 @@ def test_link_rows_uses_structural_and_code_join_stays_review_first():
 
 
 def test_salt_tolerant_lane_resolves_base_name_but_refuses_ambiguity():
-    """NFI keeps the salt in the generic ("amlodipine besilate" — normalize()
-    strips maleate/hydrochloride but not besilate) while a formulary prints the
-    base. Widening is allowed only when exactly ONE NFI ingredient extends the
-    row's name."""
+    """NFI keeps the salt in the generic while a formulary prints the base.
+    Widening is allowed only when exactly ONE NFI ingredient extends the row's
+    name — «INSULIN» must never silently become one particular insulin.
+
+    The lane is exercised here with «dipropionate», which normalize() does NOT
+    strip and must not: «propionate» and «furoate» pick out different fluticasone
+    products. `besilate` used to serve this role and no longer does — it was
+    added to the salt vocabulary, so amlodipine now resolves in the exact lane
+    (see the test below), which is the better answer.
+    """
     cat = [
-        _rec("AML", "amlodipine besilate", "5 mg", "TABLET"),
+        _rec("BEC", "beclomethasone dipropionate", "250 ug", "AEROSOL, METERED"),
         _rec("GLA", "insulin glargine", "100 iu/1mL", "INJECTION"),
         _rec("ASP", "insulin aspart", "100 iu/1mL", "INJECTION"),
     ]
     idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
-    rec, conf, why = sm.match(sm.parse_name("AMLODIPINE 5 mg TABLET ORAL", vocab), idx)
-    assert rec is not None and rec.irc == "AML"
+    rec, conf, why = sm.match(
+        sm.parse_name("BECLOMETHASONE 250 ug AEROSOL, METERED RESPIRATORY", vocab), idx)
+    assert rec is not None and rec.irc == "BEC"
     assert conf == sm.CONF_SALT < sm.CONF_EXACT_DOSE and "salt-tolerant" in why
     # ambiguous: two insulins extend "INSULIN" → refuse rather than pick one
     rec2, conf2, _ = sm.match(sm.parse_name("INSULIN 100 iu/1mL INJECTION PARENTERAL", vocab), idx)
     assert rec2 is None and conf2 == 0.0
+
+
+def test_a_stripped_salt_resolves_in_the_exact_lane_not_the_tolerant_one():
+    """«amlodipine besilate» IS amlodipine, so once besilate joined the salt
+    vocabulary the row lands at full confidence rather than the widened 0.76."""
+    cat = [_rec("AML", "amlodipine besilate", "5 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("AMLODIPINE 5 mg TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "AML" and conf == sm.CONF_EXACT_DOSE
+
+
+def test_radioactivity_is_a_dose_in_its_own_namespace():
+    """A radiopharmaceutical is labelled by its activity at calibration —
+    «FLUDEOXYGLUCOSE F-18 10 mCi» is that product's strength in the sense mg is
+    a tablet's. dose_set knew mass, percent and IU but not activity, so it
+    returned an empty set for every one of them; `backfill_strength` validates
+    its extraction through dose_set and therefore DISCARDED 58 activities it had
+    already read correctly out of NFI's own composition field.
+    """
+    assert sm.dose_set("10 mCi") == {("act", 10.0)}
+    assert sm.dose_set("1 Ci") == {("act", 1000.0)}
+    assert sm.dose_set("1 uCi") == {("act", 0.001)}
+    # SI and conventional units compare equal: 1 GBq = 27.027 mCi
+    assert sm.doses_agree(sm.dose_set("1 GBq"), sm.dose_set("27.027 mCi"))
+    # and activity is none of the other namespaces
+    for other in ("10 mg", "10 [iU]", "10 %"):
+        assert not sm.doses_agree(sm.dose_set("10 mCi"), sm.dose_set(other))
+    assert not sm.doses_agree(sm.dose_set("5 mCi"), sm.dose_set("10 mCi"))
+
+
+def test_different_salts_of_one_molecule_are_different_products():
+    """Diclofenac potassium is Cataflam — rapid onset, acute pain and migraine.
+    Diclofenac sodium is Voltaren — enteric-coated and sustained-release, for
+    chronic inflammatory disease. In the Iranian catalog they are 24 products at
+    23,000–39,000 rial and 222 at 3,300–1,350,000. They are not interchangeable
+    and must never match each other's formulary row.
+
+    normalize() folds both to «diclofenac», because it exists for the interaction
+    engine and answers with the drug CLASS. That is right for a DUR lookup and
+    wrong for identity, so the matcher keeps the salt whenever the catalog sells
+    more than one of them.
+    """
+    cat = [
+        _rec("DNA", "diclofenac sodium", "100 mg", "TABLET, DELAYED RELEASE"),
+        _rec("DK", "diclofenac potassium", "50 mg", "TABLET"),
+        _rec("MS", "metoprolol succinate", "47.5 mg", "TABLET, EXTENDED RELEASE"),
+        _rec("MT", "metoprolol tartrate", "50 mg", "TABLET"),
+    ]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+
+    assert "diclofenac" in sm.identity_bearing_bases(cat)
+    assert hit("DICLOFENAC POTASSIUM TABLET ORAL 50 mg") == "DK"
+    assert hit("DICLOFENAC SODIUM TABLET, DELAYED RELEASE ORAL 100 mg") == "DNA"
+    assert hit("METOPROLOL SUCCINATE TABLET, EXTENDED RELEASE ORAL 47.5 mg") == "MS"
+    assert hit("METOPROLOL TARTRATE TABLET ORAL 50 mg") == "MT"
+
+
+def test_a_row_naming_no_salt_reaches_none_of_them():
+    """The salt-tolerant lane applies at 0.76, ABOVE the 0.75 line. A bare
+    «DICLOFENAC 50 mg TABLET» would otherwise resolve to the potassium salt just
+    because it is the only PLAIN tablet, silently choosing between a 23,000 and a
+    1,350,000 rial product. Withhold it for review instead."""
+    cat = [_rec("DNA", "diclofenac sodium", "50 mg", "TABLET"),
+           _rec("DK", "diclofenac potassium", "50 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("DICLOFENAC TABLET ORAL 50 mg", vocab), idx)
+    assert rec is None and conf == 0.0
+
+
+def test_a_row_naming_no_dose_will_not_be_handed_one():
+    """«IBUPROFEN INJECTION» with no strength resolved to the 100 mg/mL adult
+    product at 0.80 — ABOVE the 0.75 line — while the catalog also holds PEDEA at
+    5 mg/mL, the preterm-neonate dose for closing a ductus arteriosus. A
+    twenty-fold difference settled by index iteration order. Where the strengths
+    differ the row is genuinely ambiguous and belongs to a human.
+    """
+    cat = [_rec("ADULT", "ibuprofen", "100 mg/1mL", "INJECTION"),
+           _rec("PEDEA", "ibuprofen", "5 mg/1mL", "INJECTION")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("IBUPROFEN INJECTION INTRAVENOUS", vocab), idx)
+    assert rec is None and conf == 0.0
+
+    # naming the strength resolves it precisely, both ways
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+    assert hit("IBUPROFEN INJECTION INTRAVENOUS 5 mg/1mL") == "PEDEA"
+    assert hit("IBUPROFEN INJECTION PARENTERAL 100 mg/1mL") == "ADULT"
+
+
+def test_one_strength_still_matches_without_a_dose():
+    """The refusal is about AMBIGUITY, not about missing doses: when the catalog
+    holds a single strength for that form there is nothing to choose between."""
+    cat = [_rec("ONLY", "acetazolamide", "250 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(sm.parse_name("ACETAZOLAMIDE TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "ONLY" and conf == sm.CONF_EXACT_NO_DOSE
+
+
+def test_a_single_variant_can_still_be_identity_bearing_by_judgement():
+    """«ibuprofen lysine» is the intravenous neonatal product for closing a
+    patent ductus arteriosus. It shares a molecule with the oral analgesic and
+    nothing else — different route, indication, patient and price — but the
+    catalog lists only ONE variant, so the count rule cannot see it. Owner's
+    ruling, recorded in _IDENTITY_BEARING_MODIFIERS.
+    """
+    cat = [_rec("IBU", "ibuprofen", "400 mg", "TABLET"),
+           _rec("LYS", "ibuprofen lysine", "10 mg/1mL", "INJECTION")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    assert "ibuprofen" in sm.identity_bearing_bases(cat)
+    hit = lambda n: (lambda r: r[0].irc if r[0] else None)(
+        sm.match(sm.parse_name(n, vocab), idx))
+    assert hit("IBUPROFEN TABLET ORAL 400 mg") == "IBU"
+    assert hit("IBUPROFEN LYSINE INJECTION INTRAVENOUS 10 mg/1mL") == "LYS"
+
+
+def test_a_hydration_state_is_not_a_second_salt():
+    """«azithromycin anhydrous» and «azithromycin dihydrate» are one substance
+    dried two ways — folding them is correct and must keep working."""
+    cat = [_rec("A1", "azithromycin anhydrous", "500 mg", "TABLET"),
+           _rec("A2", "azithromycin dihydrate", "250 mg", "TABLET")]
+    assert "azithromycin" not in sm.identity_bearing_bases(cat)
+
+
+def test_a_single_salt_base_still_folds():
+    """Only one losartan salt is marketed, so «LOSARTAN» must still reach it."""
+    cat = [_rec("L", "losartan potassium", "50 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, _c, _w = sm.match(sm.parse_name("LOSARTAN TABLET ORAL 50 mg", vocab), idx)
+    assert rec is not None and rec.irc == "L"
+
+
+def test_a_mineral_counter_ion_is_never_folded_away():
+    """A mineral counter-ion stays in the name, whichever position it holds.
+
+    Adding sodium/potassium/calcium/magnesium to the salt vocabulary on
+    2026-08-04 made «losartan potassium» reach a row naming the base — and made
+    diclofenac sodium indistinguishable from diclofenac potassium, which are two
+    products at 3,300–1,350,000 and 23,000–39,000 rial. It was reverted the same
+    day. Where a base really has one marketed salt, the salt-tolerant lane
+    resolves it by consulting the CATALOG, which a fixed word list cannot do.
+    """
+    for whole in ("losartan potassium", "pantoprazole sodium",
+                  "calcium carbonate", "calcium citrate", "sodium chloride",
+                  "sodium valproate", "potassium chloride", "magnesium oxide",
+                  "sodium polystyrene sulfonate", "zinc sulfate"):
+        assert sm.normalize(whole) == whole
+
+
+def test_the_insurer_spelling_reaches_the_nfi_name():
+    """salamat drops the «o» from hydrochlorothiazide and writes REFAMPICIN.
+    Both targets exist as NFI generics and neither source does, which is the
+    synonym file's own admission rule."""
+    from services.core.drug_catalog.schema import canonical_ingredient
+    assert canonical_ingredient("hydrochlorthiazide") == "hydrochlorothiazide"
+    assert canonical_ingredient("refampicin") == "rifampin"
+
+
+def test_two_spellings_of_one_salt_meet():
+    """NFI writes «betahistine hydrochloride», the insurer «BETAHISTINE
+    DIHYDROCHLORIDE». One stripped and the other did not, so the two spellings
+    of a single substance could never meet and all 30 betahistine tablets were
+    unreachable from the insurer list."""
+    cat = [_rec("BET", "betahistine hydrochloride", "8 mg", "TABLET")]
+    idx, vocab = sm.build_index(cat), sm.build_form_vocab(cat)
+    rec, conf, _why = sm.match(
+        sm.parse_name("BETAHISTINE DIHYDROCHLORIDE 8 mg TABLET ORAL", vocab), idx)
+    assert rec is not None and rec.irc == "BET" and conf == sm.CONF_EXACT_DOSE
+
+
+def test_an_inhaler_reaches_its_own_form_family():
+    """NFI spells a respiratory inhaler three ways — AEROSOL METERED, INHALANT,
+    POWDER METERED — and splitting on the comma put them in three families, so a
+    row saying INHALANT could not reach a pMDI. Nasal SPRAY stays out: fluticasone
+    nasal is not fluticasone inhaled."""
+    assert sm.form_family("INHALANT") == sm.form_family("AEROSOL, METERED")
+    assert sm.form_family("POWDER, METERED") == sm.form_family("INHALANT")
+    assert sm.form_family("SPRAY, METERED") != sm.form_family("INHALANT")
+    assert sm.form_family("POWDER, FOR SOLUTION") != sm.form_family("POWDER, METERED")
+
+
+def test_one_substance_under_two_names_is_not_a_combination():
+    """generic_name and generic_full routinely spell one substance two ways.
+    Counting both made a mono product look like a two-ingredient combination,
+    and the ingredient-set guard then rejected its own formulary row."""
+    import dataclasses
+    r = dataclasses.replace(
+        _rec("BET", "betahistine hydrochloride", "8 mg", "TABLET"),
+        monograph={"generic_full": "BETAHISTINE DIHYDROCHLORIDE TABLET ORAL 8 mg"})
+    assert len(sm.record_components(r, {"betahistine"})) == 1
 
 
 def test_inn_synonyms_bridge_to_the_usan_name_nfi_uses():

@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useRxQueueStore, type Prescription, type RxStatus } from '../stores/rxQueue'
 import { rxApi } from '../lib/api'
 import ReceptionQuotePanel from './ReceptionQuotePanel'
+import { useLang } from '../lib/i18n'
 
 const STATUS_CONFIG: Record<RxStatus, { label: string; tone: string; lane: string; priority: number }> = {
   intake:                    { label: 'Intake',        tone: 'bg-surface2 text-ink2 border-line2',          lane: 'bg-line2',    priority: 5 },
@@ -37,6 +38,7 @@ function rxToken(rxNumber: string | undefined): string {
 
 
 export default function RxQueue() {
+  const { t } = useLang()
   const { queue, selectedRxId, selectRx, setSelectedRx } = useRxQueueStore()
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -85,7 +87,7 @@ export default function RxQueue() {
   // ONE basket per patient (not one card per drug), most-urgent patient first.
   const baskets = new Map<string, { name: string; rxs: Prescription[] }>()
   for (const rx of activeRxs) {
-    const name = (rx as any).patient_name || 'بیمار'
+    const name = (rx as any).patient_name || t('Patient', 'بیمار')
     const b = baskets.get(rx.patient_id) ?? { name, rxs: [] as Prescription[] }
     b.rxs.push(rx)
     baskets.set(rx.patient_id, b)
@@ -109,12 +111,14 @@ export default function RxQueue() {
     <div ref={containerRef} className="cd-scope h-full overflow-y-auto focus:outline-none" tabIndex={-1}>
       <div className="p-3 space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="cd-ui font-semibold text-ink">Rx queue</h2>
-          <span className="cd-data text-xs text-ink3">{baskets.size} بیمار · {activeRxs.length} اقلام</span>
+          <h2 className="cd-ui font-semibold text-ink">{t('Rx queue', 'صف نسخه‌ها')}</h2>
+          <span className="cd-data text-xs text-ink3">
+            {t(`${baskets.size} patients · ${activeRxs.length} items`,
+               `${baskets.size} بیمار · ${activeRxs.length} اقلام`)}</span>
         </div>
 
         {activeRxs.length === 0 ? (
-          <div className="text-center py-8 text-ink3 text-sm">Queue is empty</div>
+          <div className="text-center py-8 text-ink3 text-sm">{t('Queue is empty', 'صف خالی است')}</div>
         ) : (
           orderedBaskets.map(([pid, basket]) => {
             const lane = (STATUS_CONFIG[basket.rxs[0].status] || STATUS_CONFIG.intake).lane
@@ -126,14 +130,14 @@ export default function RxQueue() {
                   className="flex items-center gap-2 px-3 py-2 border-b border-line bg-surface2/60 cursor-pointer hover:bg-surface2">
                   <span className={`w-1.5 h-1.5 rounded-full ${lane}`} />
                   <span className="cd-ui text-[13px] font-semibold text-ink truncate">{basket.name}</span>
-                  <span className="cd-data text-[10px] text-ink3">{basket.rxs.length} قلم</span>
+                  <span className="cd-data text-[10px] text-ink3">{t(`${basket.rxs.length} items`, `${basket.rxs.length} قلم`)}</span>
                   {alerts > 0 && (
                     <span className="cd-data text-[10px] bg-caution-soft text-caution px-1.5 rounded">⚠ {alerts}</span>
                   )}
                   <button
                     onClick={(e) => { e.stopPropagation(); openQuote(basket.name, basket.rxs) }}
-                    className="cd-ui ml-auto text-[11px] px-2 py-1 rounded-lg bg-intel-soft text-intel border border-intel/30 hover:brightness-105">
-                    💳 استعلام قیمت
+                    className="cd-ui ms-auto text-[11px] px-2 py-1 rounded-lg bg-intel-soft text-intel border border-intel/30 hover:brightness-105">
+                    💳 {t('Price quote', 'استعلام قیمت')}
                   </button>
                 </div>
                 {/* medications in the basket */}

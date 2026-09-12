@@ -63,7 +63,6 @@ async def search_drugs(
             "dea_schedule": d.dea_schedule,
             "is_controlled": d.is_controlled,
             "requires_refrigeration": d.requires_refrigeration,
-            "awp_unit_price": float(d.awp_unit_price) if d.awp_unit_price else None,
         }
         for d in drugs
     ]
@@ -95,8 +94,6 @@ async def get_drug(
         "is_controlled": drug.is_controlled,
         "is_hazardous": drug.is_hazardous,
         "requires_refrigeration": drug.requires_refrigeration,
-        "awp_unit_price": float(drug.awp_unit_price) if drug.awp_unit_price else None,
-        "wac_price": float(drug.wac_price) if drug.wac_price else None,
     }
 
 
@@ -122,6 +119,21 @@ async def get_stock_levels(
             StockLevel.par_level_min.isnot(None),
             StockLevel.quantity_on_hand < StockLevel.par_level_min,
         )
+
+    if expiring_days is not None:
+        # The parameter was accepted and silently ignored, so a caller asking
+        # for "items expiring within 30 days" got the whole stock list back and
+        # had no way to tell. Restrict to NDCs holding a lot that expires in the
+        # window.
+        from datetime import timedelta
+        cutoff = date.today() + timedelta(days=expiring_days)
+        stmt = stmt.where(StockLevel.ndc11.in_(
+            select(InventoryLot.ndc11).where(
+                InventoryLot.pharmacy_id == staff.pharmacy_id,
+                InventoryLot.expiry_date <= cutoff,
+                InventoryLot.quantity_on_hand > 0,
+            )
+        ))
 
     stmt = stmt.order_by(StockLevel.quantity_on_hand.desc()).limit(limit)
     rows = (await db.execute(stmt)).all()
@@ -244,6 +256,12 @@ class PurchaseOrderCreate(BaseModel):
     wholesaler: str
     lines: list[dict]  # [{ndc11, quantity_ordered, unit_cost}]
     notes: Optional[str] = None
+    # What the wholesaler promised. The column has always existed and nothing
+    # has ever written it, so "late" could only ever mean "slower than this
+    # supplier's own habit" — never "later than they said". A supplier is held
+    # to its promise, not to its average, and the service-level ask in the
+    # negotiation brief has no teeth without one.
+    expected_delivery: Optional[date] = None
 
 
 @router.post("/orders", status_code=201)
@@ -262,6 +280,7 @@ async def create_purchase_order(
         po_number=po_number,
         status="draft",
         notes=body.notes,
+        expected_delivery=body.expected_delivery,
         created_by=staff.id,
     )
     db.add(po)
@@ -277,7 +296,10 @@ async def create_purchase_order(
         if not drug:
             raise HTTPException(404, f"Drug NDC {ndc} not in catalog")
 
-        unit_cost = line_data.get("unit_cost") or (float(drug.wac_price) if drug.wac_price else 0.0)
+        # No invented fallback. `wac_price` used to stand in here, which turned
+        # a missing cost into a US dollar figure read as rial. A purchase line
+        # without a cost has no cost, and the total must not pretend otherwise.
+        unit_cost = float(line_data.get("unit_cost") or 0.0)
         qty = float(line_data["quantity_ordered"])
         total += qty * unit_cost
 
@@ -295,15 +317,27 @@ async def create_purchase_order(
     return {"po_number": po_number, "po_id": str(po.id), "total_cost": total, "status": "draft"}
 
 
+class PurchaseOrderSubmit(BaseModel):
+    """What the wholesaler promised when the order was placed."""
+    expected_delivery: Optional[date] = None
+
+
 @router.post("/orders/{po_id}/submit")
 async def submit_purchase_order(
     po_id: UUID,
+    body: Optional[PurchaseOrderSubmit] = None,
     staff: Staff = Depends(require_permission("inventory:order")),
     db: AsyncSession = Depends(get_db),
 ):
     """Submit a draft PO to the wholesaler (EDI 850)."""
     from datetime import datetime, timezone
-    result = await db.execute(select(PurchaseOrder).where(PurchaseOrder.id == po_id))
+    # Tenant filter is part of the lookup, not a later check: without it, staff
+    # at one pharmacy could submit another pharmacy's draft order to a
+    # wholesaler, and the 404 below would never fire.
+    result = await db.execute(select(PurchaseOrder).where(
+        PurchaseOrder.id == po_id,
+        PurchaseOrder.pharmacy_id == staff.pharmacy_id,
+    ))
     po = result.scalar_one_or_none()
     if not po:
         raise HTTPException(404, "Purchase order not found")
@@ -312,10 +346,108 @@ async def submit_purchase_order(
 
     po.status = "submitted"
     po.ordered_at = datetime.now(timezone.utc)
+    if body is not None and body.expected_delivery is not None:
+        # A date agreed at submission time supersedes the one on the draft:
+        # the promise that counts is the one made when the order was placed.
+        po.expected_delivery = body.expected_delivery
     # In production: send EDI 850 to wholesaler
     logger.info("PO %s submitted to %s", po.po_number, po.wholesaler)
-    return {"status": "submitted", "po_number": po.po_number}
+    return {"status": "submitted", "po_number": po.po_number,
+            "expected_delivery": (po.expected_delivery.isoformat()
+                                  if po.expected_delivery else None)}
 
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+# ── Shelf price: an owner act, with its history kept ─────────────────────────
+
+class ShelfPriceIn(BaseModel):
+    sell_price: float
+    reason: str | None = None
+    # False (default): the price competes with the batches and the highest wins.
+    # True: it IS the price and the batches are not consulted — the escape hatch
+    # for a final price that came out wrong.
+    mandate: bool = False
+
+
+@router.get("/products/{product_id}/price")
+async def get_shelf_price(
+    product_id: UUID,
+    staff: Staff = Depends(require_permission("inventory:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Current shelf price and every price this product has been set at.
+
+    The history is the point. A price that changed with no record of what it was
+    before is the one number nobody can explain afterwards — to a patient who
+    remembers paying less, or to an auditor.
+    """
+    from sqlalchemy import select as _select
+    from services.core.inventory.shelf_price import shelf_price_for_product
+    from shared.models.price_history import PriceHistory
+
+    product = (await db.execute(
+        select(DrugProduct).where(DrugProduct.id == product_id))).scalar_one_or_none()
+    if not product:
+        raise HTTPException(404, "فرآورده یافت نشد")
+    current = await shelf_price_for_product(db, product_id)
+
+    # The batch prices, offered so the owner can PICK one instead of retyping a
+    # figure from memory — the common repair is "use what the previous batch
+    # sold for", and a list beats recalling it.
+    from services.core.inventory.shelf_price import _sellable
+    lots = (await db.execute(_select(InventoryLot).where(
+        InventoryLot.drug_product_id == product_id))).scalars().all()
+    batches = sorted(
+        ({"lot_number": l.lot_number,
+          "sell_price": int(l.sell_price),
+          "unit_cost": float(l.unit_cost) if l.unit_cost else None,
+          "margin_pct": float(l.margin_pct) if l.margin_pct else None,
+          "sellable": float(_sellable(l)),
+          "expiry": l.expiry_date}
+         for l in lots if l.sell_price),
+        key=lambda b: -b["sell_price"])
+
+    ircs = [i for (i,) in (await db.execute(_select(InventoryLot.irc).where(
+        InventoryLot.drug_product_id == product_id,
+        InventoryLot.irc.isnot(None)).distinct())).all()]
+    history = []
+    if ircs:
+        rows = (await db.execute(_select(PriceHistory).where(
+            PriceHistory.irc.in_(ircs), PriceHistory.price_type == "shelf")
+            .order_by(PriceHistory.valid_from.desc()).limit(100))).scalars().all()
+        history = [{"value": r.value, "valid_from": r.valid_from,
+                    "valid_to": r.valid_to, "source": r.source} for r in rows]
+    return {"product_id": str(product_id),
+            "name": product.brand_name or product.generic_name,
+            "shelf_price": int(current) if current is not None else None,
+            "manual_price": (int(product.manual_shelf_price)
+                             if product.manual_shelf_price else None),
+            "mandate": bool(product.manual_price_is_mandate),
+            "batches": batches,
+            "history": history}
+
+
+@router.post("/products/{product_id}/price")
+async def set_price(
+    product_id: UUID,
+    body: ShelfPriceIn,
+    staff: Staff = Depends(require_permission("inventory:price")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reprice a product. Owner-only, and the previous price is kept.
+
+    `inventory:price` is deliberately NOT held by INVENTORY_STAFF. They receive
+    goods and record what those cost; what the customer is charged is a
+    commercial decision, and the same separation that stops a requester
+    approving their own write-off stops a receiver repricing the shelf.
+    """
+    from services.core.inventory.shelf_price import set_shelf_price
+    try:
+        return await set_shelf_price(db, product_id, body.sell_price,
+                                     reason=body.reason, staff_id=staff.id,
+                                     mandate=body.mandate)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

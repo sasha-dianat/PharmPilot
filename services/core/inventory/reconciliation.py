@@ -1,0 +1,582 @@
+"""Inventory reconciliation — the checks that decide whether the books can be
+trusted, and a severity model that says which failures may not be shipped.
+
+Pure functions over already-fetched rows. The SQL that feeds them lives in
+`services.platform.routers.inventory_integrity`; keeping the predicates here
+means every rule is unit-testable against a hand-built counterexample instead of
+a live database.
+
+Design rule: a check never repairs. It states what is wrong, how much, and which
+rows to look at. Repair is an approved, recorded movement — never a side effect
+of running a report. That separation is what makes the report safe to run in
+production on a schedule.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+
+from .ledger import q
+
+# Severity drives behaviour, not just colour:
+#   critical — the ledger is provably wrong or stock is unaccounted for.
+#              Blocks a clean bill of health; requires a human ruling.
+#   high     — a real defect with financial or safety consequence.
+#   medium   — a data-quality problem that will become one of the above.
+#   info     — context; never blocks.
+SEVERITIES = ("critical", "high", "medium", "info")
+
+
+@dataclass
+class Finding:
+    check: str
+    severity: str
+    count: int
+    title_fa: str
+    detail: str
+    samples: list[dict] = field(default_factory=list)
+    remediation: str = ""
+
+    def as_dict(self) -> dict:
+        return {"check": self.check, "severity": self.severity, "count": self.count,
+                "title_fa": self.title_fa, "detail": self.detail,
+                "samples": self.samples[:10], "remediation": self.remediation}
+
+
+def _f(row: dict, *names, default=0) -> Decimal:
+    for n in names:
+        if row.get(n) is not None:
+            return q(row[n])
+    return q(default)
+
+
+# ── C1. Aggregate vs lots ─────────────────────────────────────────────────
+def check_aggregate_drift(rows: list[dict], tolerance: Decimal = Decimal("0.001")) -> Finding:
+    """`stock_levels.quantity_on_hand` must equal the sum of its lots.
+
+    The aggregate is a denormalisation for fast lookup. When it drifts, every
+    reorder decision and stockout probability is computed from a number that no
+    lot supports — and the drift is invisible in the UI, which reads the
+    aggregate.
+    """
+    bad = []
+    for r in rows:
+        agg, lots = _f(r, "aggregate"), _f(r, "lot_sum")
+        if abs(agg - lots) > tolerance:
+            bad.append({"irc": r.get("irc"), "ndc11": r.get("ndc11"),
+                        "aggregate": float(agg), "lot_sum": float(lots),
+                        "drift": float(q(agg - lots))})
+    return Finding(
+        "aggregate_drift", "critical", len(bad),
+        "ناهماهنگی موجودی کل با مجموع بچ‌ها",
+        "stock_levels.quantity_on_hand does not equal the sum of that item's lots.",
+        sorted(bad, key=lambda x: -abs(x["drift"])),
+        "Run a cycle count for the affected items, then post the variance as an "
+        "approved COUNT_GAIN/COUNT_LOSS movement. Never edit the aggregate directly.",
+    )
+
+
+# ── C2. Negative stock ────────────────────────────────────────────────────
+def check_negative_stock(rows: list[dict]) -> Finding:
+    """Physical quantities cannot be negative. One appearing means a decrement
+    was applied without a matching receipt, or a clamp was removed and exposed
+    an older error."""
+    bad = [{"irc": r.get("irc"), "ndc11": r.get("ndc11"), "lot_id": r.get("lot_id"),
+            "lot_number": r.get("lot_number"), "quantity": float(_f(r, "quantity_on_hand"))}
+           for r in rows if _f(r, "quantity_on_hand") < 0]
+    return Finding(
+        "negative_stock", "critical", len(bad),
+        "موجودی منفی",
+        "A lot or aggregate holds a negative quantity — physically impossible.",
+        bad,
+        "Freeze the item, count it, and post the variance. Investigate the "
+        "movement history for the missing receipt.",
+    )
+
+
+# ── C3. Dispensed but never decremented ───────────────────────────────────
+def check_fills_without_movements(fills: list[dict], movements_by_fill: set) -> Finding:
+    """Every dispensed fill must have consumed stock.
+
+    This is the defect ROADMAP line 34 records: `prescription_fills` grew while
+    `inventory_movements` did not. Each orphan fill is stock that left the
+    building without leaving the ledger.
+    """
+    bad = [{"fill_id": f.get("id"), "ndc11": f.get("ndc_dispensed"), "irc": f.get("irc"),
+            "quantity": float(_f(f, "quantity_dispensed")),
+            "filled_at": f.get("filled_at"), "lot_number": f.get("lot_number")}
+           for f in fills if f.get("id") not in movements_by_fill]
+    return Finding(
+        "fill_without_movement", "critical", len(bad),
+        "تحویل بدون کسر از موجودی",
+        "A prescription fill has no corresponding inventory issue movement, so the "
+        "units left the pharmacy without being deducted.",
+        bad,
+        "Backfill one DISPENSE movement per orphan fill against the lot recorded "
+        "on the fill (or the FEFO lot when none was recorded), as an approved "
+        "reconciliation batch, then enable the dispense hook.",
+    )
+
+
+# ── C4. Fills with no lot traceability ────────────────────────────────────
+def check_untraceable_fills(fills: list[dict]) -> Finding:
+    """A fill that names no lot cannot be recalled.
+
+    When a manufacturer recalls lot X, the question is "which patients received
+    it?". `PrescriptionFill.lot_number` is free text with no foreign key, so the
+    answer today is a string comparison at best and nothing at all when blank.
+    """
+    bad = [{"fill_id": f.get("id"), "ndc11": f.get("ndc_dispensed"),
+            "filled_at": f.get("filled_at")}
+           for f in fills if not (f.get("inventory_lot_id") or f.get("lot_number"))]
+    return Finding(
+        "untraceable_fill", "high", len(bad),
+        "تحویل بدون ردیابی بچ",
+        "Fill records no lot, so a recall cannot identify the patients who "
+        "received the affected batch.",
+        bad,
+        "Make lot selection mandatory at dispense; the ledger's FEFO pick "
+        "supplies it automatically.",
+    )
+
+
+# ── C4b. Dispenses the shelf could not cover ──────────────────────────────
+def check_dispense_shortfall(rows: list[dict]) -> Finding:
+    """A dispense that took less stock than the prescription handed over.
+
+    The hook never refuses a dispense — the medicine is already with the patient
+    — so when the books cannot cover it the gap is written down here instead.
+    Each row means one of three things, all worth knowing: stock arrived without
+    being received, stock left without being recorded, or a count is wrong.
+    """
+    bad = []
+    for r in rows:
+        want, got = _f(r, "quantity_dispensed"), _f(r, "allocated")
+        if want > got:
+            bad.append({"fill_id": r.get("fill_id"), "ndc11": r.get("ndc11"),
+                        "irc": r.get("irc"), "dispensed": float(want),
+                        "taken_from_stock": float(got),
+                        "shortfall": float(q(want - got)),
+                        "filled_at": r.get("filled_at")})
+    return Finding(
+        "dispense_shortfall", "high", len(bad),
+        "کسری موجودی هنگام تحویل",
+        "Stock records could not cover a dispense that physically happened, so "
+        "fewer units were deducted than were handed to the patient.",
+        sorted(bad, key=lambda x: -x["shortfall"]),
+        "Count the affected items. The shortfall is the size of the disagreement "
+        "between the books and the shelf, not a reason to edit either.",
+    )
+
+
+# ── C5. Formulary binding ─────────────────────────────────────────────────
+def check_formulary_binding(rows: list[dict],
+                            ambiguous: dict[str, int] | None = None) -> Finding:
+    """Stock must point at a row of the real formulary.
+
+    Inventory keys on `ndc11` (a US National Drug Code); the authoritative
+    Iranian catalogue is `drug_catalog.irc`. Unbound stock cannot be priced,
+    adjudicated against insurer coverage, or matched to a prescription written
+    from the formulary.
+
+    `ambiguous` separates the two reasons a row is unbound, because they need
+    different people. A row nobody has resolved yet is work. A row where
+    generic+strength+form matches several IRCs is not: an IRC is a per-brand,
+    per-manufacturer registration, so a molecule and a strength genuinely cannot
+    pick one, and no amount of matching effort will change that. Those need a
+    GTIN at goods receipt or an owner's ruling on the brand. Reporting both as
+    one undifferentiated backlog is how a check gets ignored — it never goes
+    down however much work is done.
+    """
+    ambiguous = ambiguous or {}
+    bad, blocked = [], []
+    for r in rows:
+        if r.get("irc"):
+            continue
+        ndc = r.get("ndc11")
+        row = {"ndc11": ndc, "lot_id": r.get("lot_id"),
+               "quantity": float(_f(r, "quantity_on_hand")),
+               "drug_name": r.get("drug_name")}
+        n = ambiguous.get(str(ndc))
+        if n:
+            blocked.append({**row, "candidates": n,
+                            "reason": f"{n} formulary brands share this "
+                                      f"generic, strength and form"})
+        else:
+            bad.append(row)
+
+    severity = "high" if bad else ("medium" if blocked else "info")
+    parts = []
+    if bad:
+        parts.append(f"{len(bad)} stock row(s) carry no IRC and have not been "
+                     f"resolved")
+    if blocked:
+        parts.append(f"{len(blocked)} awaiting a brand ruling — the formulary "
+                     f"holds several registrations for the same molecule, "
+                     f"strength and form")
+    return Finding(
+        "unbound_from_formulary", severity, len(bad) + len(blocked),
+        "عدم اتصال به فهرست دارویی رسمی",
+        ("; ".join(parts) + ".") if parts
+        else "Every stock row is bound to the formulary.",
+        bad + blocked,
+        "Resolve IRC by GTIN, then by generic+strength+form. Rows with several "
+        "candidate brands need a scan at goods receipt or an owner's ruling — "
+        "not a guess, which would attach a wrong price and wrong coverage to a "
+        "real product.",
+    )
+
+
+# ── C6. Expired stock still sellable ──────────────────────────────────────
+def check_expired_on_hand(lots: list[dict], as_of: date | None = None) -> Finding:
+    today = as_of or date.today()
+    bad = []
+    for l in lots:
+        exp = l.get("expiry_date")
+        if isinstance(exp, str):
+            exp = date.fromisoformat(exp)
+        if exp and exp < today and _f(l, "quantity_on_hand") > 0 and not l.get("is_quarantined"):
+            bad.append({"irc": l.get("irc"), "lot_number": l.get("lot_number"),
+                        "expiry_date": exp.isoformat(),
+                        "days_expired": (today - exp).days,
+                        "quantity": float(_f(l, "quantity_on_hand")),
+                        "value": float(_f(l, "value"))})
+    return Finding(
+        "expired_on_hand", "critical", len(bad),
+        "داروی منقضی در دسترس فروش",
+        "Expired lots still hold sellable quantity and are not quarantined — they "
+        "can be picked by a dispense.",
+        sorted(bad, key=lambda x: -x["days_expired"]),
+        "Quarantine immediately, then post EXPIRY_REMOVAL with approval.",
+    )
+
+
+# ── C7. Suspicious adjustments ────────────────────────────────────────────
+def check_suspicious_adjustments(movements: list[dict], *,
+                                 window_days: int = 30,
+                                 repeat_threshold: int = 3,
+                                 large_pct: float = 25.0,
+                                 now: datetime | None = None) -> Finding:
+    """Patterns that distinguish an error from a habit.
+
+    A single large correction is usually a miscount. The same staff member
+    repeatedly writing down the same controlled item is the shape of diversion.
+    We report the pattern and the evidence; a human decides what it means —
+    never the model, and never a disciplinary output.
+    """
+    # `now` is injected for the same reason `as_of` is everywhere else here: a
+    # rolling window read off the wall clock makes any test with a fixed fixture
+    # date expire silently. These three checks passed for a month and then began
+    # failing because the calendar moved past their sample data, which looks
+    # exactly like a regression and is not one.
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=window_days)
+    by_actor: dict[tuple, list] = {}
+    findings = []
+    for m in movements:
+        ts = m.get("created_at")
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts)
+        if ts and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts and ts < cutoff:
+            continue
+        delta, before = _f(m, "quantity_delta"), _f(m, "quantity_before")
+        pct = float(abs(delta) / before * 100) if before > 0 else 100.0
+        is_loss = delta < 0 and m.get("movement_type") in (
+            "ADJUSTMENT", "CORRECTION", "COUNT_LOSS", "WASTE")
+        if not is_loss:
+            continue
+        key = (m.get("created_by"), m.get("irc") or m.get("ndc11"))
+        by_actor.setdefault(key, []).append({"id": m.get("id"), "pct": round(pct, 1),
+                                             "delta": float(delta),
+                                             "controlled": bool(m.get("is_controlled"))})
+        if pct >= large_pct or m.get("is_controlled"):
+            findings.append({
+                "movement_id": m.get("id"), "irc": m.get("irc"), "ndc11": m.get("ndc11"),
+                "actor": m.get("created_by"), "delta": float(delta),
+                "pct_of_stock": round(pct, 1), "reason": m.get("reason"),
+                "controlled": bool(m.get("is_controlled")),
+                "pattern": "large_write_down" if pct >= large_pct else "controlled_write_down",
+            })
+    for (actor, item), rows in by_actor.items():
+        if len(rows) >= repeat_threshold:
+            findings.append({
+                "actor": actor, "irc_or_ndc": item, "occurrences": len(rows),
+                "total_delta": round(sum(r["delta"] for r in rows), 3),
+                "controlled": any(r["controlled"] for r in rows),
+                "pattern": "repeat_write_down",
+            })
+    return Finding(
+        "suspicious_adjustment", "high", len(findings),
+        "اصلاحات مشکوک موجودی",
+        "Write-downs that are large, repeated by one person on one item, or touch "
+        "a controlled substance.",
+        findings,
+        "Route to a named reviewer with the movement history attached. Treat as a "
+        "question to answer, not a conclusion about a person.",
+    )
+
+
+# ── C8. Duplicate / invalid lots ──────────────────────────────────────────
+def check_duplicate_lots(lots: list[dict]) -> Finding:
+    seen: dict[tuple, list] = {}
+    for l in lots:
+        key = (l.get("irc") or l.get("ndc11"), (l.get("lot_number") or "").strip().upper())
+        if not key[1]:
+            continue
+        seen.setdefault(key, []).append(l)
+    bad = [{"irc_or_ndc": k[0], "lot_number": k[1], "rows": len(v),
+            "lot_ids": [x.get("lot_id") for x in v],
+            "expiries": sorted({str(x.get("expiry_date")) for x in v})}
+           for k, v in seen.items() if len(v) > 1]
+    return Finding(
+        "duplicate_lot", "medium", len(bad),
+        "بچ تکراری",
+        "The same lot number exists more than once for an item — receiving the "
+        "same delivery twice double-counts stock.",
+        bad,
+        "Merge into the earliest row with an approved CORRECTION; keep both "
+        "movement histories.",
+    )
+
+
+# ── C9. Unit-conversion errors ────────────────────────────────────────────
+def check_unit_conversion(rows: list[dict], *, factor_threshold: float = 20.0) -> Finding:
+    """On-hand wildly out of scale with the pack size is usually packs entered
+    as units (or the reverse) — a 30× error that looks like a stockout or a
+    year of surplus."""
+    bad = []
+    for r in rows:
+        pack = _f(r, "package_count")
+        onhand = _f(r, "quantity_on_hand")
+        demand = _f(r, "avg_daily_demand")
+        if pack <= 1 or onhand <= 0:
+            continue
+        if demand > 0:
+            days = float(onhand / demand)
+            if days > 365 * 3 and float(onhand) >= float(pack) * factor_threshold:
+                bad.append({"irc": r.get("irc"), "ndc11": r.get("ndc11"),
+                            "quantity_on_hand": float(onhand),
+                            "package_count": float(pack),
+                            "days_supply": round(days),
+                            "hypothesis": "packs recorded as units"})
+    return Finding(
+        "unit_conversion_suspect", "medium", len(bad),
+        "خطای احتمالی واحد شمارش",
+        "On-hand implies an implausible days-supply given the pack size — likely a "
+        "pack/unit confusion.",
+        bad,
+        "Confirm with a physical count before correcting; the fix is a movement, "
+        "not an edit.",
+    )
+
+
+# ── C10. Reserved exceeds on-hand ─────────────────────────────────────────
+def check_over_reservation(rows: list[dict]) -> Finding:
+    bad = [{"irc": r.get("irc"), "ndc11": r.get("ndc11"), "lot_id": r.get("lot_id"),
+            "on_hand": float(_f(r, "quantity_on_hand")),
+            "reserved": float(_f(r, "quantity_reserved"))}
+           for r in rows if _f(r, "quantity_reserved") > _f(r, "quantity_on_hand")]
+    return Finding(
+        "over_reserved", "high", len(bad),
+        "رزرو بیش از موجودی",
+        "More units are committed to un-dispensed fills than physically exist; the "
+        "next patient will be promised stock that is not there.",
+        bad,
+        "Release reservations for cancelled fills, then count the item.",
+    )
+
+
+# ── C14. Approvals that stalled ───────────────────────────────────────────
+def check_overdue_approvals(overdue: list) -> Finding:
+    """A pending write-off past its deadline.
+
+    This one is easy to under-rate. Nothing is *wrong* in the ledger — the
+    approval is correctly pending and the movement correctly has not applied.
+    That is the problem: the stock it covers is still on the books looking
+    sellable, the requester assumes it is handled, and no one is told. A
+    maker-checker queue with no clock fails silently, which is the worst way for
+    a control to fail because it looks exactly like a control that is working.
+    """
+    rows = [o.as_dict() if hasattr(o, "as_dict") else dict(o) for o in overdue]
+    controlled = [r for r in rows if r.get("is_controlled")]
+    escalated = [r for r in rows if (r.get("level") or 0) >= 2]
+
+    if controlled or escalated:
+        severity = "high"
+    elif rows:
+        severity = "medium"
+    else:
+        severity = "info"
+
+    detail = (
+        f"{len(rows)} approval(s) past their deadline"
+        + (f", {len(controlled)} on controlled stock" if controlled else "")
+        + (f", {len(escalated)} escalated to the owner" if escalated else "")
+        + "."
+    ) if rows else "No approval is past its deadline."
+
+    return Finding(
+        "approval_overdue", severity, len(rows),
+        "تأییدهای معوق",
+        detail, rows,
+        "Decide them. An approval cannot be aged out into an approval — the "
+        "second signature is the control, and expiring it on a timer would "
+        "remove exactly what it was there to provide.",
+    )
+
+
+# ── C13. Reserved counter vs the reservation rows ─────────────────────────
+def check_reservation_drift(drifts: list[dict],
+                            lapsed: list[dict] | None = None) -> Finding:
+    """`quantity_reserved` must equal the sum of the lot's active reservations.
+
+    The counter is a denormalisation of `inventory_reservations`, exactly as
+    `stock_levels.quantity_on_hand` is of its lots — and it drifts the same way.
+    It matters more than it looks: `available = on_hand - reserved` is what the
+    allocator hands out from, so a counter holding units no reservation claims
+    quietly makes real stock unissuable, and the shelf shows quantities FEFO
+    will refuse to give anyone.
+
+    Lapsed holds are reported alongside because they have the same effect and
+    the same fix — an uncollected will-call sterilises its units until swept.
+    """
+    lapsed = lapsed or []
+    severity = "high" if drifts else ("medium" if lapsed else "info")
+    parts = []
+    if drifts:
+        parts.append(f"{len(drifts)} lot(s) where the reserved counter and the "
+                     f"reservation rows disagree")
+    if lapsed:
+        parts.append(f"{len(lapsed)} reservation(s) past their hold, still "
+                     f"withholding stock from availability")
+    return Finding(
+        "reservation_drift", severity, len(drifts) + len(lapsed),
+        "مغایرت رزرو با ردیف‌های رزرو",
+        ("; ".join(parts) + ".") if parts
+        else "Reserved counters match their reservation rows.",
+        drifts + [{**l, "kind": "lapsed"} for l in lapsed],
+        "Sweep lapsed reservations first, then re-derive the counter from the "
+        "active rows. Do not zero the counter by hand — that hides which "
+        "prescription held the units.",
+    )
+
+
+# ── C12. Demand signal vs the fill record ─────────────────────────────────
+def check_demand_signal(divergences: list, *, stale: list[dict] | None = None,
+                        blind: list[dict] | None = None) -> Finding:
+    """The stored demand rate must be supported by what was actually dispensed.
+
+    Every purchasing decision reads `stock_levels.avg_daily_demand`, and until
+    this check existed nothing tested it. The seeded values claimed 14 units/day
+    for an item with no dispensing at all, and 4/day for one moving at 12.9 —
+    so the engine simultaneously recommended buying a drug nobody takes and
+    left the fastest-moving item below its true reorder point.
+
+    `contradicted` is deliberately separated from merely wrong: it means the
+    number has no basis in this pharmacy's fill record, which impeaches every
+    other value written by the same source.
+    """
+    bad = [d.as_dict() for d in divergences if getattr(d, "disagrees", False)]
+    stale = stale or []
+    # Stock on the shelf with no demand rate behind it. Not a wrong number — the
+    # absence of one. It still belongs here, because an item that cannot be
+    # forecast cannot be reordered on evidence *or* retired as dead stock, and a
+    # refresh that legitimately finds no history would otherwise fall silent
+    # while capital sits on the shelf expiring.
+    blind = blind or []
+    contradicted = [b for b in bad if b["verdict"] == "contradicted"]
+    understated = [b for b in bad if b["verdict"] == "understated"]
+
+    if contradicted or understated:
+        severity = "high"
+    elif bad or stale or blind:
+        severity = "medium"
+    else:
+        severity = "info"
+
+    parts = []
+    if bad:
+        parts.append(
+            f"{len(bad)} item(s) whose stored demand disagrees with dispensing "
+            f"({len(contradicted)} contradicted by a nil fill record, "
+            f"{len(understated)} understated and at stockout risk)")
+    if stale:
+        parts.append(f"{len(stale)} signal(s) stale or never computed")
+    if blind:
+        parts.append(f"{len(blind)} item(s) holding stock with no demand rate "
+                     f"to reorder or retire it on")
+    detail = ("; ".join(parts) + ".") if parts else \
+        "Stored demand agrees with the fill record."
+
+    return Finding(
+        "demand_signal_unsupported", severity,
+        len(bad) + len(stale) + len(blind),
+        "سیگنال تقاضا با سوابق تحویل هم‌خوانی ندارد",
+        detail,
+        bad
+        + [{**s, "verdict": "stale"} for s in stale]
+        + [{**b, "verdict": "no_signal"} for b in blind],
+        "Recompute demand from the fill record before acting on any purchase "
+        "recommendation. Do not hand-edit the stored rate — it will be "
+        "overwritten and the disagreement will return. Items with no rate at "
+        "all need a dispensing history or an explicit dead-stock ruling.",
+    )
+
+
+# ── C11. Chain integrity ──────────────────────────────────────────────────
+def check_chain(verify_result: dict) -> Finding:
+    intact = verify_result.get("intact", False)
+    return Finding(
+        "ledger_chain", "critical", 0 if intact else 1,
+        "زنجیره تغییرناپذیری دفتر موجودی",
+        ("Movement hash chain verified over "
+         f"{verify_result.get('verified', 0)} rows.") if intact
+        else f"Chain broken at index {verify_result.get('break_index')}: "
+             f"{verify_result.get('detail')}",
+        [] if intact else [verify_result],
+        "" if intact else
+        "Do not repair the chain. Preserve it, export the affected range, and "
+        "escalate — a broken chain is evidence, and rewriting it destroys the "
+        "only record of what happened.",
+    )
+
+
+ALL_CHECKS = ("aggregate_drift", "negative_stock", "fill_without_movement",
+              "untraceable_fill", "dispense_shortfall", "unbound_from_formulary", "expired_on_hand",
+              "suspicious_adjustment", "duplicate_lot", "unit_conversion_suspect",
+              "over_reserved", "reservation_drift", "demand_signal_unsupported",
+              "approval_overdue", "ledger_chain")
+
+
+def summarize(findings: list[Finding]) -> dict:
+    """Roll findings into a verdict.
+
+    Three states rather than one overloaded flag, because "healthy" alone
+    cannot distinguish "nothing is wrong" from "nothing serious is wrong", and
+    a report that says healthy while a check is firing teaches people to stop
+    reading it:
+
+      healthy      — no check fired at all.
+      trustworthy  — nothing critical or high; the quantities can be relied on
+                     for ordering and dispensing decisions.
+      blocking     — at least one critical; the ledger is provably wrong and a
+                     human ruling is required before it is trusted.
+    """
+    by_sev = {s: 0 for s in SEVERITIES}
+    for f in findings:
+        if f.count:
+            by_sev[f.severity] += 1
+    firing = [f for f in findings if f.count]
+    return {
+        "healthy": len(firing) == 0,
+        "trustworthy": by_sev["critical"] == 0 and by_sev["high"] == 0,
+        "blocking": by_sev["critical"] > 0,
+        "checks_run": len(findings),
+        "checks_firing": len(firing),
+        "by_severity": by_sev,
+        "total_rows_affected": sum(f.count for f in findings),
+        "findings": [f.as_dict() for f in sorted(
+            findings, key=lambda f: (SEVERITIES.index(f.severity), -f.count))],
+    }

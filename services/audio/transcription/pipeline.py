@@ -21,48 +21,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AudioZoneConfig:
+    """Per-zone audio capture settings.
+
+    On `whisper_model`: never use an `.en` variant. Those models are
+    English-ONLY and emit invented English for Persian speech rather than a
+    worse transcript — a silent wrong answer instead of a visible bad one.
+    Prefer a smaller multilingual model (`base`, `small`) over `base.en`.
+
+    `zone_id` is a canonical vision_zone code (Z-COUNTER-1, Z-CONSULT, ...).
+    The former ZONE_CONFIGS dict used its own spellings; those are mapped in
+    services.core.vision.zones.LEGACY_ZONE_ALIAS.
+    """
+
     zone_id: str
-    zone_name: str           # counter, counseling_room, waiting_area, drive_through
+    zone_name: str
     mic_channels: int
     whisper_model: str       # Larger model for counseling room (more clinical detail)
     continuous_recording: bool
     vad_sensitivity: int     # 0-3
-
-
-ZONE_CONFIGS = {
-    "counter": AudioZoneConfig(
-        zone_id="counter",
-        zone_name="Dispensing Counter",
-        mic_channels=2,
-        whisper_model="medium.en",
-        continuous_recording=True,
-        vad_sensitivity=2,
-    ),
-    "counseling_room": AudioZoneConfig(
-        zone_id="counseling_room",
-        zone_name="Counseling Room",
-        mic_channels=2,
-        whisper_model="large-v3",   # Higher accuracy for clinical conversations
-        continuous_recording=False,  # Session-triggered
-        vad_sensitivity=1,
-    ),
-    "waiting_area": AudioZoneConfig(
-        zone_id="waiting_area",
-        zone_name="Waiting Area",
-        mic_channels=1,
-        whisper_model="base.en",     # Lower accuracy acceptable — ambient only
-        continuous_recording=False,
-        vad_sensitivity=3,           # High VAD — only capture clear speech
-    ),
-    "drive_through": AudioZoneConfig(
-        zone_id="drive_through",
-        zone_name="Drive-Through",
-        mic_channels=2,
-        whisper_model="medium.en",
-        continuous_recording=True,
-        vad_sensitivity=2,
-    ),
-}
 
 
 class AudioProcessingPipeline:

@@ -56,7 +56,11 @@ apiClient.interceptors.response.use(
  * probe's `{message, diagnostics}`) — rendering any non-string as a React child
  * throws "Objects are not valid as a React child". Always run errors through this.
  */
-export function apiErrorText(e: unknown, fallback = 'خطای ناشناخته'): string {
+export function apiErrorText(e: unknown, fallback?: string): string {
+  // Called from catch blocks and non-component code, so it cannot use the
+  // language hook — it reads the same stored preference the provider writes.
+  fallback ??= localStorage.getItem('pharmpilot_lang') === 'en'
+    ? 'Unknown error' : 'خطای ناشناخته'
   const d = (e as any)?.response?.data?.detail
   if (d == null) return (e as any)?.message || fallback
   if (typeof d === 'string') return d
@@ -285,6 +289,160 @@ export const inventoryApi = {
   getStockForNdc: (ndc: string) => apiClient.get(`/inventory/stock/${ndc}`),
   getExpiring: (days?: number) => apiClient.get('/inventory/expiring', { params: { days } }),
   createOrder: (data: PurchaseOrderData) => apiClient.post('/inventory/orders', data),
+  // Shelf price. Owner-only to SET (permission `inventory:price`); anyone with
+  // inventory:read may look, because the history is the point — a price that
+  // changed with no record of what it was before is the one number nobody can
+  // explain to a patient who remembers paying less.
+  getShelfPrice: (productId: string) =>
+    apiClient.get(`/inventory/products/${productId}/price`),
+  setShelfPrice: (productId: string, body: { sell_price: number; reason?: string; mandate?: boolean }) =>
+    apiClient.post(`/inventory/products/${productId}/price`, body),
+}
+
+// ── Inventory integrity: reconciliation, counts, approvals ────────────────
+export const inventoryIntegrityApi = {
+  reconciliation: () => apiClient.get('/inventory/reconciliation'),
+  verifyLedger: () => apiClient.get('/inventory/ledger/verify'),
+  bindingProposals: () => apiClient.get('/inventory/formulary-binding/proposals'),
+  applyBindings: (bindings: { ndc11: string; irc: string }[]) =>
+    apiClient.post('/inventory/formulary-binding/apply', { bindings }),
+  createCount: (body: { count_type?: string; blind?: boolean; irc?: string[]
+                        location?: string; notes?: string }) =>
+    apiClient.post('/inventory/counts', body),
+  getCount: (id: string) => apiClient.get(`/inventory/counts/${id}`),
+  submitCountLine: (id: string, body: { line_id: string; counted_quantity: number
+                                        note?: string }) =>
+    apiClient.post(`/inventory/counts/${id}/lines`, body),
+  postCount: (id: string) => apiClient.post(`/inventory/counts/${id}/post`),
+  approvals: (status = 'pending') =>
+    apiClient.get('/inventory/approvals', { params: { status } }),
+  decideApproval: (id: string, body: { approve: boolean; note?: string
+                                       witness_id?: string }) =>
+    apiClient.post(`/inventory/approvals/${id}/decide`, body),
+}
+
+// ── The measured engines: demand, counting, advice, value ─────────────────
+//
+// Every read here returns a `basis` alongside its number — observed, sparse,
+// no_history or declared_default. The UI must show it. A rate rendered without
+// its provenance is indistinguishable from a measurement, which is the defect
+// this whole layer was built to remove.
+export const inventoryEnginesApi = {
+  // Preview by default. `apply: true` writes the measured rates.
+  refreshDemand: (params: { apply?: boolean; window_days?: number } = {}) =>
+    apiClient.post('/inventory/demand/refresh', {}, { params }),
+  cycleCountPlan: (capacity = 25) =>
+    apiClient.get('/inventory/cycle-count/plan', { params: { capacity } }),
+  valuation: (params: { method?: 'fifo' | 'weighted'; shrinkage_days?: number } = {}) =>
+    apiClient.get('/inventory/valuation', { params }),
+  recommendations: (params: { kind?: string; status?: string; limit?: number } = {}) =>
+    apiClient.get('/inventory/recommendations', { params }),
+  // A rejection must carry a reason — it is the labelled negative, and the
+  // backend refuses one without it.
+  decideRecommendation: (id: string, body: { accept: boolean; note?: string }) =>
+    apiClient.post(`/inventory/recommendations/${id}/decide`, body),
+  scoreboard: () => apiClient.get('/inventory/recommendations/scoreboard'),
+  // E11 lead time + E12 supplier reliability, both computed from delivered
+  // purchase orders. `raise_advice` also files the ones needing a decision.
+  suppliers: (raise_advice = false) =>
+    apiClient.get('/inventory/suppliers', { params: { raise_advice } }),
+  // E13. Separates "the market is out of this" from "this one supplier is
+  // rationing something another has in stock" — opposite actions.
+  shortages: (raise_advice = false) =>
+    apiClient.get('/inventory/shortage-warning', { params: { raise_advice } }),
+  // ⑳. Pulled before a conversation, never pushed, and it never invents a
+  // benchmark: every comparison is a price this pharmacy has already paid.
+  negotiationBrief: (supplier: string) =>
+    apiClient.get('/inventory/negotiation-brief', { params: { supplier } }),
+  // E7 — Jalali-month seasonality. Claims nothing below two complete cycles.
+  seasonality: (min_units = 50) =>
+    apiClient.get('/inventory/seasonality', { params: { min_units } }),
+  // E9 — the odds a lot expires unsold, where a probability is honest.
+  expiryOdds: (window_days = 28) =>
+    apiClient.get('/inventory/expiry-odds', { params: { window_days } }),
+  // E10 — the morning round, stocked to the 90th percentile rather than the
+  // average, because a shelf stocked to the average runs out half the time.
+  pickList: (cover_days = 1) =>
+    apiClient.get('/inventory/pick-list', { params: { cover_days } }),
+  // What is standing on the sales floor this second, and what it would ring up
+  // for. Answerable only since dispensing started decrementing placements — the
+  // shelf used to be write-only-up.
+  shelfPosition: () => apiClient.get('/inventory/shelf-position'),
+  // Expected against counted. Most of its work is refusing to accuse anybody:
+  // a gap no larger than the movement nobody scanned is inconclusive.
+  countShelf: (shelf_id: string, counted: { ndc11: string; units: number }[]) =>
+    apiClient.post('/inventory/shelf-count', { shelf_id, counted }),
+}
+
+// ── Recall cases: the pharmacy's response, not the notice ─────────────────
+export const inventoryRecallApi = {
+  list: (status?: string) =>
+    apiClient.get('/inventory/recalls', { params: { status } }),
+  open: (body: { reference: string; scope_type: string; scope_value: string
+                 severity: string; reason: string; source?: string
+                 lookback_days?: number }) =>
+    apiClient.post('/inventory/recalls', body),
+  get: (id: string) => apiClient.get(`/inventory/recalls/${id}`),
+  quarantine: (id: string) =>
+    apiClient.post(`/inventory/recalls/${id}/quarantine`, {}),
+  patients: (id: string) => apiClient.get(`/inventory/recalls/${id}/patients`),
+  lineAction: (id: string, lineId: string, body: { action: string; note?: string }) =>
+    apiClient.post(`/inventory/recalls/${id}/lines/${lineId}/action`, body),
+  close: (id: string, body: { force_reason?: string }) =>
+    apiClient.post(`/inventory/recalls/${id}/close`, body),
+}
+
+// ── Exception Register: the operator's board ──────────────────────────────
+export const inventoryExceptionsApi = {
+  run: () => apiClient.post('/inventory/reconciliation/run', {}),
+  list: (params: { status?: string; check?: string; assigned_to_me?: boolean
+                   controlled_only?: boolean; limit?: number; offset?: number }) =>
+    apiClient.get('/inventory/exceptions', { params }),
+  get: (id: string) => apiClient.get(`/inventory/exceptions/${id}`),
+  assign: (id: string, body: { assignee_id: string | null; note?: string }) =>
+    apiClient.post(`/inventory/exceptions/${id}/assign`, body),
+  dispose: (id: string, body: { disposition: string; reason: string }) =>
+    apiClient.post(`/inventory/exceptions/${id}/disposition`, body),
+  simulate: (id: string) => apiClient.post(`/inventory/exceptions/${id}/simulate`, {}),
+}
+
+// ── Inventory administration: search, view, correct, receive ──────────────
+export const inventoryAdminApi = {
+  items: (params: { q?: string; filter?: string; sort?: string
+                    limit?: number; offset?: number }) =>
+    apiClient.get('/inventory/admin/items', { params }),
+  filters: () => apiClient.get('/inventory/admin/filters'),
+  detail: (ndc11: string) => apiClient.get(`/inventory/admin/items/${ndc11}`),
+  editLot: (lotId: string, body: { field: string; value: unknown; reason: string }) =>
+    apiClient.patch(`/inventory/admin/lots/${lotId}`, body),
+  editStock: (ndc11: string, body: { field: string; value: unknown; reason: string }) =>
+    apiClient.patch(`/inventory/admin/stock/${ndc11}`, body),
+  bulkEdit: (body: { lot_ids: string[]; field: string; value: unknown; reason: string }) =>
+    apiClient.post('/inventory/admin/lots/bulk', body),
+  // Orders already placed and still owed stock. The receive form offers these
+  // so a delivery can be attributed to the order that asked for it — without
+  // that link nothing measures lead time or fill rate, and every supplier looks
+  // equally good.
+  openOrders: (ndc11?: string) =>
+    apiClient.get('/inventory/admin/open-orders', { params: ndc11 ? { ndc11 } : {} }),
+  // Accept that the rest of an order is not coming. Until someone can say it,
+  // a short-shipped order stays open for ever and its supplier never acquires
+  // a lead time at all.
+  closeOrderShort: (poId: string, reason: string) =>
+    apiClient.post(`/inventory/admin/orders/${poId}/close-short`, { reason }),
+  receive: (body: { ndc11: string; lot_number: string; expiry_date: string
+                    quantity: number; unit_cost?: number; irc?: string
+                    // From the invoice: the consumer price beside the purchase
+                    // price. `margin_pct` is the fallback for documents that
+                    // omit it — there is no house default, because the markup
+                    // depends on what the carton holds.
+                    sell_price?: number; margin_pct?: number
+                    storage_location?: string; reason?: string
+                    uom?: 'each' | 'pack'; purchase_order_id?: string }) =>
+    apiClient.post('/inventory/admin/receive', body),
+  writeOff: (body: { lot_id: string; movement_type: string; quantity: number
+                     reason: string }) =>
+    apiClient.post('/inventory/admin/write-off', body),
 }
 
 // ── Depot → shelf dual-verification replenishment ─────────────────────────

@@ -325,19 +325,98 @@ class RxStateMachine:
             # Decrement refills remaining
             if rx.refills_remaining > 0:
                 rx.refills_remaining -= 1
-            # Trigger inventory deduction (via Kafka event in production)
-            logger.info("Rx %s dispensed — trigger inventory deduction for NDC %s", rx.rx_number, rx.ndc)
+
+            # Stock actually leaves the shelf here. This used to be a log line
+            # reading "trigger inventory deduction (via Kafka event in
+            # production)", which is why 46 fills existed against 8 movements
+            # and on-hand only ever went up (ROADMAP:34).
+            #
+            # `apply_dispense` never raises: by the time this transition fires
+            # the medicine is with the patient, so a shortfall or an inventory
+            # failure is recorded and reported, never turned into a refusal to
+            # dispense. The reconciliation report is what catches a hook that
+            # did not run.
+            from services.core.inventory.dispense import apply_dispense
+            result = await apply_dispense(self.db, rx, staff_id=staff_id, now=now)
+            if not result.ok:
+                logger.error("Rx %s dispensed but stock was NOT decremented: %s",
+                             rx.rx_number, result.error)
+            elif result.skipped:
+                logger.info("Rx %s inventory decrement skipped (%s)",
+                            rx.rx_number, result.skipped)
+            else:
+                logger.info("Rx %s dispensed — %s units from lot(s) %s%s",
+                            rx.rx_number, result.allocated,
+                            ", ".join(result.lots) or "none",
+                            f"; SHORT by {result.shortfall}" if result.shortfall else "")
+
+        elif to_status == RxStatus.READY_TO_FILL:
+            # Stock is committed here, not at FILLING. By the time a technician
+            # reaches the shelf two prescriptions may already have been promised
+            # the same units; adjudication is settled at this point and the
+            # pharmacy has agreed to dispense, which is what a reservation
+            # means. Nothing raised one before this — `quantity_reserved` was
+            # decremented by the dispense hook and incremented by nobody, so
+            # `available` always equalled on-hand.
+            #
+            # A failure to reserve does not block the transition: the
+            # prescription is clinically ready whether or not the shelf can be
+            # earmarked, and stranding it would be the wrong failure direction.
+            from services.core.inventory import reservation_service as RS
+            res = await RS.reserve(self.db, rx, staff_id=staff_id, now=now)
+            if not res.ok:
+                logger.warning("Rx %s ready to fill but stock was NOT reserved: %s",
+                               rx.rx_number, res.error)
+            elif res.skipped:
+                logger.info("Rx %s reservation skipped (%s)", rx.rx_number, res.skipped)
+            else:
+                logger.info("Rx %s reserved %s units across %d lot(s)",
+                            rx.rx_number, res.reserved, res.rows)
 
         elif to_status == RxStatus.FILLING:
             rx.fill_date = now.date()
 
         elif to_status == RxStatus.RETURNED_TO_STOCK:
-            # Trigger inventory return
-            logger.info("Rx %s returned to stock", rx.rx_number)
+            # Units come back on the shelf. The original DISPENSE movements are
+            # left untouched and offsetting receipts are posted, so the ledger
+            # records both that the stock left and that it returned.
+            from services.core.inventory.dispense import reverse_dispense
+            from shared.models.prescription import PrescriptionFill
+            fill = (await self.db.execute(
+                select(PrescriptionFill)
+                .where(PrescriptionFill.prescription_id == rx.id,
+                       PrescriptionFill.is_deleted == False)  # noqa: E712
+                .order_by(PrescriptionFill.fill_number.desc()))).scalars().first()
+            if fill is not None:
+                result = await reverse_dispense(self.db, fill.id, staff_id=staff_id,
+                                                reason=f"returned to stock {rx.rx_number}")
+                if not result.ok:
+                    logger.error("Rx %s returned to stock but inventory was NOT "
+                                 "restored: %s", rx.rx_number, result.error)
+                else:
+                    logger.info("Rx %s returned to stock — %s units restored",
+                                rx.rx_number, result.allocated)
 
         elif to_status == RxStatus.WILL_CALL:
             # Record when Rx went to will-call — 14-day expiry in most states
             logger.info("Rx %s in will-call bin", rx.rx_number)
+
+        # Any transition that stops this prescription reaching a patient must
+        # give the units back. Handled after the branches above so it also
+        # covers RETURNED_TO_STOCK, where a reservation can still be open if the
+        # prescription was returned without ever dispensing.
+        from services.core.inventory import reservation_service as RS
+        if str(to_status.value if hasattr(to_status, "value") else to_status).upper() \
+                in RS.RSV.RELEASE_ON:
+            rel = await RS.release_for_transition(self.db, rx, str(
+                to_status.value if hasattr(to_status, "value") else to_status).upper(),
+                now=now)
+            if rel.released:
+                logger.info("Rx %s → %s: released %d reservation(s)",
+                            rx.rx_number, to_status, rel.released)
+            elif not rel.ok:
+                logger.error("Rx %s → %s but reservations were NOT released: %s",
+                             rx.rx_number, to_status, rel.error)
 
     async def _verify_epcs_enrollment(self, staff_id: UUID) -> bool:
         from shared.models.auth import Staff

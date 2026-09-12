@@ -6,7 +6,8 @@ tariffs; these tests pin the *calculation logic*, not the exact tariffs.
 from decimal import Decimal
 
 from services.core.pricing_ir.engine import (
-    DrugPrice, LineInput, ItemCategory, price_prescription, resolve_consumer_price,
+    DrugPrice, LineInput, ItemCategory, price_line, price_prescription,
+    resolve_consumer_price,
 )
 from services.core.pricing_ir.config import InsurerPlan
 
@@ -115,3 +116,268 @@ def test_mixed_basket_conservation():
     p = price_prescription(lines, PLAN, technical_fee=TECH_FEE)
     assert p.totals.insurer + p.totals.patient == p.totals.gross + p.totals.vat + TECH_FEE
     assert p.totals.grand_total == p.totals.insurer + p.totals.patient
+
+
+# ── the covered base can never exceed what the item actually costs ──────────
+def test_reference_above_the_sale_price_does_not_over_bill_the_insurer():
+    """Iranian prices rise continuously while a published reference stays frozen
+    until the formulary is reissued, so reference < consumer is the ordinary
+    case and yields مابه‌التفاوت. The reverse happens too — our catalog price
+    lags the market, or the insurer's reference is simply higher — and uncapped
+    it billed the insurer ABOVE the sale price.
+
+    Measured on live data 2026-08-09: ketotifen 1 mg at 5,750 rial against a
+    salamat reference of 19,663 charged the insurer 13,764 and the patient
+    5,899, collecting 19,663 on a 5,750 item. 4,175 tamin and 2,948 salamat
+    products sat in that state.
+    """
+    plan = InsurerPlan(code="salamat", name_fa="سلامت",
+                       outpatient_patient_share=Decimal("0.30"),
+                       inpatient_patient_share=Decimal("0.10"),
+                       covers_technical_fee=True,
+                       technical_fee_patient_share=Decimal("0.30"))
+    d = DrugPrice(irc="K", name="ketotifen", consumer_price=Decimal("5750"),
+                  insurer_reference_price=Decimal("19663"), is_covered=True)
+    b = price_line(LineInput(drug=d, quantity=Decimal("1"), setting="outpatient"),
+                   plan, setting="outpatient")
+
+    assert b.covered_base == Decimal("5750")          # capped at the sale price
+    assert b.differential == Decimal("0")             # nothing to add
+    assert b.insurer_share + b.patient_total == b.gross + b.vat   # the invariant
+    assert b.insurer_share < Decimal("5750")
+
+
+def test_a_reference_below_the_price_still_yields_the_differential():
+    """The cap must not touch the ordinary direction."""
+    plan = InsurerPlan(code="salamat", name_fa="سلامت",
+                       outpatient_patient_share=Decimal("0.30"),
+                       inpatient_patient_share=Decimal("0.10"),
+                       covers_technical_fee=True,
+                       technical_fee_patient_share=Decimal("0.30"))
+    d = DrugPrice(irc="Z", name="zaditen", consumer_price=Decimal("29200"),
+                  insurer_reference_price=Decimal("19663"), is_covered=True)
+    b = price_line(LineInput(drug=d, quantity=Decimal("1"), setting="outpatient"),
+                   plan, setting="outpatient")
+    assert b.covered_base == Decimal("19663")
+    assert b.differential == Decimal("29200") - Decimal("19663")
+    assert b.insurer_share + b.patient_total == b.gross + b.vat
+
+
+# ── the money must add up, at every rounding unit ───────────────────────────
+#
+# The engine's docstring states `insurer_share + patient_total == gross + vat`.
+# It did not hold. `covered_base` and `differential` were each rounded on their
+# own, and round(a) + round(b) ≠ round(a + b): a randomised sweep of 48,000
+# lines found ~4% breaking at the DEFAULT whole-Rial unit and ~7% at the
+# 1,000-Rial unit that config.py invites a pharmacy to choose. Money appeared
+# and vanished a Rial at a time, on a receipt a patient is handed.
+#
+# The fix derives the differential — `gross − covered_base` — so the identity
+# holds by construction rather than by luck of the inputs.
+import contextlib
+import itertools
+
+from services.core.pricing_ir import config as _cfg
+
+
+@contextlib.contextmanager
+def rounding_unit(unit):
+    """The engine reads the unit from the config module at call time, which is
+    the only reason this context manager works. It used to be import-bound, so
+    setting it here changed nothing and a coarse-rounding deployment silently
+    kept rounding to the whole Rial."""
+    before = _cfg.ROUNDING_UNIT_RIAL
+    _cfg.ROUNDING_UNIT_RIAL = Decimal(str(unit))
+    try:
+        yield
+    finally:
+        _cfg.ROUNDING_UNIT_RIAL = before
+
+
+def test_the_rounding_unit_is_read_not_baked_in():
+    d = _drug(15400, ref=10600)
+    with rounding_unit(1000):
+        assert price_line(LineInput(drug=d, quantity=Decimal("1")),
+                          PLAN, setting="outpatient").gross == Decimal("15000")
+    assert price_line(LineInput(drug=d, quantity=Decimal("1")),
+                      PLAN, setting="outpatient").gross == Decimal("15400")
+
+
+def test_the_two_lines_that_broke_conservation():
+    """Regression pins, both found by sweep rather than by inspection.
+
+    The first is reachable today: `sell_price` and `manual_shelf_price` are both
+    Numeric(12,4), so a sub-Rial shelf price is ordinary, and 30 units of it is
+    an ordinary quantity.
+    """
+    with rounding_unit(1):                       # was out by 1 Rial
+        b = price_line(LineInput(drug=_drug("3324.5", ref="1662.25"),
+                                 quantity=Decimal("30")), PLAN, setting="outpatient")
+        assert b.insurer_share + b.patient_total == b.gross + b.vat
+        assert b.covered_base + b.differential == b.gross
+
+    with rounding_unit(1000):                    # was out by 1,000 Rial
+        b = price_line(LineInput(drug=_drug(15400, ref=10600),
+                                 quantity=Decimal("1")), PLAN, setting="outpatient")
+        assert b.insurer_share + b.patient_total == b.gross + b.vat
+        assert b.covered_base + b.differential == b.gross
+
+
+def test_conservation_holds_across_the_parameter_space():
+    """Exhaustive rather than illustrative: every combination of price, reference
+    ratio, quantity, rounding unit and VAT below must balance to the Rial."""
+    prices = ["15400", "24500", "120500", "3324.5", "2770.25", "1000.0001", "7"]
+    ratios = ["0.2", "0.5", "0.7", "0.9", "1.0", "1.3"]
+    qtys = ["0", "1", "2", "0.5", "1.5", "2.5", "30", "0.333"]
+    units = [1, 10, 100, 1000]
+    vats = ["0", "0.10"]
+
+    checked = 0
+    for unit in units:
+        with rounding_unit(unit):
+            for price, ratio, qty, vat in itertools.product(prices, ratios, qtys, vats):
+                cp = Decimal(price)
+                d = _drug(cp, ref=cp * Decimal(ratio), vat=vat)
+                for setting in ("outpatient", "inpatient"):
+                    b = price_line(LineInput(drug=d, quantity=Decimal(qty)),
+                                   PLAN, setting=setting)
+                    assert b.insurer_share + b.patient_total == b.gross + b.vat, (
+                        f"unit={unit} price={price} ratio={ratio} qty={qty} "
+                        f"vat={vat} setting={setting}")
+                    assert b.covered_base + b.differential == b.gross
+                    assert b.differential >= 0 and b.insurer_share >= 0
+                    checked += 1
+    assert checked == len(prices) * len(ratios) * len(qtys) * len(units) * len(vats) * 2
+
+
+def test_the_prescription_total_is_exactly_what_was_charged():
+    """grand_total == gross + vat + حق فنی, with no rounding gap opening up
+    between the lines and the sum of them."""
+    lines = [
+        LineInput(drug=_drug("3324.5", ref="1662.25"), quantity=Decimal("30")),
+        LineInput(drug=_drug(120500, ref=60250), quantity=Decimal("1.5")),
+        LineInput(drug=_drug(9900, category=ItemCategory.COSMETIC,
+                             covered=False, vat="0.10"), quantity=Decimal("2")),
+    ]
+    for unit in (1, 10, 100, 1000):
+        with rounding_unit(unit):
+            p = price_prescription(lines, PLAN, technical_fee=TECH_FEE,
+                                   setting="outpatient")
+            assert p.totals.grand_total == (p.totals.gross + p.totals.vat
+                                            + p.technical_fee.total), f"unit={unit}"
+            assert (p.technical_fee.insurer + p.technical_fee.patient
+                    == p.technical_fee.total)
+
+
+def test_a_negative_quantity_is_refused_rather_than_priced():
+    """The identity assumes ref×qty ≤ consumer×qty, which inverts below zero and
+    would hand back a negative insurer share. A return is a different operation,
+    not a line with a minus sign."""
+    import pytest
+    with pytest.raises(ValueError, match="negative"):
+        price_line(LineInput(drug=_drug(10000), quantity=Decimal("-1")),
+                   PLAN, setting="outpatient")
+
+
+def test_a_float_quantity_does_not_carry_binary_noise():
+    """`Decimal(0.1)` is 0.1000000000000000055511151231257827…; every product
+    below it inherits that. The router stringifies, but the engine should not
+    depend on every caller having remembered to."""
+    b = price_line(LineInput(drug=_drug(10000), quantity=0.1),
+                   PLAN, setting="outpatient")
+    assert b.quantity == Decimal("0.1")
+    assert b.gross == Decimal("1000")
+
+
+def test_an_uncovered_line_bills_the_patient_the_whole_gross():
+    """The other half of the rule, and the one that made a verification script
+    report a defect that was not there: on an uncovered line `covered_base` and
+    `differential` are both zero BY DESIGN, so `covered_base + differential ==
+    gross` does not apply. What must hold is that the insurer pays nothing and
+    the patient pays all of it."""
+    for unit in (1, 1000):
+        with rounding_unit(unit):
+            b = price_line(LineInput(drug=_drug(9900, category=ItemCategory.COSMETIC,
+                                                covered=False, vat="0.10"),
+                                     quantity=Decimal("2")), PLAN, setting="outpatient")
+            assert b.insurer_share == 0
+            assert b.patient_share == b.gross
+            assert b.covered_base == 0 and b.differential == 0
+            assert b.insurer_share + b.patient_total == b.gross + b.vat
+
+
+def test_the_quote_line_exposes_the_base_the_insurer_recognised():
+    """A line that shows مابه‌التفاوت without the base it was measured against
+    cannot be checked by the person paying it. `covered_base + differential ==
+    gross` is what makes the line auditable at the counter."""
+    import inspect
+    from services.platform.routers import pricing
+    src = inspect.getsource(pricing.quote)
+    assert '"covered_base"' in src
+
+
+# ── the tariffs themselves, researched 2026-08-22 ───────────────────────────
+def test_no_basic_insurer_pays_any_of_the_dispensing_fee():
+    """The correction with the largest money impact. حق فنی is added to the
+    PATIENT's side — پرداختی بیمار = سهم بیمار + اقلام آزاد + حق فنی — and no basic
+    insurer contributes; the pharmacists' association is still campaigning to
+    have them cover it, which is itself the proof that they do not.
+
+    This file previously said covers_technical_fee=True with a 30% patient
+    share, so on a 727,000 fee the engine charged the patient 218,100 and billed
+    an insurer 508,900 it would never collect.
+    """
+    from services.core.pricing_ir.config import PLANS
+    for code in ("tamin", "salamat", "armed_forces", "cash"):
+        assert PLANS[code].covers_technical_fee is False, code
+        assert PLANS[code].technical_fee_patient_share == Decimal("1.00"), code
+
+
+def test_the_whole_fee_reaches_the_patient():
+    from services.core.pricing_ir.config import PLANS, DEFAULT_TECHNICAL_FEE_RIAL
+    p = price_prescription([LineInput(drug=_drug(100000), quantity=Decimal("1"))],
+                           PLANS["tamin"], technical_fee=DEFAULT_TECHNICAL_FEE_RIAL,
+                           setting="outpatient")
+    assert p.technical_fee.total == Decimal("727000")
+    assert p.technical_fee.patient == Decimal("727000")
+    assert p.technical_fee.insurer == Decimal("0")
+
+
+def test_the_drug_franchise_survived_the_1405_decile_banding():
+    """The 1405 cabinet resolution (۲۵ اسفند ۱۴۰۴) banded the outpatient franchise
+    by income decile — 25/30/40% — but «به استثنای داروها». Drugs are carved out
+    and keep 30%. Applying the decile table to a pharmacy line would look like a
+    refinement and be wrong on every row."""
+    from services.core.pricing_ir.config import PLANS
+    for code in ("tamin", "salamat"):
+        assert PLANS[code].outpatient_patient_share == Decimal("0.30"), code
+        assert PLANS[code].inpatient_patient_share == Decimal("0.10"), code
+
+
+def test_the_armed_forces_shares_were_corrected():
+    """ساخد cut the outpatient drug franchise to 15%, and inpatient at
+    government/military contracted centres is free. The file previously carried
+    0.20/0.05, which was neither."""
+    from services.core.pricing_ir.config import PLANS
+    assert PLANS["armed_forces"].outpatient_patient_share == Decimal("0.15")
+    assert PLANS["armed_forces"].inpatient_patient_share == Decimal("0.00")
+
+
+def test_vat_stands_as_researched():
+    from services.core.pricing_ir import config as c
+    assert c.VAT_RATE_DRUG == Decimal("0")          # exempt, ماده ۹(الف)(۱۵) VAT law 1400
+    assert c.VAT_RATE_SUPPLEMENT == Decimal("0")    # exempt since بخشنامه ۲۰۰/۴/۱۴۰۳
+    assert c.VAT_RATE_COSMETIC == Decimal("0.10")   # 9% + 1% عوارض
+
+
+def test_a_cash_patient_pays_the_lot():
+    """Self-pay is the sanity check on the whole chain: no insurer share, no
+    differential, and the fee on top."""
+    from services.core.pricing_ir.config import PLANS
+    p = price_prescription([LineInput(drug=_drug(500000, ref=300000),
+                                      quantity=Decimal("2"))],
+                           PLANS["cash"], technical_fee=Decimal("727000"),
+                           setting="outpatient")
+    assert p.totals.insurer == Decimal("0")
+    assert p.totals.patient == Decimal("1727000")   # 1,000,000 + 727,000
+    assert p.totals.grand_total == p.totals.gross + p.totals.vat + Decimal("727000")

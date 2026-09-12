@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     BIOMETRIC_PROBABLE_THRESHOLD: float = 0.80
 
     # Audio
-    WHISPER_MODEL_COUNTER: str = "medium.en"
+    # large-v3, not medium.en: `.en` variants are English-ONLY and on Persian
+    # speech emit invented English rather than a worse transcript.
+    WHISPER_MODEL_COUNTER: str = "large-v3"
     WHISPER_MODEL_COUNSELING: str = "large-v3"
     NOISE_CANCELLATION_ENABLED: bool = True
     AUDIO_RETENTION_DAYS: int = 90

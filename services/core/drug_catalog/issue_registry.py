@@ -45,6 +45,102 @@ LANE_FA = {
     LANE_BLOCKED: "مسدود",
 }
 
+LANE_EN = {
+    LANE_AUTO: "Auto-fixable",
+    LANE_BULK: "One group ruling",
+    LANE_RESEARCH: "Needs research",
+    LANE_JUDGEMENT: "Needs expert judgement",
+    LANE_EXPECTED: "Structurally normal — acknowledge",
+    LANE_BLOCKED: "Blocked",
+}
+
+# English readings of the cause catalogue, kept beside the Persian rather than
+# in the frontend: this text IS the vocabulary of the triage board, and a second
+# copy in another repo layer is a copy that goes stale. Missing keys fall back
+# to the Persian, so a new cause is never blank.
+CAUSES_EN: dict[str, dict[str, str]] = {
+    "nfi_spliced": {
+        "title": "Spliced monograph in NFI",
+        "why": "The source NFI page shows one drug's product block against another drug's monograph.",
+        "action": "Auto-repair from a healthy sibling record; the result is stored as a field_override.",
+    },
+    "coverage_review_agrees": {
+        "title": "Same-molecule match awaiting confirmation",
+        "why": "The row's active ingredient agrees with the proposed product; it is held for review only because the evidence is cross-insurer.",
+        "action": "“Confirm all” — each confirmation writes a permanent crosswalk entry.",
+    },
+    "coverage_review_conflict": {
+        "title": "Active ingredient or strength disagrees",
+        "why": "The row name and the proposed product do not agree on the active ingredient or the strength.",
+        "action": "Review case by case; reject with a coded reason so the matcher learns.",
+    },
+    "coverage_unmatched_absent": {
+        "title": "Drug is not in the NFI list",
+        "why": "The active ingredient is absent from the whole NFI catalog — either it is not marketed in Iran, or NFI names it differently.",
+        "action": "Acknowledge as a group; add a synonym if an equivalent exists.",
+    },
+    "coverage_unmatched_bulk": {
+        "title": "Compounding raw material (bulk)",
+        "why": "It is a raw material for compounding, not a finished product — it has no IRC by nature.",
+        "action": "Acknowledge as a group; the price is kept as a compounding basis.",
+    },
+    "coverage_unmatched_device": {
+        "title": "Device or consumable",
+        "why": "It is a medical product, not a drug; it has no place in the drug catalog.",
+        "action": "Acknowledge as a group; it will be classified by a future devices module.",
+    },
+    "coverage_unmatched_researchable": {
+        "title": "Ambiguous name — needs research",
+        "why": "The name is a brand or an abbreviation and the active ingredient cannot be read out of it.",
+        "action": "Send to “Smart enrichment” to extract ingredient, form and strength.",
+    },
+    "nfi_missing_country": {
+        "title": "Manufacturing country unknown",
+        "why": "The NFI crawl did not capture the country column; only a full crawl fills it.",
+        "action": "Re-crawl NFI behind an Iran proxy (the parser now stores the country).",
+    },
+    "nfi_price_expired_registration": {
+        "title": "No price — registration expired",
+        "why": "The licence validity date has passed; a deregistered product has no current tariff.",
+        "action": "Acknowledge as a group — no price for an expired licence is correct data, not a gap.",
+    },
+    "nfi_missing_price_active": {
+        "title": "No announced price (licence valid)",
+        "why": "The licence is valid or unknown, yet the NFI page carried no price — a real gap.",
+        "action": "Re-crawl; whatever remains can be priced from the insurer reference.",
+    },
+    "nfi_missing_atc": {
+        "title": "No ATC code",
+        "why": "The ATC tree was absent from the source page, or was not read.",
+        "action": "Re-crawl (the full atc_path is stored now) or complete it through enrichment.",
+    },
+    "nfi_missing_strength": {
+        "title": "Strength unknown",
+        "why": "The composition on the source page did not state a strength.",
+        "action": "Extract it from the product name or through enrichment; it affects the same-molecule key.",
+    },
+    "price_gap_extreme": {
+        "title": "Extreme gap between announced price and insurer reference",
+        "why": "The insurer reference is more than 10× the announced price — a stale price, a broken source row, or a wrong match.",
+        "action": "Review case by case; if it is right, update the price from that same run.",
+    },
+    "price_gap_moderate": {
+        "title": "Ordinary price gap",
+        "why": "The distance between the announced price and the insurer reference is within the usual tariff-adjustment range.",
+        "action": "Acknowledge as a group, or refresh prices in bulk from the latest run.",
+    },
+    "price_below_reference": {
+        "title": "Market price below the insurer reference",
+        "why": "For a product of the same form, brand and strength, the real market price cannot be lower than the insurer reference — an insurer deliberately caps its liability low, not high. So any such row is either linked to the wrong product (form, strength or pack size) or carries a stale NFI price. A large gap usually means the former.",
+        "action": "Open the link: check the insurer row's form, strength and pack size against the product. If they are right, the announced price is stale and needs refreshing.",
+    },
+    "group_price_dispersion": {
+        "title": "Implausible price spread within one group",
+        "why": "Members of one equivalence group differ in price by more than 100×. A brand premium is normal and rarely exceeds 20×; beyond that it usually means the grouping key is wrong or one of the prices is broken — \"vitamin|12|tablet\" was built from an overflow of \"vitamin B12\" and put 2 and 750,000 IRR side by side.",
+        "action": "Open the group: fix the key if the members are not really equivalent, otherwise fix the broken price. While they share a group, the insurer reference spreads across all of them.",
+    },
+}
+
 DISPOSITIONS = ("accepted", "wont_fix", "resolved", "deferred")
 
 
@@ -170,7 +266,40 @@ CAUSES: dict[str, dict] = {
         "action": "پذیرش گروهی یا به‌روزرسانی دسته‌ای قیمت‌ها از آخرین اجرا.",
         "route": "price_review",
     },
+    "price_below_reference": {
+        "lane": LANE_JUDGEMENT, "title": "قیمت بازار پایین‌تر از مرجع بیمه",
+        "why": "برای یک فرآورده با شکل، برند و قدرتِ یکسان، قیمت واقعی بازار نمی‌تواند "
+               "از مرجع بیمه کمتر باشد — بیمه سقف تعهدش را عمداً پایین می‌گذارد، نه بالا. "
+               "پس هر ردیفی که این‌طور باشد یا به فرآوردهٔ اشتباهی وصل شده (شکل، قدرت یا "
+               "اندازهٔ بسته) یا قیمت NFI آن کهنه است. اختلاف بزرگ معمولاً یعنی اولی.",
+        "action": "پیوند را باز کنید: شکل و قدرت و اندازهٔ بستهٔ ردیف بیمه را با فرآورده "
+                  "بسنجید. اگر درست است، قیمت اعلامی کهنه است و باید تازه شود.",
+        "route": "price_review",
+    },
+    "group_price_dispersion": {
+        "lane": LANE_JUDGEMENT, "title": "پراکندگی غیرمنطقی قیمت در یک گروه",
+        "why": "اعضای یک گروه هم‌ارز بیش از ۱۰۰ برابر اختلاف قیمت دارند. مابه‌التفاوت "
+               "برند گران‌تر طبیعی است و به‌ندرت از ۲۰ برابر می‌گذرد؛ فراتر از آن معمولاً "
+               "یعنی کلید گروه‌بندی غلط است یا یکی از قیمت‌ها خراب — «vitamin|12|tablet» "
+               "از سرریز «ویتامین ب۱۲» ساخته شده و ۲ تا ۷۵۰٬۰۰۰ ریال را کنار هم گذاشته.",
+        "action": "گروه را باز کنید: اگر واقعاً هم‌ارز نیستند کلید را اصلاح کنید، "
+                  "وگرنه قیمت خراب را. تا وقتی گروه یکی است، مرجع بیمه روی همه پخش می‌شود.",
+        "route": "price_review",
+    },
 }
+
+# Above this ratio a group is almost certainly mis-keyed or holds a bad price
+# rather than a real brand premium. Measured: 1,203 covered groups hold members
+# at different prices (normal — that is what مابه‌التفاوت is for), but only 30
+# exceed 100×.
+GROUP_DISPERSION_RATIO = 100
+
+# Below this the gap reads as a stale NFI price, which the price lane already
+# handles; above it the reference is describing a different product — a wrong
+# strength, form, or pack size. Measured over 7,123 below-reference pairs:
+# 1,895 sit under 1.5× (stale), 3,971 above it (wrong product), the rest being
+# pack-basis or rounding.
+BELOW_REFERENCE_RATIO = 1.5
 
 
 def cause_key(cause: str, scope: str = "*") -> str:
@@ -215,44 +344,124 @@ async def set_disposition(db, *, issue_type: str, subject_key: str,
 
 
 # ── counting ────────────────────────────────────────────────────────────────
-async def _nfi_counts(db) -> dict[str, int]:
+def ruled_subjects(disp: dict) -> dict[str, set[str]]:
+    """Individually-ruled subjects, by cause.
+
+    A cause is closed only by a `*` ruling, which is right: `price_gap_extreme`
+    must never be blanket-silenced, or a genuinely wrong price would stop being
+    reported. But the counts are pure SQL, so a row the owner HAS ruled on went
+    on being counted forever — both spliced monographs were accepted
+    individually and the board still read 2, and the pack-basis price gaps
+    resurfaced after every ruling. A decided row is not an open incompatibility.
+
+    `deferred` is deliberately not here: it records that work is postponed, not
+    that the question is settled.
+    """
+    out: dict[str, set[str]] = {}
+    for key, val in disp.items():
+        cause, _, subject = key.partition("|")
+        if not subject or subject == "*" or subject.startswith("cause:"):
+            continue
+        if val.get("disposition") in ("accepted", "resolved", "wont_fix"):
+            out.setdefault(cause, set()).add(subject)
+    return out
+
+
+async def _nfi_counts(db, ruled: dict[str, set[str]] | None = None) -> dict[str, int]:
     from sqlalchemy import text
     cutoff = licence_cutoff()
+    ruled = ruled or {}
 
-    async def n(cond: str) -> int:
-        return (await db.execute(text(
-            f"SELECT count(*) FROM drug_catalog WHERE {cond}"))).scalar() or 0
+    async def n(cond: str, cause: str = "") -> int:
+        excl = sorted(ruled.get(cause, ()))
+        sql = f"SELECT count(*) FROM drug_catalog WHERE {cond}"
+        if excl:
+            sql += " AND irc <> ALL(:excl)"
+        return (await db.execute(text(sql),
+                                 {"excl": excl} if excl else {})).scalar() or 0
     return {
         "nfi_spliced": await n("monograph->'integrity'->>'spliced_page'='true' "
-                               "AND coalesce(monograph->'integrity'->>'repaired','')<>'true'"),
-        "nfi_missing_country": await n("country IS NULL OR country=''"),
+                               "AND coalesce(monograph->'integrity'->>'repaired','')<>'true'",
+                               "nfi_spliced"),
+        "nfi_missing_country": await n("country IS NULL OR country=''",
+                                       "nfi_missing_country"),
         "nfi_price_expired_registration": await n(
             "coalesce(announced_price,0)=0 AND license_valid_until IS NOT NULL "
-            f"AND license_valid_until <> '' AND left(license_valid_until,7) < '{cutoff}'"),
+            f"AND license_valid_until <> '' AND left(license_valid_until,7) < '{cutoff}'",
+            "nfi_price_expired_registration"),
         "nfi_missing_price_active": await n(
             "coalesce(announced_price,0)=0 AND (license_valid_until IS NULL "
             "OR license_valid_until = '' "
-            f"OR left(license_valid_until,7) >= '{cutoff}')"),
-        "nfi_missing_atc": await n("atc IS NULL OR atc=''"),
-        "nfi_missing_strength": await n("strength IS NULL OR strength=''"),
+            f"OR left(license_valid_until,7) >= '{cutoff}')", "nfi_missing_price_active"),
+        "nfi_missing_atc": await n("atc IS NULL OR atc=''", "nfi_missing_atc"),
+        "nfi_missing_strength": await n("strength IS NULL OR strength=''",
+                                        "nfi_missing_strength"),
     }
 
 
-async def _price_counts(db, extreme_pct: int = 1000) -> dict[str, int]:
+async def _price_counts(db, extreme_pct: int = 1000,
+                        ruled: dict[str, set[str]] | None = None) -> dict[str, int]:
     from sqlalchemy import text
+    ruled = ruled or {}
     sql = """
       SELECT count(*) FROM drug_catalog dc
       WHERE dc.announced_price > 0 AND jsonb_typeof(dc.coverage)='object'
+        {excl}
         AND EXISTS (SELECT 1 FROM jsonb_each(dc.coverage) e
               WHERE jsonb_typeof(e.value)='object'
                 AND coalesce((e.value->>'reference_price')::numeric, 0) > 0
                 AND abs((e.value->>'reference_price')::numeric - dc.announced_price)
                     {op} :pct/100.0 * dc.announced_price)"""
-    extreme = (await db.execute(text(sql.format(op=">")),
-                                {"pct": extreme_pct})).scalar() or 0
-    any_gap = (await db.execute(text(sql.format(op=">")), {"pct": 50})).scalar() or 0
+    ex_x = sorted(ruled.get("price_gap_extreme", ()))
+    ex_m = sorted(ruled.get("price_gap_moderate", ()))
+    extreme = (await db.execute(
+        text(sql.format(op=">", excl="AND dc.irc <> ALL(:excl)" if ex_x else "")),
+        {"pct": extreme_pct, **({"excl": ex_x} if ex_x else {})})).scalar() or 0
+    # `moderate` is derived as any_gap - extreme, so a row ruled at the extreme
+    # tier must leave BOTH counts — otherwise ruling it merely demotes it into
+    # the moderate bucket and the total never falls.
+    ex_a = sorted(set(ex_x) | set(ex_m))
+    any_gap = (await db.execute(
+        text(sql.format(op=">", excl="AND dc.irc <> ALL(:excl)" if ex_a else "")),
+        {"pct": 50, **({"excl": ex_a} if ex_a else {})})).scalar() or 0
+    # One interchangeable group spanning >100× is a grouping or price defect, not
+    # a brand premium. Counted in PRODUCTS so it reads on the same scale as every
+    # other cause, and excluding rows already ruled.
+    ex_d = sorted(ruled.get("group_price_dispersion", ()))
+    disp = (await db.execute(text(f"""
+      SELECT coalesce(sum(n), 0) FROM (
+        SELECT count(*) AS n FROM drug_catalog
+        WHERE coverage IS NOT NULL AND announced_price > 0 AND ingredient_key <> ''
+          {"AND irc <> ALL(:excl)" if ex_d else ""}
+        GROUP BY ingredient_key
+        HAVING count(*) > 1 AND min(announced_price) > 0
+           AND max(announced_price)::numeric / min(announced_price)::numeric >= :ratio
+      ) t"""), {"ratio": GROUP_DISPERSION_RATIO,
+                **({"excl": ex_d} if ex_d else {})})).scalar() or 0
+    # Owner's rule (2026-08-09): for an identical form, brand and strength the
+    # market price CANNOT sit below the insurer reference — an insurer caps its
+    # liability deliberately, it does not overpay. So a below-reference row is a
+    # defect. Counted only where the gap is wide enough to mean a wrong product
+    # rather than a stale price, and only where a pack-vs-unit basis does not
+    # explain it (the reference quoting a pack while we hold the unit).
+    ex_b = sorted(ruled.get("price_below_reference", ()))
+    below = (await db.execute(text(f"""
+      SELECT count(*) FROM drug_catalog d, jsonb_each(d.coverage) e
+      WHERE d.announced_price > 0 AND jsonb_typeof(e.value)='object'
+        {"AND d.irc <> ALL(:excl)" if ex_b else ""}
+        AND coalesce((e.value->>'reference_price')::numeric, 0) > 0
+        AND (e.value->>'reference_price')::numeric
+            > d.announced_price * :ratio
+        AND NOT (d.package_count > 1 AND
+                 (e.value->>'reference_price')::numeric
+                 BETWEEN d.announced_price * d.package_count * 0.75
+                     AND d.announced_price * d.package_count * 1.35)"""),
+        {"ratio": BELOW_REFERENCE_RATIO,
+         **({"excl": ex_b} if ex_b else {})})).scalar() or 0
     return {"price_gap_extreme": extreme,
-            "price_gap_moderate": max(0, any_gap - extreme)}
+            "price_gap_moderate": max(0, any_gap - extreme),
+            "group_price_dispersion": int(disp),
+            "price_below_reference": int(below)}
 
 
 async def _coverage_counts(db) -> dict[str, int]:
@@ -265,9 +474,31 @@ async def _coverage_counts(db) -> dict[str, int]:
     from .crosswalk import build_code_registry, load_crosswalk
     from .enrichment import load_approved
 
-    BULK = re.compile(r"\bBULK\b|فله|ترکيبي|ترکیبی", re.I)
+    # Arabic and Persian letterforms differ for the same sound, and the two
+    # insurers do not agree on which to use: «چسب كانوكس» arrives with Arabic
+    # kaf where the pattern is written with Persian keheh, and every Persian
+    # pattern silently fails to fire. Fold before matching rather than trying to
+    # spell each term twice.
+    _AR2FA = str.maketrans({"ي": "ی", "ك": "ک", "ة": "ه", "أ": "ا", "إ": "ا", "ؤ": "و"})
+
+    def _fa(s: str) -> str:
+        return str(s or "").translate(_AR2FA)
+
+    BULK = re.compile(r"\bBULK\b|فله|ترکیبی", re.I)
+    # Consumables and appliances the insurer lists beside medicines. The Persian
+    # terms matter as much as the English: ostomy appliances, insulin pens and
+    # cartridge needles, blood-glucose strips and elastomeric pumps were all
+    # sitting in the RESEARCH lane, waiting for a molecule they will never have.
+    # Deliberately NOT matched here: «GELATIN MODIFIED 500 ML INFUSION» (a plasma
+    # volume expander), C1-esterase inhibitor and gaseous gangrene antitoxin are
+    # medicines that happen to sit next to this group in the list.
     DEV = re.compile(r"\bROLL|GAUZE|SYRINGE|CATHETER|BANDAGE|SET\b|CONTAINER|"
-                     r"BAG\b|STRIP|GLOVE|MASK", re.I)
+                     r"BAG\b|STRIP|GLOVE|MASK|DROPPER|GELATIN CAPSUL|"
+                     r"CREAM BASE|COLD CREAM|OSTOMY|"
+                     # …ostomy: colostomy/ileostomy/urostomy do NOT contain the
+                     # substring «استومی», so the stem alone matched none of them.
+                     r"ستومی|سرسوزن|قلم تزریق|کارتریج انسولین|"
+                     r"نوار تست|پمپ تزریق|کانوکس|کیسه ادرار", re.I)
     catalog = await repo.fetch_all(db)
     vocab = sm.build_form_vocab(catalog)
     known = {c for r in catalog for c in sm.components(r.generic_name or "")}
@@ -302,9 +533,9 @@ async def _coverage_counts(db) -> dict[str, int]:
                              for c in sm.components(l.record.generic_name or ""))
                 out["coverage_review_agrees" if agrees
                     else "coverage_review_conflict"] += 1
-            elif BULK.search(nm):
+            elif BULK.search(_fa(nm)):
                 out["coverage_unmatched_bulk"] += 1
-            elif DEV.search(nm):
+            elif DEV.search(_fa(nm)):
                 out["coverage_unmatched_device"] += 1
             else:
                 p = sm.parse_name(nm, vocab)
@@ -319,11 +550,12 @@ async def board(db, *, include_closed: bool = False) -> dict:
     """The triage board: every cause with its count, lane, action and ruling.
 
     → {causes: [...], totals: {open, acknowledged, by_lane}, lanes: {...}}"""
-    counts: dict[str, int] = {}
-    counts.update(await _nfi_counts(db))
-    counts.update(await _price_counts(db))
-    counts.update(await _coverage_counts(db))
     disp = await load_dispositions(db)
+    ruled = ruled_subjects(disp)
+    counts: dict[str, int] = {}
+    counts.update(await _nfi_counts(db, ruled))
+    counts.update(await _price_counts(db, ruled=ruled))
+    counts.update(await _coverage_counts(db))
 
     causes = []
     for key, meta in CAUSES.items():
@@ -346,6 +578,11 @@ async def board(db, *, include_closed: bool = False) -> dict:
             "sub_rulings": sorted(subs, key=lambda x: x["subject_key"]),
             "lane_fa": LANE_FA[meta["lane"]], "title": meta["title"],
             "why": meta["why"], "action": meta["action"], "route": meta["route"],
+            # English beside Persian — the panel picks, the catalogue stays single
+            "lane_en": LANE_EN[meta["lane"]],
+            "title_en": CAUSES_EN.get(key, {}).get("title", meta["title"]),
+            "why_en": CAUSES_EN.get(key, {}).get("why", meta["why"]),
+            "action_en": CAUSES_EN.get(key, {}).get("action", meta["action"]),
             "closed": closed,
             "disposition": (ruling or {}).get("disposition"),
             "reason": (ruling or {}).get("reason"),
@@ -362,4 +599,4 @@ async def board(db, *, include_closed: bool = False) -> dict:
     return {"causes": causes,
             "totals": {"open": open_n, "acknowledged": ack_n,
                        "all": open_n + ack_n, "by_lane": by_lane},
-            "lanes": LANE_FA}
+            "lanes": LANE_FA, "lanes_en": LANE_EN}

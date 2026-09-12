@@ -73,14 +73,10 @@ export default function SecurityDashboard() {
     // the stream is authenticated — an unticketed handshake is closed with 1008
     let cancelled = false
     let ws: WebSocket | null = null
-    void (async () => {
-      const url = await wsUrl(`/api/v1/security/stream/${pharmacyId}`)
-      if (cancelled || !url) { setWsConnected(false); return }
-      ws = new WebSocket(url)
-      wsRef.current = ws
-      wire(ws)
-    })()
-
+    // `wire` must be declared before the async IIFE that calls it. It worked by
+    // accident — the call happens after an await, by which time the const is
+    // initialised — but the temporal dead zone is real and one reordering away
+    // from a runtime ReferenceError.
     const wire = (ws: WebSocket) => {
     ws.onopen  = () => setWsConnected(true)
     ws.onclose = () => {
@@ -118,6 +114,14 @@ export default function SecurityDashboard() {
       } catch { /* ignore */ }
     }
     }
+
+    void (async () => {
+      const url = await wsUrl(`/api/v1/security/stream/${pharmacyId}`)
+      if (cancelled || !url) { setWsConnected(false); return }
+      ws = new WebSocket(url)
+      wsRef.current = ws
+      wire(ws)
+    })()
 
     return () => { cancelled = true; ws?.close() }
   }, [pharmacyId])

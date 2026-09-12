@@ -69,7 +69,7 @@ CURATED_SCHEMA: dict[str, list[str]] = {
     ],
     "drug_products": [
         "ndc11", "generic_name", "brand_name", "is_generic", "is_controlled",
-        "dea_schedule", "wac_price", "awp_unit_price",
+        "dea_schedule",
     ],
     "dur_override_events": [
         "alert_type", "reason_code", "overridden_by", "created_at",
