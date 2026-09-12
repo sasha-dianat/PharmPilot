@@ -3175,6 +3175,104 @@ a shelf, so `shelf.py` is still untouched by the pilot.
 
 ---
 
+## 2026-09-11 — CL-003 — Pilot Phase 3: the shelf oracle
+
+**Branch/commit.** `feat/inventory-integrity` @ `9aa8c21`.
+
+**Files.** `tests/simulation/domains/shelf.py` (new), `tests/unit/
+test_simulation_shelf.py` (new, 33 tests), `scripts/verify_shelf_domain.py`
+(new). No application code touched.
+
+**The gap this closes.** Phases 1 and 2 both ended noting that the simulated
+world received stock into lots and never placed any of it on a shelf, so
+`services/core/inventory/shelf.py` — the pharmacy's second ledger — was untouched
+by the pilot while `verify_spine.py` printed "stock records disagree with the
+shelf" on every run. Stock is now placed, dispensed through the real
+`apply_dispense`, and the resulting ledger compared against an oracle that
+re-derives allocation, valuation and the theft verdicts. Thresholds are restated
+rather than imported, with `policy_drift()` as in the previous two phases. Drift
+is empty today.
+
+**The finding: fractional dispensing drifts the shelf in BOTH directions at
+once.** 2.9 units dispensed off a placement of 30 should leave 27.1. Measured:
+
+| copy | reads | error |
+|---|---|---|
+| `shelf_placements.units` | 25 | −2.100 |
+| `pharmacy_shelves.current_units` | 29 | +1.900 |
+
+The two copies of one number end up **4 apart and neither is right**.
+`shelf_placements.units` is an `INTEGER` column written with
+`float(take.after)`, so each fractional take rounds a whole unit off the row;
+`current_units` is decremented by `int(take.units)`, which is 0 for any take
+below 1. Liquids, creams and paediatric doses are ordinary and
+`quantity_dispensed` is `Numeric(10,3)`, so this is the common path, not an edge
+case. Because the shelf ledger is the theft detector's *expected*, the placement
+copy makes a correct count read as **SURPLUS** and the cached copy makes the same
+count read as **MISSING** — an expected built on either is fiction, which is
+precisely the condition `shelf.py` was written to end.
+
+**Second finding: the clamp hides the drift.** `GREATEST(0, current_units -
+:taken)` drove a cached total of 3 to 0 while its placements held more, rather
+than reporting that the cached figure is unreliable. A plausible number written
+in place of an unknown one is the fallback-constant pattern the provenance rule
+forbids: the shelf reads 0 and no row says why.
+
+**The property the tests care most about: monotonicity of doubt.** Sweeping the
+inferred figure upward may only ever move a verdict from `shrinkage` toward
+`inconclusive`, never the reverse. A detector that grows more confident as its
+own guesswork grows is backwards, and one false accusation ends the credibility
+of every true one. All five verdicts are shown reachable, and `shrinkage` is
+confirmed to be the only one that reaches a person.
+
+**Two of my own errors, both caught by running it.**
+1. The first fractional check asked whether the shelf *moved* rather than whether
+   it moved by the right amount — and passed while the number was wrong. That is
+   how the drift above nearly went unseen, and it is the same weak-assertion
+   class as the tautology caught in Phase 2.
+2. The two-shelves-one-lot case gave both lots the same expiry, so FEFO broke the
+   tie toward lot 1 and the check failed the application for behaving correctly.
+   Fixed by making lot 2 expire sooner so the scenario is actually exercised.
+
+**Checks actually run.** 33 new unit tests; 126 across shelf / inventory-shelf /
+money / workflow / spine. `scripts/verify_shelf_domain.py` → **PASS, 0 checks
+failed, 3 findings demonstrated**. Full unit suite → **2,152 passed, 1 xfailed,
+2 failed**:
+- `test_integrations_sandbox.py::test_notifications_sandbox_success_shape…` —
+  the known order-dependent one, green in isolation.
+- `test_model_column_parity.py::test_every_database_column_is_mapped_on_its_model`
+  — **not caused by this change, which adds no columns.** It fails on four
+  unmapped `rx_state_events` columns (`previous_hash`, `hashed_at`,
+  `sequence_number`, `digest_version`) applied to the shared `pharmpilot_test`
+  database by the concurrent audit-chain workstream spun off from Phase 2. That
+  is their work in progress and theirs to complete; recorded here so the next
+  reader does not attribute it to CL-003.
+
+**Remaining risks.**
+1. *The fractional shelf drift is referred, not fixed.* The correct repair is a
+   column-type change (`shelf_placements.units` → `Numeric(10,3)`) plus removing
+   the `int()` truncation and the `GREATEST` clamp in
+   `inventory/dispense.py:_take_off_shelf`. `dispense.py` is CL-003's, but the
+   fix needs a migration and **another session is actively holding the migration
+   head** — adding one now would create the multiple heads this ledger forbids.
+   Deferred deliberately until that workstream lands.
+2. *`pharmacy_shelves.current_units` is a second writable copy of a derived
+   number.* Even repaired, two writable copies of one total is a drift generator;
+   the durable fix is to delete the cache and compute the sum, or make it a
+   generated column. That is a design decision for the inventory owner.
+3. *The shelf is still not exercised by `verify_spine.py`.* This phase exercises
+   it in its own script; wiring placement into `tests/simulation/driver.py` so
+   the whole-pharmacy run covers the shelf is the remaining piece.
+
+**Next action.** Phase 4: the clinical domain — DUR hard stops, interaction
+acknowledgement and the deterministic-vs-advisory boundary. Then the advisory/ML
+engines, which need a different assertion shape: they advise rather than decide,
+so the properties are "kill every provider and no deterministic verdict changes",
+provenance on every recommendation, and no patient identifier reaching any
+provider — not equality against an oracle.
+
+---
+
 ## 2026-09-12 — CL-004 — The Rx audit chain becomes verifiable by someone else
 
 - Workstream: `CL-004` (new). Opened because CL-003 explicitly **referred these
